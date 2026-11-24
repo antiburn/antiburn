@@ -22,7 +22,7 @@ import {
   onlyAutomaticRecovery,
   savedUploadDisplayState,
 } from "./CloudDestinationSyncStatus"
-import { activeSyncMessage, CloudSyncActivity } from "./CloudSyncActivity"
+import { uploadProgressMessage, CloudSyncActivity } from "./CloudSyncActivity"
 import {
   CloudFolderSyncControl,
   CloudProjectFolderSummary,
@@ -789,28 +789,39 @@ function CloudProjectsAccount({
       .filter(([id]) => projects?.workspaces?.some((workspace) => workspace.id === id))
       .map(([, team]) => team),
   ]
-  const activePolicies = syncPolicies.filter(
+  const progressPolicies = syncPolicies.filter(
+    (destinationPolicy) =>
+      destinationPolicy.consentVersion === "desktop-project-sync-v1" &&
+      destinationPolicy.projects.length > 0 &&
+      destinationPolicy.storageKnown &&
+      !destinationPolicy.paused,
+  )
+  const activePolicies = progressPolicies.filter(
     (destinationPolicy) =>
       value.deviceUploadEnabled === true &&
-      destinationPolicy.storageKnown &&
-      !destinationPolicy.paused &&
-      (destinationPolicy.status === "ready" || destinationPolicy.status === "syncing") &&
-      (!onlyAutomaticRecovery(destinationPolicy) ||
-        destinationPolicy.queuedCount > (destinationPolicy.automaticRecoveryCount ?? 0)) &&
-      (destinationPolicy.backfillInProgress || destinationPolicy.status === "syncing"),
+      (savedUploadDisplayState(destinationPolicy) === "ready" ||
+        savedUploadDisplayState(destinationPolicy) === "syncing") &&
+      (destinationPolicy.backfillInProgress ||
+        destinationPolicy.status === "syncing" ||
+        onlyAutomaticRecovery(destinationPolicy)),
   )
   const scanning = activePolicies.some((policy) => policy.backfillInProgress)
   const hasStagedChoices = !!move || draftFolders.length > 0 || confirmableTeams.length > 0
   const syncWorking = syncPending || activePolicies.length > 0
   const folderControlsBusy = value.busy || syncWorking
-  const syncProgressMessage =
+  const syncActivity =
     syncPhase === "saving"
-      ? "Saving folder choices…"
+      ? "Saving folder choices"
       : syncPending && !scanning
-        ? "Starting sync…"
-        : activePolicies.length
-          ? activeSyncMessage(scanning, activePolicies)
-          : null
+        ? "Starting sync"
+        : scanning
+          ? "Checking folders"
+          : activePolicies.some(onlyAutomaticRecovery)
+            ? "Checking saved uploads"
+            : undefined
+  const syncProgressMessage = syncWorking
+    ? uploadProgressMessage(progressPolicies, syncActivity ?? "Uploading sessions")
+    : null
   const canSubmit =
     !syncWorking && (canSave || (!hasStagedChoices && canSyncSavedFolders(value)))
   const hasUsableFolder =
@@ -848,21 +859,38 @@ function CloudProjectsAccount({
               : null))
           : null
   const hasError = value.uploadActionError || folderError || uploadError
-  const footerStatus =
-    syncProgressMessage ??
-    (confirmableTeams.length
-      ? "Review saved folders"
-      : idleSyncMessage({
-          policies: syncPolicies,
-          deviceEnabled: value.deviceUploadEnabled,
-          checkingStatus: checkingUploadStatus,
-          workspaceUnavailable:
-            !!projects?.workspaces &&
-            savedTeamPolicies.some(
-              ([id]) => !projects.workspaces?.some((workspace) => workspace.id === id),
-            ),
-          hasError: !!hasError,
-        }))
+  const workspaceUnavailable =
+    !!projects?.workspaces &&
+    savedTeamPolicies.some(
+      ([id]) => !projects.workspaces?.some((workspace) => workspace.id === id),
+    )
+  const uploadNeedsAttention = syncPolicies.some(
+    (policy) =>
+      policy.fencedCount > 0 ||
+      policy.interruptedCount > 0 ||
+      (policy.recoveryRequiredCount ?? 0) > 0,
+  )
+  const syncError =
+    !!hasError ||
+    uploadNeedsAttention ||
+    workspaceUnavailable ||
+    syncPolicies.some(
+      (policy) =>
+        !policy.folderConfirmationRequired && !!uploadErrors[savedUploadDisplayState(policy)],
+    )
+  const idleStatus = idleSyncMessage({
+    policies: syncPolicies,
+    deviceEnabled: value.deviceUploadEnabled,
+    workspaceUnavailable,
+    hasError:
+      !!value.uploadActionError ||
+      !!folderError ||
+      (!storageUnknown && !!uploadError) ||
+      uploadNeedsAttention,
+  })
+  const footerStatus = syncError
+    ? idleStatus
+    : (syncProgressMessage ?? (confirmableTeams.length ? "Review saved folders" : idleStatus))
   const canCheckFolders = !!folderError && value.cloud.setupError !== cloudCaptureUnsupported
   const paging = projects?.paging
   const pagingUnavailable =
@@ -1493,11 +1521,11 @@ function CloudProjectsAccount({
             </p>
           )}
       </div>
-      <footer className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 border-t border-separator px-4 py-2 type-footnote text-label-secondary">
-        <CloudSyncActivity message={footerStatus} active={!!syncProgressMessage} />
+      <footer className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 border-t border-separator px-4 py-2 type-footnote text-label-secondary">
+        <CloudSyncActivity message={footerStatus} active={syncWorking && !syncError} />
         <button
           type="button"
-          className="ui-push-button min-h-8 min-w-28 gap-1 enabled:bg-accent-fill enabled:text-white enabled:hover:bg-accent-hover disabled:opacity-50 aria-disabled:opacity-50"
+          className={`ui-push-button min-h-8 min-w-28 gap-1 enabled:bg-accent-fill enabled:text-white enabled:hover:bg-accent-hover disabled:opacity-50 ${syncWorking ? "" : "aria-disabled:opacity-50"}`}
           disabled={primaryBlocked && !keepPrimaryFocusable}
           aria-disabled={keepPrimaryFocusable || undefined}
           aria-busy={syncWorking || undefined}
@@ -1534,10 +1562,10 @@ function CloudProjectsAccount({
             }
           }}
         >
-          {syncWorking && (
-            <LoaderCircle size={13} className="shrink-0 motion-safe:animate-spin" aria-hidden />
-          )}
-          {primaryLabel}
+          <span className="flex w-3.5 shrink-0 items-center justify-center" aria-hidden>
+            {syncWorking && <LoaderCircle size={13} className="motion-safe:animate-spin" />}
+          </span>
+          <span>{primaryLabel}</span>
         </button>
       </footer>
     </>

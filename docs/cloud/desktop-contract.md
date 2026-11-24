@@ -128,13 +128,13 @@ connection, sign in again instead of refreshing the old grant.
 
 Device authentication requests use the configured API origin:
 
-| Request                          | Proof                                                                                                       |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Request                          | Proof                                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
-| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
-| `GET /v1/devices/session`        | Access bearer                                                                                              |
-| `GET /v1/captures/destinations`  | Access bearer                                                                                              |
-| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                     |
+| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
+| `GET /v1/devices/session`        | Access bearer                                                                                                |
+| `GET /v1/captures/destinations`  | Access bearer                                                                                                |
+| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                       |
 
 Desktop uses the short OS hostname as `device_name`. It omits the domain suffix
 and falls back to `Antiburn Desktop` if the name is unavailable or unsuitable.
@@ -184,9 +184,9 @@ or CLI-only endpoint. A connection approved only for upload cannot serve
 CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
 where the service offers them.
 
-| Request | Device scope | Page fields the CLI uses |
-| --- | --- | --- |
-| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | `items`, `page.next_cursor` |
+| Request                                                                                        | Device scope    | Page fields the CLI uses                                                          |
+| ---------------------------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]`                         | `sessions:list` | `items`, `page.next_cursor`                                                       |
 | `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
 
 Send the access token as `Authorization: Bearer <token>`. A cursor continues
@@ -527,6 +527,30 @@ format is unsupported. These two counts exclude versions with matching
 acceptance receipts. Neither the counts nor `total - uploaded` show the number
 of saved upload jobs.
 Settings does not show a percentage without a known nonzero total.
+`uploadProgress.transfer` reports required compressed bytes across the captures
+in that scan. `sentBytes` counts bytes backed by current service receipts.
+Desktop keeps accepted contributions after it removes their spool entries.
+Matching acceptance receipts from before the scan add no new transfer bytes.
+`totalBytes` stays null until discovery finishes without gaps and every source
+without a matching receipt has a known upload plan. Zero is valid for an empty
+scan or one whose source versions already have matching acceptance receipts.
+The counters exclude reused bytes and do not prove session acceptance.
+Repeated status reads do not add the same capture twice. Provisional receipt
+expiry can reduce `sentBytes`; Desktop does not keep invalidated credit.
+Earlier accepted versions retain their transfer work if the same source changes
+during the scan. Its new version needs its own plan or matching receipt before
+the total is known again. Proven folder exclusions and deletion markers remove
+that source's contributions. The tracker bounds both source and capture counts
+to 4,096. Reaching either bound can leave totals unknown. These counters share
+the session progress lifetime and its account, policy, and sign-in limits.
+Settings keeps session and byte progress together, such as
+`1/5 sessions, 12 MB of 85 MB uploaded`. Routine activity appears after a bullet,
+such as `Checking folders` or `Checking saved uploads`. It does not replace the
+counters. A `+` marks sessions found before the count is final; `?` marks an
+unknown count or byte size. Combined workspace counts use `session uploads`
+because sending one local session to two workspaces counts as two deliveries.
+Errors replace the progress line. The same button shows `Syncing` while a scan,
+upload, or automatic recovery is active, then returns to `Sync now`.
 While a scan is active, `found` can report how many matching sessions Desktop
 has found so far. It is not a final total. If Desktop can identify one current
 upload, `uploadTransfer` reports confirmed compressed bytes and the bytes the

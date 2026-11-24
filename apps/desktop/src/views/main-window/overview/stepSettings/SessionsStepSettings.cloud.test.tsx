@@ -309,7 +309,7 @@ it.each(["pause", "scan"])(
       expect(folder).toHaveAttribute("aria-disabled", "true")
     }
     fireEvent.click(sync)
-    expect(screen.getByText("Starting sync…")).toBeVisible()
+    expect(screen.getByText(/ • Starting sync$/)).toBeVisible()
     expect(upload()).toBeChecked()
     expect(upload()).toBeEnabled()
     expectDisabledFolderSwitch()

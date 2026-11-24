@@ -194,7 +194,7 @@ it.each([
   },
 )
 
-it("shows one activity line without counting receipts across active workspaces", async () => {
+it("counts workspace deliveries and replaces progress only for an upload error", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
   port.workspaces = vi.fn(async () => [
     { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
@@ -218,13 +218,80 @@ it("shows one activity line without counting receipts across active workspaces",
   ongoing.status.mockResolvedValue({ ...personal, teamStatuses: [team] })
   render(<Account session={new CloudSession(port, false, true)} />)
   await screen.findByText("2 workspaces")
-  const message = await screen.findByText("Uploading sessions…")
+  const message = await screen.findByText(/8\/98\+ session uploads,/)
   const activity = within(message.closest("footer")!).getByRole("status")
   expect(screen.queryByText(/queued|sessions accepted/)).not.toBeInTheDocument()
   act(() => emitSync({ ...team, storageKnown: false, status: "storage_unavailable" }))
-  expect(activity).toHaveTextContent("6 of 96 sessions uploaded")
-  expect(screen.queryByText(/2 sessions uploaded/)).not.toBeInTheDocument()
+  expect(activity).toHaveTextContent("Status unavailable")
+  expect(activity).not.toHaveTextContent("8/98+")
 })
+
+it.each(["paused", "consent_required"] as const)(
+  "excludes %s workspace counters while another workspace uploads",
+  async (status) => {
+    const { port, ongoing, emitSync } = cloudProjectFixture()
+    port.workspaces = vi.fn(async () => [
+      { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+      { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+    ])
+    const personal = ongoingStatus({
+      status: "syncing",
+      consentVersion: "desktop-project-sync-v1",
+      deviceUploadEnabled: true,
+      projects: projectGroup().projects,
+      queuedCount: 1,
+      uploadProgress: {
+        uploaded: 1,
+        total: 5,
+        transfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
+      },
+    })
+    const team = {
+      ...personal,
+      destinationId: "synthetic-team",
+      status,
+      paused: status === "paused",
+      consentVersion: status === "consent_required" ? null : personal.consentVersion,
+      uploadProgress: {
+        uploaded: 20,
+        total: 30,
+        transfer: { sentBytes: 100_000_000, totalBytes: 200_000_000 },
+      },
+    }
+    ongoing.status.mockResolvedValue({ ...personal, teamStatuses: [team] })
+    render(<Account session={new CloudSession(port, false, true)} />)
+    await screen.findByText("2 workspaces")
+    expect(footerStatus()).toHaveTextContent("1/5 sessions, 12 MB of 85 MB uploaded")
+    act(() => emitSync({ ...personal, status: "ready", queuedCount: 0 }))
+    expect(footerStatus()).toHaveTextContent(/^1\/5 sessions, 12 MB of 85 MB uploaded$/)
+  },
+)
+
+it.each(["fencedCount", "interruptedCount", "recoveryRequiredCount"] as const)(
+  "replaces active progress when a Team reports %s",
+  async (failureCount) => {
+    const { port, ongoing, emitSync } = cloudProjectFixture()
+    port.workspaces = vi.fn(async () => [
+      { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+      { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+    ])
+    const personal = ongoingStatus({
+      status: "syncing",
+      consentVersion: "desktop-project-sync-v1",
+      deviceUploadEnabled: true,
+      projects: projectGroup().projects,
+      queuedCount: 1,
+      uploadProgress: { uploaded: 1, total: 5 },
+    })
+    const team = { ...personal, destinationId: "synthetic-team" }
+    ongoing.status.mockResolvedValue({ ...personal, teamStatuses: [team] })
+    render(<Account session={new CloudSession(port, false, true)} />)
+    await screen.findByText("2 workspaces")
+    expect(footerStatus()).toHaveTextContent("2/10 session uploads")
+    act(() => emitSync({ ...team, [failureCount]: 1 }))
+    expect(footerStatus()).toHaveTextContent(/^Folder sync needs attention$/)
+  },
+)
 
 it("offers manual upload retry only after Desktop stops automatic verification", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
@@ -238,7 +305,7 @@ it("offers manual upload retry only after Desktop stops automatic verification",
   })
   ongoing.status.mockResolvedValue(policy)
   render(<Account session={new CloudSession(port, false, true)} />)
-  expect(await screen.findByText("Checking saved uploads…")).toBeVisible()
+  expect(await screen.findByText(/ • Checking saved uploads$/)).toBeVisible()
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Retry saved uploads" })).not.toBeInTheDocument()
   expect(screen.queryByText(/accepted/)).not.toBeInTheDocument()
@@ -252,7 +319,7 @@ it("offers manual upload retry only after Desktop stops automatic verification",
       retryAvailable: true,
     }),
   )
-  expect(footerStatus()).not.toHaveTextContent("Checking saved uploads…")
+  expect(footerStatus()).not.toHaveTextContent("Checking saved uploads")
   expect(screen.getByRole("button", { name: "Retry saved uploads" })).toBeEnabled()
   expect(ongoing.retry).not.toHaveBeenCalled()
   expect(ongoing.enable).not.toHaveBeenCalled()
@@ -1687,7 +1754,7 @@ it("syncs the saved revision without retrying or changing upload settings", asyn
   expect(toggle).toBeChecked()
   expect(screen.queryByText("Updating…")).not.toBeInTheDocument()
   expect(button).toHaveAttribute("aria-busy", "true")
-  expect(footer.getByRole("status")).toHaveTextContent("Starting sync…")
+  expect(footer.getByRole("status")).toHaveTextContent(" • Starting sync")
   expect(
     footer.getByRole("status").querySelector('svg[aria-hidden="true"]'),
   ).toBeInTheDocument()
@@ -1695,7 +1762,7 @@ it("syncs the saved revision without retrying or changing upload settings", asyn
   await act(async () => finishBackfill({ ...saved, backfillInProgress: true }))
   await waitFor(() => expect(session.getSnapshot().busy).toBe(false))
   expect(button).toHaveAttribute("aria-disabled", "true")
-  expect(footer.getByRole("status")).toHaveTextContent("Scanning folders…")
+  expect(footer.getByRole("status")).toHaveTextContent(" • Checking folders")
   act(() => emitSync({ ...saved, backfillInProgress: false }))
   expect(button).not.toHaveAttribute("aria-disabled")
   expect(ongoing.backfill).toHaveBeenCalledExactlyOnceWith(
@@ -1797,7 +1864,7 @@ it("reviews changed saved folders without writing or scanning again", async () =
   expect(ongoing.setProject).not.toHaveBeenCalled()
 })
 
-it("shows one idle summary without adding counts from separate workspace scans", async () => {
+it("keeps workspace delivery counts together in the idle summary", async () => {
   const { port, ongoing } = cloudProjectFixture()
   port.workspaces = vi.fn(async () => [
     { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
@@ -1828,12 +1895,14 @@ it("shows one idle summary without adding counts from separate workspace scans",
   const button = await screen.findByRole("button", { name: "Sync now" })
   const footer = within(button.closest("footer")!)
   expect(footer.getAllByRole("button")).toEqual([button])
-  expect(footer.getByRole("status")).toHaveTextContent(/^Folder sync enabled$/)
-  expect(footer.queryByText(/accepted|uploaded|%/)).not.toBeInTheDocument()
+  expect(footer.getByRole("status")).toHaveTextContent(
+    /^5\/12 session uploads, \? of \? uploaded$/,
+  )
+  expect(footer.queryByText(/accepted|%/)).not.toBeInTheDocument()
   expect(footer.queryByRole("progressbar")).not.toBeInTheDocument()
 })
 
-it("replaces the footer status with observed scan and upload progress", async () => {
+it("keeps session and byte progress visible through scanning and automatic recovery", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
   const saved = ongoingStatus({
     status: "ready",
@@ -1857,7 +1926,7 @@ it("replaces the footer status with observed scan and upload progress", async ()
 
   act(() => emitSync(scan(0)))
   const activity = footer.getByRole("status")
-  expect(activity).toHaveTextContent(/^Scanning folders…$/)
+  expect(activity).toHaveTextContent(/^0\/\? sessions, \? of \? uploaded • Checking folders$/)
   expect(footer.queryByText(/queued|automatically|accepted|enabled/)).not.toBeInTheDocument()
   expect(footer.queryByRole("progressbar")).not.toBeInTheDocument()
   expect(footer.getByRole("button", { name: "Syncing" })).toBe(sync)
@@ -1868,11 +1937,15 @@ it("replaces the footer status with observed scan and upload progress", async ()
   expect(ongoing.setProject).not.toHaveBeenCalled()
 
   act(() => emitSync(scan(1)))
-  expect(activity).toHaveTextContent(/^Scanning folders · 1 uploaded$/)
+  expect(activity).toHaveTextContent(/^1\/1\+ sessions, \? of \? uploaded • Checking folders$/)
   act(() => emitSync(scan(0, 436)))
-  expect(activity).toHaveTextContent(/^436 sessions found$/)
+  expect(activity).toHaveTextContent(
+    /^0\/436\+ sessions, \? of \? uploaded • Checking folders$/,
+  )
   act(() => emitSync(scan(3, 436)))
-  expect(activity).toHaveTextContent(/^436 found · 3 uploaded$/)
+  expect(activity).toHaveTextContent(
+    /^3\/436\+ sessions, \? of \? uploaded • Checking folders$/,
+  )
   act(() =>
     emitSync({
       ...saved,
@@ -1880,41 +1953,78 @@ it("replaces the footer status with observed scan and upload progress", async ()
       uploadProgress: { uploaded: 3, total: 10, scanIncomplete: true },
     }),
   )
-  expect(activity).toHaveTextContent(/^3 sessions uploaded$/)
+  expect(activity).toHaveTextContent(/^3\/10\+ sessions, \? of \? uploaded/)
   act(() =>
     emitSync({ ...saved, status: "syncing", uploadProgress: { uploaded: 3, total: 10 } }),
   )
-  expect(activity).toHaveTextContent(/^3 of 10 sessions uploaded$/)
+  expect(activity).toHaveTextContent(/^3\/10 sessions, \? of \? uploaded/)
   expect(footer.getByRole("button", { name: "Syncing" })).toBe(sync)
   expect(sync).toHaveAttribute("aria-disabled", "true")
   act(() =>
     emitSync({
       ...saved,
       status: "syncing",
-      uploadProgress: { uploaded: 3, total: 10 },
+      uploadProgress: {
+        uploaded: 3,
+        total: 10,
+        transfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
+      },
       uploadTransfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
     }),
   )
-  expect(activity).toHaveTextContent(/^12 MB of 85 MB uploaded$/)
-  expect(within(activity).getByText("12 MB of 85 MB uploaded")).toHaveAttribute(
+  expect(activity).toHaveTextContent(/^3\/10 sessions, 12 MB of 85 MB uploaded/)
+  expect(within(activity).getByText(/3\/10 sessions, 12 MB of 85 MB uploaded/)).toHaveAttribute(
     "title",
-    "12 MB of 85 MB uploaded",
+    "3/10 sessions, 12 MB of 85 MB uploaded • Uploading sessions",
   )
-  expect(footer.queryByText("3 of 10 sessions uploaded")).not.toBeInTheDocument()
+  expect(sync.querySelectorAll("span").length).toBe(2)
+  expect(sync.textContent).toBe("Syncing")
+  sync.focus()
   expect(footer.queryByRole("progressbar")).not.toBeInTheDocument()
   expect(folder).toHaveAttribute("aria-disabled", "true")
   act(() =>
     emitSync({
-      ...scan(3, 436),
+      ...saved,
+      status: "syncing",
+      queuedCount: 1,
       automaticRecoveryCount: 1,
+      uploadProgress: {
+        uploaded: 3,
+        total: 10,
+        transfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
+      },
       uploadTransfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
     }),
   )
-  expect(activity).toHaveTextContent(/^Checking saved uploads…$/)
-  expect(footer.queryByRole("button", { name: "Syncing" })).not.toBeInTheDocument()
-  expect(folder).not.toHaveAttribute("aria-disabled")
-  act(() => emitSync({ ...saved, uploadProgress: { uploaded: 10, total: 10 } }))
-  expect(activity).toHaveTextContent(/^10 sessions uploaded$/)
+  expect(activity).toHaveTextContent(
+    /^3\/10 sessions, 12 MB of 85 MB uploaded • Checking saved uploads$/,
+  )
+  expect(footer.getByRole("button", { name: "Syncing" })).toBe(sync)
+  expect(sync.textContent).toBe("Syncing")
+  expect(sync).toHaveFocus()
+  expect(folder).toHaveAttribute("aria-disabled", "true")
+  act(() =>
+    emitSync({
+      ...saved,
+      uploadProgress: {
+        uploaded: 4,
+        total: 10,
+        transfer: { sentBytes: 20_000_000, totalBytes: 85_000_000 },
+      },
+    }),
+  )
+  expect(activity).toHaveTextContent(/^4\/10 sessions, 20 MB of 85 MB uploaded$/)
+  act(() =>
+    emitSync({
+      ...saved,
+      uploadProgress: {
+        uploaded: 10,
+        total: 10,
+        transfer: { sentBytes: 85_000_000, totalBytes: 85_000_000 },
+      },
+    }),
+  )
+  expect(activity).toHaveTextContent(/^10\/10 sessions, 85 MB of 85 MB uploaded$/)
   expect(sync).toBeEnabled()
   expect(footer.getByRole("button", { name: "Sync now" })).toBe(sync)
 })
@@ -1932,24 +2042,24 @@ it("reports one final receipt summary without a false total", async () => {
   await screen.findByRole("button", { name: "Sync now" })
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 2, total: null } }))
   const status = footerStatus()
-  expect(status).toHaveTextContent(/^2 sessions uploaded$/)
+  expect(status).toHaveTextContent(/^2\/2\+ sessions, \? of \? uploaded$/)
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 0, total: 0 } }))
-  expect(status).toHaveTextContent(/^No sessions found to sync\.$/)
+  expect(status).toHaveTextContent(/^0\/0 sessions, \? of \? uploaded$/)
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
   expect(screen.queryByText(/%$/)).not.toBeInTheDocument()
 
   const count = new Intl.NumberFormat().format(1000)
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 998, total: 1000 } }))
-  expect(status).toHaveTextContent(`998 of ${count} sessions uploaded`)
+  expect(status).toHaveTextContent(`998/${count} sessions, ? of ? uploaded`)
   const statusText = status.firstChild
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 999, total: 1000 } }))
   expect(status.firstChild).toBe(statusText)
-  expect(status).toHaveTextContent(`999 of ${count} sessions uploaded`)
+  expect(status).toHaveTextContent(`999/${count} sessions, ? of ? uploaded`)
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 1000, total: 1000 } }))
-  expect(status).toHaveTextContent(`${count} sessions uploaded`)
+  expect(status).toHaveTextContent(`${count}/${count} sessions, ? of ? uploaded`)
 
   act(() =>
     emitSync({
@@ -1960,7 +2070,7 @@ it("reports one final receipt summary without a false total", async () => {
     }),
   )
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
-  expect(status).not.toHaveTextContent(`${count} sessions uploaded`)
+  expect(status).not.toHaveTextContent(`${count}/${count}`)
 })
 
 it("hides cached totals and progress after saved upload storage becomes unknown", async () => {
@@ -1997,7 +2107,7 @@ it("hides cached totals and progress after saved upload storage becomes unknown"
   }
   ongoing.status.mockResolvedValueOnce(unavailable).mockResolvedValue(healthy)
   act(() => emitSync(unavailable))
-  expect(screen.getByText("Checking saved uploads…")).toBeVisible()
+  expect(screen.getByText("Status unavailable")).toBeVisible()
   expect(status).not.toHaveTextContent("7 accepted")
   expect(status).not.toHaveTextContent("2 queued")
   expect(screen.queryByText(/7 uploaded|0 uploaded|Transferred/)).not.toBeInTheDocument()
@@ -2012,6 +2122,34 @@ it("hides cached totals and progress after saved upload storage becomes unknown"
   expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeEnabled()
   expect(session.getSnapshot().ongoing?.acceptedCount).toBe(7)
   expect(ongoing.retry).not.toHaveBeenCalled()
+})
+
+it("keeps progress unavailable when saved upload storage stays unreadable", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      status: "storage_unavailable",
+      storageKnown: false,
+      consentVersion: "desktop-project-sync-v1",
+      deviceUploadEnabled: true,
+      projects: projectGroup().projects,
+      uploadProgress: {
+        uploaded: 4,
+        total: 5,
+        transfer: { sentBytes: 80_000_000, totalBytes: 85_000_000 },
+      },
+    }),
+  )
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  expect(
+    await screen.findByText("Could not read saved uploads. Saved files are kept."),
+  ).toBeVisible()
+  expect(footerStatus()).toHaveTextContent(/^Status unavailable$/)
+  await act(() => session.load())
+  expect(footerStatus()).toHaveTextContent(/^Status unavailable$/)
+  expect(footerStatus()).not.toHaveTextContent("4/5")
+  expect(footerStatus()).not.toHaveTextContent("80 MB")
 })
 
 it("reads folders on verified-account mount without a manual refresh action", async () => {

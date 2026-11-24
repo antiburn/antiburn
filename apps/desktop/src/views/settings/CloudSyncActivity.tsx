@@ -11,51 +11,57 @@ function uploadSize(bytes: number) {
   return `${sessionCountFormat.format(bytes)} B`
 }
 
-/** Desktop reports one upload's confirmed bytes, not a total for all folders. */
-function currentUploadTransfer(policy: CloudOngoingStatus | undefined) {
-  const transfer = policy?.uploadTransfer
-  return transfer &&
-    transfer.totalBytes > 0 &&
-    transfer.sentBytes >= 0 &&
-    transfer.sentBytes <= transfer.totalBytes
-    ? transfer
+/**
+ * Keep session acceptance and cumulative transfer visible through routine phases.
+ * Unknown totals stay unknown. A plus marks sessions found before a scan finishes.
+ * Separate workspace deliveries count separately, even for the same local session.
+ */
+export function uploadProgressMessage(policies: readonly CloudOngoingStatus[], phase?: string) {
+  if (!phase && !policies.some((policy) => policy.uploadProgress)) return null
+  const progress = policies.map((policy) => policy.uploadProgress)
+  const uploadedCount =
+    progress.length > 0 && progress.every((value) => value !== undefined)
+      ? sessionCountFormat.format(
+          progress.reduce((sum, value) => sum + (value?.uploaded ?? 0), 0),
+        )
+      : "?"
+  const totalKnown =
+    progress.length > 0 &&
+    progress.every((value) => value?.total != null && !value.scanIncomplete)
+  const total = totalKnown
+    ? sessionCountFormat.format(progress.reduce((sum, value) => sum + (value?.total ?? 0), 0))
     : undefined
-}
-
-/** Describe current activity without adding or comparing totals across workspaces. */
-export function activeSyncMessage(scanning: boolean, policies: CloudOngoingStatus[]) {
-  const transfers = policies.flatMap((policy) => currentUploadTransfer(policy) ?? [])
-  const transfer = transfers.length === 1 ? transfers[0] : undefined
-  if (transfer)
-    return `${uploadSize(transfer.sentBytes)} of ${uploadSize(transfer.totalBytes)} uploaded`
-  const progress = policies.length === 1 ? policies[0]?.uploadProgress : undefined
-  const uploaded = progress?.uploaded ?? 0
-  const count = sessionCountFormat.format(uploaded)
-  if (scanning) {
-    const found = progress?.found ?? 0
-    if (found > 0) {
-      const discovered = sessionCountFormat.format(found)
-      return uploaded > 0
-        ? `${discovered} found · ${count} uploaded`
-        : `${discovered} ${found === 1 ? "session" : "sessions"} found`
-    }
-    return uploaded > 0 ? `Scanning folders · ${count} uploaded` : "Scanning folders…"
-  }
-  if (!uploaded) return "Uploading sessions…"
-  const total = progress?.total
-  if (total != null && total >= uploaded && !progress?.scanIncomplete)
-    return `${count} of ${sessionCountFormat.format(total)} ${total === 1 ? "session" : "sessions"} uploaded`
-  return `${count} ${uploaded === 1 ? "session" : "sessions"} uploaded`
+  const found = progress.reduce(
+    (sum, value) => sum + (value?.total ?? value?.found ?? value?.uploaded ?? 0),
+    0,
+  )
+  const sessionTotal = total ?? (found > 0 ? `${sessionCountFormat.format(found)}+` : "?")
+  const transfers = progress.map((value) => value?.transfer)
+  const sentBytes = transfers.reduce((sum, value) => sum + (value?.sentBytes ?? 0), 0)
+  const sent =
+    transfers.length > 0 && transfers.every((value) => value !== undefined)
+      ? uploadSize(sentBytes)
+      : "?"
+  const bytesKnown =
+    transfers.length > 0 && transfers.every((value) => value?.totalBytes != null)
+  const totalBytes = bytesKnown
+    ? uploadSize(transfers.reduce((sum, value) => sum + (value?.totalBytes ?? 0), 0))
+    : "?"
+  const sessions = policies.length > 1 ? "session uploads" : "sessions"
+  const message = `${uploadedCount}/${sessionTotal} ${sessions}, ${sent} of ${totalBytes} uploaded`
+  return phase ? `${message} • ${phase}` : message
 }
 
 /** Keep the live region mounted so it can announce a change once. */
 export function CloudSyncActivity({ message, active }: { message: string; active: boolean }) {
   return (
-    <p role="status" className="flex min-w-0 items-center gap-1">
+    <p role="status" className="flex min-h-8 min-w-0 items-start gap-1 py-1.5">
       {active && (
-        <LoaderCircle size={13} className="shrink-0 motion-safe:animate-spin" aria-hidden />
+        <span className="flex h-[1lh] shrink-0 items-center" aria-hidden>
+          <LoaderCircle size={13} className="motion-safe:animate-spin" />
+        </span>
       )}
-      <span className="truncate" title={message}>
+      <span className="min-w-0 tabular-nums wrap-anywhere" title={message}>
         {message}
       </span>
     </p>

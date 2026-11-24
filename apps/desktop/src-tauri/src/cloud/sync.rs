@@ -797,10 +797,11 @@ impl Runner {
         &mut self,
         saved: &BTreeSet<String>,
         grant_id: &str,
-        read_status: impl FnOnce(State, Option<&Self>) -> Result<Status, String>,
+        read_status: impl FnOnce(State, Option<&mut Self>) -> Result<Status, String>,
     ) -> Result<Status, String> {
         let state = self.retry(saved);
-        Ok(self.backfill_status(read_status(state, Some(self))?, Some(grant_id)))
+        let status = read_status(state, Some(self))?;
+        Ok(self.backfill_status(status, Some(grant_id)))
     }
 
     fn finish_backfill_scan(&mut self) {
@@ -823,6 +824,17 @@ impl Runner {
         {
             self.request_backfill_refresh();
         }
+    }
+
+    /// Retain final byte counters before either acceptance path removes the entry.
+    fn observe_accepted_transfer(&mut self, job: &Job, entry: &QueueEntry) -> Result<(), String> {
+        if let Some(progress) = &mut self.backfill_progress {
+            let transfer = entry
+                .progress()
+                .map_err(|_| "Could not read accepted capture progress.")?;
+            progress.observe_transfer(job, &transfer, true);
+        }
+        Ok(())
     }
 
     /// Start a full normal refresh so an unresolved source cannot be behind its cursor.
@@ -1060,14 +1072,8 @@ impl Runner {
                 ..Status::default()
             })
         } else {
-            status_for_destination(
-                store,
-                host,
-                engine,
-                self.state,
-                self.team.as_ref().map(|(id, _)| id.as_str()),
-                Some(self),
-            )
+            let team = self.team.as_ref().map(|(id, _)| id.clone());
+            status_for_destination(store, host, engine, self.state, team.as_deref(), Some(self))
         };
         let mut result = match read {
             Ok(value) => {
@@ -1168,6 +1174,7 @@ impl Runner {
                 store
                     .accept_cloud_sync(entry)
                     .map_err(|_| "Could not save accepted capture state.")?;
+                self.observe_accepted_transfer(&job, entry)?;
                 self.observe_backfill_acceptance(store, &job);
                 host.spool()?
                     .acknowledge_accepted(&entry.identity)
@@ -1724,6 +1731,7 @@ impl Runner {
                 store
                     .accept_cloud_sync(&step.entry)
                     .map_err(|_| "Could not save accepted capture state.")?;
+                self.observe_accepted_transfer(job, &step.entry)?;
                 self.observe_backfill_acceptance(store, job);
                 host.spool()?
                     .acknowledge_accepted(&step.entry.identity)
@@ -2619,13 +2627,15 @@ fn status(
     status_for_destination(store, host, engine, state, None, None)
 }
 
+/// Read one destination and refresh its scan counters from the same spool snapshot.
+/// An absent runner leaves scan state unchanged. This does not request upload work.
 fn status_for_destination(
     store: &Store,
     host: &mut capture::Host,
     engine: &Engine,
     state: State,
     team: Option<&str>,
-    runner: Option<&Runner>,
+    runner: Option<&mut Runner>,
 ) -> Result<Status, String> {
     let Some(session) = engine.session() else {
         return Ok(Status {
@@ -2678,7 +2688,9 @@ fn status_for_destination(
     let can_offer_retry = !policy.paused
         && policy.team_grant_id.is_none()
         && !matches!(state, State::ReauthRequired | State::StorageUnavailable);
-    let recovery_runner = runner.filter(|_| can_offer_retry && state != State::Paused);
+    let recovery_runner = runner
+        .as_deref()
+        .filter(|_| can_offer_retry && state != State::Paused);
     status.automatic_recovery_count = recovery_runner.map(|_| 0);
     let mut retryable = Vec::new();
     for job in &jobs {
@@ -2750,6 +2762,12 @@ fn status_for_destination(
     status.progress = progress;
     if !policy.paused && matches!(state, State::Ready | State::Syncing) {
         status.upload_transfer = transfer;
+    }
+    if let Some(progress) = runner
+        .and_then(|runner| runner.backfill_progress.as_mut())
+        .filter(|progress| progress.matches(&policy) && progress.matches_grant(&session.grant_id))
+    {
+        progress.observe_transfers(&policy, &jobs, &entries)?;
     }
     if engine.session().is_none() {
         return Ok(Status {
@@ -3983,7 +4001,7 @@ async fn change_saved_upload_work(
                 ));
             }
             let retried = retry_saved_jobs(&store, host.spool()?, &policy, &still_authorized)?;
-            let mut read_status = |state, runner: Option<&Runner>| {
+            let mut read_status = |state, runner: Option<&mut Runner>| {
                 status_for_destination(
                     &store,
                     &mut host,

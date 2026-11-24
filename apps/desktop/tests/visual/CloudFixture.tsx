@@ -23,6 +23,7 @@ const teamName = "Example Team for Design, Documentation, and Developer Experien
 export function cloudFixture(name: string, refreshFolders?: () => void): CloudPort {
   const params = new URLSearchParams(window.location.search)
   const deferFolders = params.has("deferFolders")
+  const rollingProgress = params.has("rollingProgress")
   const partialSettingsFolders = params.has("partialSettingsFolders")
   const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
   const firstPersonalSaveFailure =
@@ -256,6 +257,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       status: "storage_unavailable",
       storageKnown: false,
     }
+  if (rollingProgress) ongoing = { ...ongoing, queuedCount: 0, acceptedCount: 0 }
   if (params.has("savedRecovery"))
     ongoing = { ...ongoing, automaticRecoveryCount: 1, retryAvailable: false }
   if (params.has("savedFolderFocus")) {
@@ -324,7 +326,11 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
           ...ongoing,
           status: "syncing",
           queuedCount: 3,
-          uploadProgress: { uploaded: 6, total: 96 },
+          uploadProgress: {
+            uploaded: 6,
+            total: 96,
+            transfer: { sentBytes: 1_000_000, totalBytes: 3_000_000 },
+          },
         }
       : ongoing
   return {
@@ -345,7 +351,18 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
             backfillInProgress: false,
             ...(name === "settings-attention" && {
               status: "syncing",
-              uploadProgress: { uploaded: 3, total: 8 },
+              uploadProgress: {
+                uploaded: 3,
+                total: 8,
+                transfer: { sentBytes: 0, totalBytes: null },
+              },
+            }),
+            ...(rollingProgress && {
+              uploadProgress: {
+                uploaded: 1,
+                total: 5,
+                transfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
+              },
             }),
           }
           listener(ongoingStatus())
@@ -354,17 +371,56 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         const updateTransfer = () => {
           ongoing = {
             ...ongoing,
-            uploadTransfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
+            status: "syncing",
+            automaticRecoveryCount: 0,
+            uploadProgress: {
+              uploaded: rollingProgress ? 2 : 3,
+              total: rollingProgress ? 5 : 8,
+              transfer: {
+                sentBytes: rollingProgress ? 17_000_000 : 12_000_000,
+                totalBytes: 85_000_000,
+              },
+            },
+            uploadTransfer: rollingProgress
+              ? { sentBytes: 2_000_000, totalBytes: 5_000_000 }
+              : { sentBytes: 12_000_000, totalBytes: 85_000_000 },
           }
           listener(ongoingStatus())
         }
         const finishTransfer = () => {
-          ongoing = { ...ongoing, status: "ready", uploadProgress: { uploaded: 8, total: 8 } }
+          ongoing = {
+            ...ongoing,
+            status: "ready",
+            queuedCount: 0,
+            automaticRecoveryCount: 0,
+            uploadProgress: {
+              uploaded: rollingProgress ? 5 : 8,
+              total: rollingProgress ? 5 : 8,
+              transfer: { sentBytes: 85_000_000, totalBytes: 85_000_000 },
+            },
+          }
           delete ongoing.uploadTransfer
+          listener(ongoingStatus())
+        }
+        const recoverTransfer = () => {
+          ongoing = {
+            ...ongoing,
+            status: "ready",
+            queuedCount: 1,
+            automaticRecoveryCount: 1,
+            retryAvailable: false,
+          }
+          delete ongoing.uploadTransfer
+          listener(ongoingStatus())
+        }
+        const failTransfer = () => {
+          ongoing = { ...ongoing, status: "offline", queuedCount: 1 }
           listener(ongoingStatus())
         }
         const transferEvent = "cloud-fixture:update-transfer"
         const transferDoneEvent = "cloud-fixture:finish-transfer"
+        const recoveryEvent = "cloud-fixture:recover-transfer"
+        const failureEvent = "cloud-fixture:fail-transfer"
         const updateQueue = () => {
           showQueueProgress = !showQueueProgress
           listener(ongoingStatus())
@@ -374,11 +430,15 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         window.addEventListener(queueEvent, updateQueue)
         window.addEventListener(transferEvent, updateTransfer)
         window.addEventListener(transferDoneEvent, finishTransfer)
+        window.addEventListener(recoveryEvent, recoverTransfer)
+        window.addEventListener(failureEvent, failTransfer)
         return () => {
           window.removeEventListener(event, finish)
           window.removeEventListener(queueEvent, updateQueue)
           window.removeEventListener(transferEvent, updateTransfer)
           window.removeEventListener(transferDoneEvent, finishTransfer)
+          window.removeEventListener(recoveryEvent, recoverTransfer)
+          window.removeEventListener(failureEvent, failTransfer)
         }
       },
       groups: async (_binding, after) => {
@@ -547,11 +607,32 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         if (policy?.accountId !== accountId || policy.policyRevision !== expectedPolicyRevision)
           throw new Error("Unexpected synthetic sync policy.")
         document.body.dataset.syncCalls = String(++syncCalls)
+        if (rollingProgress) {
+          ongoing = {
+            ...ongoing,
+            status: "syncing",
+            queuedCount: 1,
+            backfillInProgress: true,
+            uploadProgress: {
+              uploaded: 1,
+              found: 5,
+              total: null,
+              transfer: { sentBytes: 12_000_000, totalBytes: null },
+            },
+            uploadTransfer: { sentBytes: 7_000_000, totalBytes: 10_000_000 },
+          }
+          return ongoing
+        }
         if (name !== "settings-attention") return policy
         ongoing = {
           ...ongoing,
           backfillInProgress: true,
-          uploadProgress: { uploaded: 2, found: 436, total: null },
+          uploadProgress: {
+            uploaded: 2,
+            found: 436,
+            total: null,
+            transfer: { sentBytes: 0, totalBytes: null },
+          },
         }
         return ongoing
       },

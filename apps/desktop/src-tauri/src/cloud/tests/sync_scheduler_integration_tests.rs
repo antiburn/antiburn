@@ -58,6 +58,15 @@ const STATUS_REPLAY_DENIED: usize = 32;
 const CAPS_SMALL: usize = 33;
 const CURSOR_IDE: usize = 34;
 
+#[path = "sync_transfer_integration_tests.rs"]
+mod transfer_tests;
+
+fn session_progress(status: &Status) -> serde_json::Value {
+    let mut progress = serde_json::to_value(status).unwrap()["uploadProgress"].clone();
+    progress.as_object_mut().unwrap().remove("transfer");
+    progress
+}
+
 struct Service {
     origin: String,
     mode: Arc<AtomicUsize>,
@@ -893,7 +902,7 @@ fn codex_and_pi_scheduler_requires_folder_consent_and_advertised_formats() {
     fixture.turn_published(&mut unsupported);
     assert_eq!(unsupported[0].status, State::UploadUnavailable);
     assert_eq!(
-        serde_json::to_value(&unsupported[0]).unwrap()["uploadProgress"],
+        session_progress(&unsupported[0]),
         serde_json::json!({
             "uploaded": 0, "total": 2, "blocked": 0, "unsupported": 2,
             "scanIncomplete": false
@@ -926,7 +935,7 @@ fn codex_and_pi_scheduler_requires_folder_consent_and_advertised_formats() {
     fixture.turn_published(&mut unavailable);
     fixture.turn_published(&mut unavailable);
     assert_eq!(
-        serde_json::to_value(&unavailable[1]).unwrap()["uploadProgress"],
+        session_progress(&unavailable[1]),
         serde_json::json!({
             "uploaded": 0, "total": null, "blocked": 1, "unsupported": 0,
             "scanIncomplete": true
@@ -954,7 +963,7 @@ fn codex_and_pi_scheduler_requires_folder_consent_and_advertised_formats() {
     assert!(saved[0].upload_plan.is_none());
     fixture.turn_published(&mut observed);
     assert_eq!(
-        serde_json::to_value(&observed[1]).unwrap()["uploadProgress"],
+        session_progress(&observed[1]),
         serde_json::json!({
             "uploaded": 0, "total": 2, "blocked": 0, "unsupported": 2,
             "scanIncomplete": false
@@ -1001,7 +1010,7 @@ fn codex_and_pi_scheduler_requires_folder_consent_and_advertised_formats() {
         let result = observed.last().unwrap();
         assert!(!result.backfill_in_progress);
         assert_eq!(
-            serde_json::to_value(result).unwrap()["uploadProgress"],
+            session_progress(result),
             serde_json::json!({
                 "uploaded": 2, "total": null, "blocked": 0, "unsupported": 0,
                 "scanIncomplete": true
@@ -2408,7 +2417,7 @@ fn cloud_scheduler_accepted_opencode_observation_matches_captured_bytes_not_disc
     fixture.accept_first();
     fixture.turn_published(&mut observed);
     assert_eq!(
-        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"],
+        session_progress(observed.last().unwrap()),
         serde_json::json!({
             "uploaded": 1, "total": 1, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
@@ -2479,7 +2488,7 @@ fn cloud_scheduler_closes_refresh_when_a_previously_uploaded_source_disappears()
             .needs_refresh()
     );
     assert_eq!(
-        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"],
+        session_progress(observed.last().unwrap()),
         serde_json::json!({
             "uploaded": 0, "total": null, "blocked": 1, "unsupported": 0,
             "scanIncomplete": true
@@ -2569,7 +2578,7 @@ fn cloud_scheduler_cursor_chunked_capture_counts_after_integrity_acceptance() {
     let result = observed.last().unwrap();
     assert!(!result.backfill_in_progress);
     assert_eq!(
-        serde_json::to_value(result).unwrap()["uploadProgress"],
+        session_progress(result),
         serde_json::json!({
             "uploaded": 1, "total": 1, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
@@ -3796,7 +3805,7 @@ fn cloud_scheduler_backfill_stops_when_upload_capabilities_are_unavailable() {
     assert_eq!(observed[0].status, State::UploadUnavailable);
     assert!(!observed[0].backfill_in_progress);
     assert_eq!(
-        serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
+        session_progress(&observed[0]),
         serde_json::json!({
             "uploaded": 0, "total": null, "blocked": 0, "unsupported": 0,
             "scanIncomplete": true
@@ -3832,7 +3841,7 @@ fn cloud_scheduler_backfill_keeps_total_unknown_with_incomplete_project_evidence
     let result = observed.last().unwrap();
     assert!(!result.backfill_in_progress);
     assert_eq!(
-        serde_json::to_value(result).unwrap()["uploadProgress"],
+        session_progress(result),
         serde_json::json!({
             "uploaded": 1, "total": null, "blocked": 0, "unsupported": 0,
             "scanIncomplete": true
@@ -3883,7 +3892,7 @@ fn cloud_scheduler_backfill_reports_blocked_sources_and_drains_healthy_work() {
     assert!(!result.backfill_in_progress);
     assert_eq!(result.recovery_required_count, 1);
     assert_eq!(
-        serde_json::to_value(result).unwrap()["uploadProgress"],
+        session_progress(result),
         serde_json::json!({
             "uploaded": 1, "total": 3, "blocked": 2, "unsupported": 0,
             "scanIncomplete": false
@@ -3953,7 +3962,7 @@ fn cloud_scheduler_backfill_uses_healthy_paths_in_the_same_source_root() {
     }
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
     assert_eq!(
-        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"],
+        session_progress(observed.last().unwrap()),
         serde_json::json!({
             "uploaded": 1, "total": null, "blocked": 0, "unsupported": 0,
             "scanIncomplete": true
@@ -3985,7 +3994,7 @@ fn cloud_scheduler_backfill_removes_a_source_that_moves_outside_consent() {
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 0);
     assert!(!result.backfill_in_progress);
     assert_eq!(
-        serde_json::to_value(result).unwrap()["uploadProgress"],
+        session_progress(result),
         serde_json::json!({
             "uploaded": 0, "total": 0, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
@@ -4026,7 +4035,7 @@ fn cloud_scheduler_claude_append_before_pin_cannot_stamp_an_older_observation() 
     assert_eq!(observed.last().unwrap().status, State::Syncing);
     assert_eq!(observed.last().unwrap().interrupted_count, 0);
     assert_eq!(
-        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"],
+        session_progress(observed.last().unwrap()),
         serde_json::json!({
             "uploaded": 0, "total": 1, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
@@ -4118,7 +4127,7 @@ fn cloud_scheduler_backfill_does_not_reoffer_a_saved_job_accepted_during_the_sca
         &[saved.identity]
     );
     assert_eq!(
-        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"],
+        session_progress(observed.last().unwrap()),
         serde_json::json!({
             "uploaded": 1, "total": 1, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
@@ -4264,7 +4273,7 @@ fn cloud_scheduler_backfill_only_offers_new_and_changed_sources() {
     fixture.turn_published(&mut observed);
     assert!(observed[0].backfill_in_progress);
     assert_eq!(
-        serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
+        session_progress(&observed[0]),
         serde_json::json!({
             "uploaded": 1, "total": null, "found": 3, "blocked": 0,
             "unsupported": 0, "scanIncomplete": false
@@ -4279,7 +4288,7 @@ fn cloud_scheduler_backfill_only_offers_new_and_changed_sources() {
     fixture.turn_published(&mut observed);
     assert!(!observed[0].backfill_in_progress);
     assert_eq!(
-        serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
+        session_progress(&observed[0]),
         serde_json::json!({
             "uploaded": 3, "total": 3, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
@@ -4382,7 +4391,7 @@ fn cloud_scheduler_backfill_accounts_for_96_sources_across_pages() {
     let result = observed.last().unwrap();
     assert!(!result.backfill_in_progress);
     assert_eq!(
-        serde_json::to_value(result).unwrap()["uploadProgress"],
+        session_progress(result),
         serde_json::json!({
             "uploaded": 95, "total": 96, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false

@@ -326,6 +326,12 @@ export interface CloudOngoingStatus {
     blocked?: number
     unsupported?: number
     scanIncomplete?: boolean
+    /** Required compressed bytes across this scan, retained after acceptance.
+     * Matching receipts from before the scan add no new bytes. The total stays
+     * null until discovery and all required plans are known. Sent bytes follow
+     * current receipts and can decrease if provisional parts expire.
+     */
+    transfer?: { sentBytes: number; totalBytes: number | null }
   }
   /** Confirmed compressed bytes for one queued upload, not the total for all folders. */
   uploadTransfer?: { sentBytes: number; totalBytes: number }

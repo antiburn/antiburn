@@ -1,6 +1,6 @@
 import type { CloudOngoingStatus } from "../../lib/cloud"
+import { uploadProgressMessage } from "./CloudSyncActivity"
 
-const sessionCountFormat = new Intl.NumberFormat()
 const unavailableSyncStatus: Partial<Record<CloudOngoingStatus["status"], string>> = {
   offline: "Cloud offline",
   route_denied: "Workspace denied uploads",
@@ -26,17 +26,15 @@ export function savedUploadDisplayState(policy: CloudOngoingStatus) {
     : policy.status
 }
 
-/** Report one idle result. Never add counts from separate workspace scans. */
+/** Keep the last scan counters visible unless access, storage, or consent blocks them. */
 export function idleSyncMessage({
   policies,
   deviceEnabled,
-  checkingStatus,
   workspaceUnavailable,
   hasError,
 }: {
   policies: readonly CloudOngoingStatus[]
   deviceEnabled: boolean | undefined
-  checkingStatus: boolean | undefined
   workspaceUnavailable: boolean
   hasError: boolean
 }) {
@@ -53,10 +51,7 @@ export function idleSyncMessage({
 
   for (const policy of policies) {
     const unavailable = unavailableSyncStatus[savedUploadDisplayState(policy)]
-    if (unavailable)
-      return checkingStatus && policy.status === "storage_unavailable"
-        ? "Checking saved uploads…"
-        : unavailable
+    if (unavailable) return unavailable
   }
   const enabled = policies.filter(
     ({ consentVersion, projects }) =>
@@ -68,18 +63,12 @@ export function idleSyncMessage({
   if (deviceEnabled !== true) return "Checking folder sync…"
   const current = enabled.filter(({ storageKnown, paused }) => storageKnown && !paused)
   if (!current.length) return "Status unavailable"
-  if (current.some(onlyAutomaticRecovery)) return "Checking saved uploads…"
-  if (enabled.length === 1 && current.length === 1) {
-    const progress = current[0]?.uploadProgress
-    if (progress?.scanIncomplete) return "Folder scan incomplete"
-    if (progress?.total === 0) return "No sessions found to sync."
-    if (progress && progress.uploaded > 0) {
-      const { uploaded, total } = progress
-      const count = sessionCountFormat.format(uploaded)
-      if (total != null && total > uploaded)
-        return `${count} of ${sessionCountFormat.format(total)} sessions uploaded`
-      return `${count} ${uploaded === 1 ? "session" : "sessions"} uploaded`
-    }
-  }
+  const phase = current.some(onlyAutomaticRecovery)
+    ? "Checking saved uploads"
+    : current.some((policy) => policy.uploadProgress?.scanIncomplete)
+      ? "Folder scan incomplete"
+      : undefined
+  const progress = uploadProgressMessage(current, phase)
+  if (progress) return progress
   return "Folder sync enabled"
 }

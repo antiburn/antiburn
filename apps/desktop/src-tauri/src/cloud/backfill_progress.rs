@@ -1,8 +1,9 @@
-//! Count sessions in one explicit backfill without using historical job totals.
+//! Count sessions and transfer bytes in one explicit backfill.
 
-use super::{Job, Policy, Selection, State, Status, Store};
+use super::{Job, JobState, Policy, Selection, State, Status, Store};
+use antiburn_cloud_capture::{CaptureState, QueueEntry, TransferProgress};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 const MAX_TRACKED_SOURCES: usize = 4096;
@@ -19,10 +20,20 @@ pub(super) struct UploadProgress {
     blocked: usize,
     unsupported: usize,
     scan_incomplete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transfer: Option<ScanTransfer>,
 }
 
-/// Track only observed sources for the current backfill. No source identity
-/// leaves this tracker. A full tracker cannot prove a completed total.
+/// Required compressed bytes for this scan, including its accepted captures.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanTransfer {
+    sent_bytes: u64,
+    total_bytes: Option<u64>,
+}
+
+/// Track one backfill with at most 4,096 sources and 4,096 capture counters.
+/// No source identity leaves this tracker. A full tracker cannot prove a total.
 pub(super) struct BackfillProgress {
     account: String,
     destination: String,
@@ -30,6 +41,7 @@ pub(super) struct BackfillProgress {
     revision: String,
     grant_id: String,
     sources: BTreeMap<String, Source>,
+    transfers: BTreeMap<String, CaptureTransfer>,
     decisions: BTreeMap<&'static str, usize>,
     last_report: Option<Instant>,
     reported_complete: bool,
@@ -42,6 +54,15 @@ struct Source {
     uploaded: bool,
     problem: Option<SourceProblem>,
     refresh_needed: bool,
+}
+
+/// Keep only identities, observations, and counters after accepted bytes leave the spool.
+struct CaptureTransfer {
+    source_id: String,
+    observation: String,
+    sent_bytes: u64,
+    total_bytes: Option<u64>,
+    accepted: bool,
 }
 
 /// Why a discovered source cannot upload on its current turn.
@@ -60,6 +81,7 @@ impl BackfillProgress {
             revision: policy.revision.clone(),
             grant_id: grant_id.into(),
             sources: BTreeMap::new(),
+            transfers: BTreeMap::new(),
             decisions: BTreeMap::new(),
             last_report: None,
             reported_complete: false,
@@ -110,6 +132,8 @@ impl BackfillProgress {
             match store.cloud_sync_source(&self.account, &self.destination, resource, id) {
                 Ok(Some(receipt)) if receipt.suppressed => {
                     self.sources.remove(id);
+                    self.transfers
+                        .retain(|_, transfer| transfer.source_id != id);
                     suppressed += 1;
                 }
                 Ok(receipt) => {
@@ -156,6 +180,79 @@ impl BackfillProgress {
                 *self.decisions.entry(reason).or_default() += count;
             }
         }
+    }
+
+    /// Replace active counters with the current spool snapshot. Accepted counters
+    /// remain after acknowledgement. Missing or expired parts cannot keep old credit.
+    pub(super) fn observe_transfers(
+        &mut self,
+        policy: &Policy,
+        jobs: &[Job],
+        entries: &[QueueEntry],
+    ) -> Result<(), &'static str> {
+        self.transfers.retain(|_, transfer| transfer.accepted);
+        for entry in entries {
+            let Some(job) = jobs
+                .iter()
+                .find(|job| job.identity == entry.identity && job.allowed(policy))
+            else {
+                continue;
+            };
+            if entry.state != CaptureState::Cancelled {
+                self.observe_transfer(
+                    job,
+                    &entry
+                        .progress()
+                        .map_err(|_| "Could not read saved capture progress.")?,
+                    entry.state == CaptureState::Accepted,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Save validated counters for the exact job and capture snapshot. Call before
+    /// acknowledging acceptance, including when discovery has not found the source.
+    /// An older terminal job cannot add historical bytes to a new scan.
+    pub(super) fn observe_transfer(
+        &mut self,
+        job: &Job,
+        progress: &TransferProgress,
+        accepted: bool,
+    ) {
+        if !self.matches_job(job)
+            || (job.state == JobState::Accepted
+                && !self.transfers.contains_key(&job.identity.capture_id))
+            || (self.finished
+                && self
+                    .sources
+                    .get(&job.identity.source_id)
+                    .is_none_or(|source| {
+                        source.uploaded
+                            && !source.refresh_needed
+                            && source.observation != job.observation_key
+                    }))
+        {
+            return;
+        }
+        if self.transfers.len() == MAX_TRACKED_SOURCES
+            && !self.transfers.contains_key(&job.identity.capture_id)
+        {
+            self.mark_incomplete();
+            return;
+        }
+        self.transfers.insert(
+            job.identity.capture_id.clone(),
+            CaptureTransfer {
+                source_id: job.identity.source_id.clone(),
+                observation: job.observation_key.clone(),
+                sent_bytes: progress.confirmed_upload_bytes,
+                total_bytes: progress
+                    .negotiated
+                    .then_some(progress.required_transfer_bytes),
+                accepted,
+            },
+        );
     }
 
     /// Record one closed reason for release diagnostics without logging a source ID.
@@ -218,6 +315,8 @@ impl BackfillProgress {
         match store.cloud_sync_source(&self.account, &self.destination, resource, id) {
             Ok(Some(receipt)) if receipt.suppressed => {
                 self.sources.remove(id);
+                self.transfers
+                    .retain(|_, transfer| &transfer.source_id != id);
                 tracing::debug!(
                     event = "cloud_backfill_receipt_outcome",
                     outcome = "suppressed"
@@ -269,7 +368,12 @@ impl BackfillProgress {
     }
 
     pub(super) fn observe_suppression(&mut self, job: &Job) {
-        if self.matches_job(job) && self.sources.remove(&job.identity.source_id).is_some() {
+        if !self.matches_job(job) {
+            return;
+        }
+        self.transfers
+            .retain(|_, transfer| transfer.source_id != job.identity.source_id);
+        if self.sources.remove(&job.identity.source_id).is_some() {
             tracing::debug!(
                 event = "cloud_backfill_receipt_outcome",
                 outcome = "suppressed"
@@ -279,6 +383,8 @@ impl BackfillProgress {
 
     /// Remove a source whose current recorded folders are all outside consent.
     pub(super) fn observe_exclusion(&mut self, source_id: &str) {
+        self.transfers
+            .retain(|_, transfer| transfer.source_id != source_id);
         if self.sources.remove(source_id).is_some() {
             tracing::debug!(
                 event = "cloud_backfill_receipt_outcome",
@@ -299,6 +405,8 @@ impl BackfillProgress {
 
     pub(super) fn finish(&mut self) {
         self.finished = true;
+        self.transfers
+            .retain(|_, transfer| self.sources.contains_key(&transfer.source_id));
         self.log_scan_outcome("finished");
     }
 
@@ -357,6 +465,37 @@ impl BackfillProgress {
         (uploaded, blocked, unsupported)
     }
 
+    /// A final total needs complete discovery and a current plan for every source
+    /// without a matching receipt. Earlier accepted versions retain only their work.
+    fn transfer_status(&self, scan_active: bool) -> Option<ScanTransfer> {
+        let mut sent_bytes = 0_u64;
+        let mut total_bytes = Some(0_u64);
+        let mut planned_sources = BTreeSet::new();
+        for transfer in self.transfers.values() {
+            let Some(source) = self.sources.get(&transfer.source_id) else {
+                continue;
+            };
+            sent_bytes = sent_bytes.checked_add(transfer.sent_bytes)?;
+            total_bytes = total_bytes
+                .zip(transfer.total_bytes)
+                .and_then(|(total, bytes)| total.checked_add(bytes));
+            if !transfer.accepted
+                && transfer.total_bytes.is_some()
+                && transfer.observation == source.observation
+            {
+                planned_sources.insert(transfer.source_id.as_str());
+            }
+        }
+        let plans_known = self.sources.iter().all(|(id, source)| {
+            source.uploaded || (!source.refresh_needed && planned_sources.contains(id.as_str()))
+        });
+        Some(ScanTransfer {
+            sent_bytes,
+            total_bytes: total_bytes
+                .filter(|_| self.finished && !self.incomplete && !scan_active && plans_known),
+        })
+    }
+
     /// Only share counts for the exact saved policy and a current storage read.
     pub(super) fn status(&self, status: &Status) -> Option<UploadProgress> {
         (status.storage_known
@@ -376,7 +515,12 @@ impl BackfillProgress {
                 blocked,
                 unsupported,
                 scan_incomplete: self.incomplete,
+                transfer: self.transfer_status(status.backfill_in_progress),
             }
         })
     }
 }
+
+#[cfg(test)]
+#[path = "tests/backfill_progress_tests.rs"]
+mod tests;
