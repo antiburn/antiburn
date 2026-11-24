@@ -1124,6 +1124,20 @@ fn a_presence_request_is_bounded_by_the_list_row_limit() {
 }
 
 #[test]
+fn get_settings_reads_the_snapshot_without_a_database_connection() {
+    let source = include_str!("mod.rs").replace("\r\n", "\n");
+    let body = source
+        .split_once(
+            "pub async fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {",
+        )
+        .and_then(|(_, rest)| rest.split_once("\n}"))
+        .map(|(body, _)| body.trim())
+        .expect("the settings command exists");
+
+    assert_eq!(body, "Ok(app.state::<Store>().settings_snapshot())");
+}
+
+#[test]
 fn get_live_sessions_keeps_its_signature() {
     let source = include_str!("mod.rs").replace("\r\n", "\n");
     for checkout in [source.clone(), source.replace('\n', "\r\n")] {

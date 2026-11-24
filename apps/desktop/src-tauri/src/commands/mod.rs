@@ -378,14 +378,10 @@ pub fn restart_to_update(app: tauri::AppHandle) -> CommandResult<()> {
  * Settings
  * ---------------------------------------------------------------------- */
 
-/// Every persisted preference.
-///
-/// Windows wait for this before they ask for their data, so it reads through
-/// [`crate::UiReadStore`] and does not wait for the writer.
+/// Return the last committed preferences without locking either database connection.
 #[tauri::command]
 pub async fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
-    let store = app.state::<crate::UiReadStore>().0.clone();
-    run_blocking(move || store.settings().map_err(fail)).await
+    Ok(app.state::<Store>().settings_snapshot())
 }
 
 #[tauri::command]

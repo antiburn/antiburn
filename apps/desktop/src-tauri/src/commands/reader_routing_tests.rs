@@ -287,21 +287,3 @@ fn recent_activity_entries_do_not_wait_for_the_writer_lock() {
         .expect("the reader lists sessions while the writer is locked");
     assert_eq!(entries.len(), 1);
 }
-
-#[test]
-fn settings_show_a_save_at_once_and_do_not_wait_for_the_writer_lock() {
-    let (_directory, writer) = file_backed_store();
-    let reader = writer
-        .open_reader(Duration::from_millis(100))
-        .expect("opens a reader");
-    let mut settings = reader.settings().expect("reads the defaults");
-    settings.activity_window_days += 1;
-    writer.save_settings(&settings).expect("saves settings");
-
-    let held = writer.lock();
-    held.execute_batch("BEGIN IMMEDIATE")
-        .expect("starts a writer transaction");
-    assert_eq!(reader.settings().expect("reads the save"), settings);
-    held.execute_batch("ROLLBACK")
-        .expect("ends the transaction");
-}
