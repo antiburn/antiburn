@@ -9,10 +9,15 @@ use crate::{
     },
 };
 use antiburn_cloud_capture::{
-    Candidate, Limits, ProjectSelection, discover_claude, discover_claude_page, discover_opencode,
-    discover_opencode_page,
+    Candidate, CaptureSourceKind, Limits, ProjectSelection, discover_claude, discover_claude_page,
+    discover_opencode, discover_opencode_page,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+const OPENCODE_DIGEST_SLICE: Duration = Duration::from_millis(250);
 
 /// One admitted candidate with only native recorded project evidence.
 pub(super) struct Selection {
@@ -83,17 +88,30 @@ pub(in crate::cloud) fn metadata_limits() -> Limits {
 /// Share a 512-entry budget across the remaining roots in one sweep page.
 /// Use provider source keys, not file age or the desktop activity date range.
 /// Keep bad sessions visible without discarding healthy selections or the cursor.
+/// Yield between OpenCode exports so other Cloud work can use the worker.
 pub(super) fn discover_policy_page(
     policy: &Policy,
     current: &dyn Fn() -> bool,
     cache: &mut projects::Cache,
     cursor: &DiscoveryCursor,
 ) -> Result<(Vec<Selection>, Option<DiscoveryCursor>, DiscoveryCoverage), String> {
+    discover_policy_page_with_clock(policy, current, cache, cursor, Instant::now)
+}
+
+/// Read a sweep page. The clock measures the OpenCode digest budget for the turn.
+pub(super) fn discover_policy_page_with_clock(
+    policy: &Policy,
+    current: &dyn Fn() -> bool,
+    cache: &mut projects::Cache,
+    cursor: &DiscoveryCursor,
+    now: impl Fn() -> Instant,
+) -> Result<(Vec<Selection>, Option<DiscoveryCursor>, DiscoveryCoverage), String> {
     cache.begin_scan();
     let mut repository_lookups = RepositoryLookups::default();
     let mut selected = Vec::new();
     let mut discovered = 0usize;
     let mut coverage = DiscoveryCoverage::default();
+    let mut opencode_digest_deadline = None;
     for (index, root) in policy.roots.iter().enumerate().skip(cursor.root) {
         if !current() {
             return Err("Cloud account changed.".into());
@@ -278,6 +296,25 @@ pub(super) fn discover_policy_page(
             if !current() {
                 return Err("Cloud upload controls changed.".into());
             }
+            if candidate.source_kind() == CaptureSourceKind::OpenCodeSqliteV2 {
+                let now = now();
+                if now >= *opencode_digest_deadline.get_or_insert(now + OPENCODE_DIGEST_SLICE) {
+                    // One export can run past the budget. Keep the first unread
+                    // source on the next page instead of reporting a gap.
+                    coverage.opencode_slice_yielded = true;
+                    return Ok((
+                        selected,
+                        Some(DiscoveryCursor {
+                            root: index,
+                            after: previous_key,
+                            repository_lookup: pending_lookup
+                                .filter(|pending| pending.source_id == candidate.source_id())
+                                .cloned(),
+                        }),
+                        coverage,
+                    ));
+                }
+            }
             let observation = match candidate_observation(
                 &candidate,
                 &evidence,
@@ -366,6 +403,7 @@ mod repository_paging_tests {
 pub(super) struct DiscoveryCoverage {
     pub(super) blocked: bool,
     pub(super) partial: bool,
+    pub(super) opencode_slice_yielded: bool,
 }
 
 /// Compare a fresh source generation and bounded metadata digest with the fixed
@@ -375,14 +413,14 @@ fn candidate_observation(
     evidence: &antiburn_cloud_capture::ProjectEvidence,
     projects: &antiburn_cloud_capture::ProjectSelection,
 ) -> Result<String, String> {
-    if candidate.source_kind() == antiburn_cloud_capture::CaptureSourceKind::OpenCodeSqliteV2 {
+    if candidate.source_kind() == CaptureSourceKind::OpenCodeSqliteV2 {
         return candidate
             .opencode_content_digest(&metadata_limits(), projects)
             .map(|digest| format!("opencode-native-v1:{digest}"))
             .map_err(|_| "Could not check the approved session's native content.".into());
     }
     #[cfg(unix)]
-    if candidate.source_kind() == antiburn_cloud_capture::CaptureSourceKind::CursorIdeComposer {
+    if candidate.source_kind() == CaptureSourceKind::CursorIdeComposer {
         return candidate
             .cursor_content_digest(&metadata_limits(), projects)
             .map(|digest| format!("cursor-ide-native-v1:{digest}"))

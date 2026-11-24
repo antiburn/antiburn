@@ -494,15 +494,16 @@ sets the next discovery time 60 seconds ahead. After an
 upgrade, an unchanged Claude, Codex, or Pi file can be offered again if its
 receipt uses the old observation format. That receipt does not prove a match with
 `file-generation-v1`, so the re-offer can require more capture and transfer work.
-Desktop lets one scan request wait for its current Cloud work to finish.
-If another request is already waiting, wait for it to start before requesting a
-second scan. Before scheduling, Desktop checks the account, upload controls, and
-saved folder policy again.
+Desktop lets one scan request wait up to five seconds for its Cloud worker.
+If the worker stays busy, the request does not start. Try again when the
+worker is free. Before scheduling, Desktop checks the account, upload controls,
+and saved folder policy again.
 The full scan starts at the first retained source key and reads bounded pages.
 The desktop activity date range does not limit this scan. When the Claude
-metadata read budget is reached, the scan continues from the first unread
-source on a later turn. An unavailable source root or approved folder does not
-stop work in other verified folders. The scan reports a gap.
+metadata read budget or OpenCode content check budget is reached, the scan
+continues from the first unread source on a later turn. An unavailable source
+root or approved folder does not stop work in other verified folders. The
+scan reports a gap.
 The scan cannot recover history the coding tool removed, use files outside
 approved source roots, or read sources that exceed the provider limits.
 Settings shows when the scan is active. The scan can finish before Cloud
@@ -526,6 +527,11 @@ format is unsupported. These two counts exclude versions with matching
 acceptance receipts. Neither the counts nor `total - uploaded` show the number
 of saved upload jobs.
 Settings does not show a percentage without a known nonzero total.
+While a scan is active, `found` can report how many matching sessions Desktop
+has found so far. It is not a final total. If Desktop can identify one current
+upload, `uploadTransfer` reports confirmed compressed bytes and the bytes the
+service requires for that upload. It does not count reused bytes or prove that
+Cloud accepted the session.
 `recoveryRequiredCount` identifies missing or incomplete local captures that
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings

@@ -19,7 +19,7 @@ use crate::store::{
         },
     },
 };
-use antiburn_cloud_capture::{CaptureState, QueueEntry, TransferProgress, Transport as _};
+use antiburn_cloud_capture::{CaptureState, QueueEntry, Transport as _};
 #[cfg(all(test, unix))]
 use antiburn_cloud_capture::{Limits, MetadataSections, discover_claude, discover_opencode};
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,8 @@ mod git_checkout;
 mod project_directories;
 mod repository_capture;
 mod repository_policy;
+mod scheduler_tick;
+mod transfer_progress;
 use repository_policy::{
     has_folders, revoke_repository, saved_folders, saved_team_folder_id, team_policy_status,
 };
@@ -61,6 +63,8 @@ use discovery::{
 pub(super) use discovery::{discover_root_page, metadata_limits, source_observation};
 use folder_move::{verify_project_move, verify_project_move_to_new_policy};
 use project_directories::{exact_project_directories, validate_project_directories};
+pub(super) use scheduler_tick::start;
+use transfer_progress::{Progress, UploadTransfer, saved_transfer_progress};
 
 const RESERVATION_RETRY_DELAY: Duration = Duration::from_secs(15);
 const INTEGRITY_POLL_DELAY: Duration = Duration::from_secs(5);
@@ -141,27 +145,6 @@ pub(crate) enum State {
     StorageUnavailable,
 }
 
-/// Confirmed compressed-byte counters for the current account's saved entries.
-#[derive(Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Progress {
-    negotiated: bool,
-    total_compressed_bytes: u64,
-    required_transfer_bytes: u64,
-    reused_bytes: u64,
-    confirmed_upload_bytes: u64,
-}
-
-impl Progress {
-    fn add(&mut self, value: TransferProgress) {
-        self.negotiated &= value.negotiated;
-        self.total_compressed_bytes += value.total_compressed_bytes;
-        self.required_transfer_bytes += value.required_transfer_bytes;
-        self.reused_bytes += value.reused_bytes;
-        self.confirmed_upload_bytes += value.confirmed_upload_bytes;
-    }
-}
-
 /// Account-bound renderer state. It contains no capture IDs, payload, signed
 /// URLs, service diagnostics, credentials, or authority to read content.
 #[derive(Clone, Default, Serialize)]
@@ -199,6 +182,8 @@ pub(crate) struct Status {
     backfill_in_progress: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     upload_progress: Option<UploadProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upload_transfer: Option<UploadTransfer>,
     selected_sources: Vec<SourceSelection>,
     projects: Vec<ProjectSelection>,
     project_choices: BTreeMap<String, bool>,
@@ -226,6 +211,7 @@ impl Status {
         self.backfill_in_progress &= enabled;
         if !enabled {
             self.upload_progress = None;
+            self.upload_transfer = None;
             self.automatic_recovery_count = None;
         }
         if !enabled && self.consent_version.is_some() {
@@ -286,6 +272,7 @@ struct Runner {
     retry_grant: Option<RetryGrant>,
     binding: Option<(String, String, Option<String>, String)>,
     discovery_cursor: Option<DiscoveryCursor>,
+    continue_discovery: bool,
     backfill_revision: Option<String>,
     backfill_progress: Option<BackfillProgress>,
     backfill_page: bool,
@@ -300,6 +287,12 @@ struct Runner {
     last_status: Option<Status>,
     last_status_origin: Option<String>,
     repository_migration: Option<(String, Instant)>,
+}
+
+enum DiscoveryRefresh {
+    Unchanged,
+    ReadPage,
+    YieldedOpenCodeSlice,
 }
 
 struct RetryGrant {
@@ -357,126 +350,30 @@ impl Scheduler {
     }
 }
 
-/// Start once from Cloud initialization, regardless of renderer lifetime.
-/// Only one blocking closure may run at a time. Busy turns wait for the next tick.
-pub(super) fn start(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let wake = app.state::<Controller>().sync.wake.clone();
-            tokio::select! {
-                _ = wake.notified() => {},
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {},
-            }
-            let work = app.state::<Controller>().blocking.clone();
-            let content_generation = app
-                .state::<Controller>()
-                .sync
-                .generation
-                .load(Ordering::Acquire);
-            let worker_app = app.clone();
-            let _ = work
-                .run(Priority::Normal, move || {
-                    let controller = worker_app.state::<Controller>();
-                    let mut engine = controller
-                        .engine
-                        .lock()
-                        .map_err(|_| "Cloud is unavailable.")?;
-                    let mut runner = controller
-                        .sync
-                        .runner
-                        .lock()
-                        .map_err(|_| "Cloud sync is unavailable.")?;
-                    let store = worker_app.state::<Store>();
-                    let setup_failed = ensure_cloud_setup(&controller.setup_ready, &store).is_err();
-                    let account_generation = controller.account_generation.load(Ordering::Acquire);
-                    let engine_generation = engine.generation;
-                    let current = || {
-                        controller.account_generation.load(Ordering::Acquire) == account_generation
-                            && controller.sync.generation.load(Ordering::Acquire)
-                                == content_generation
-                    };
-                    let account_current = || {
-                        engine_generation == account_generation
-                            && controller.account_generation.load(Ordering::Acquire)
-                                == account_generation
-                    };
-                    let upload_current = || controller.sync.device_admission_open() && current();
-                    let device_enabled = if setup_failed {
-                        Err("Could not read Cloud upload controls.".into())
-                    } else {
-                        controller.sync.device_upload_enabled(&store)
-                    };
-                    let mut host = controller
-                        .capture
-                        .lock()
-                        .map_err(|_| "Session capture is unavailable.")?;
-                    let mut project_cache = controller
-                        .project_cache
-                        .lock()
-                        .map_err(|_| "Project discovery is unavailable.")?;
-                    let failed = device_enabled.is_err()
-                        || runner
-                            .turn(
-                                &store,
-                                &mut host,
-                                &mut engine,
-                                &upload_current,
-                                &account_current,
-                                &mut project_cache,
-                            )
-                            .is_err();
-                    if current() {
-                        runner.report_status(
-                            &store,
-                            &mut host,
-                            &engine,
-                            failed,
-                            &account_current,
-                            |status| {
-                                emit_status(
-                                    &worker_app,
-                                    status.with_device_upload_enabled(matches!(
-                                        device_enabled,
-                                        Ok(true)
-                                    )),
-                                );
-                            },
-                        );
-                        super::emit_snapshot(&worker_app, super::snapshot(&worker_app, &engine));
-                    }
-                    if matches!(device_enabled, Ok(true)) && upload_current() && account_current() {
-                        turn_team_workspace(
-                            &worker_app,
-                            &store,
-                            &mut engine,
-                            &mut host,
-                            &mut project_cache,
-                            &upload_current,
-                            &account_current,
-                        )?;
-                    }
-                    Ok(())
-                })
-                .await;
-        }
-    });
-}
-
-/// Run one exact Team policy per tick using the account engine. Old policies
-/// without a membership generation are visible, but never enter this runner.
+/// Run one exact Team policy per tick. On a short tick, run only a pending
+/// discovery continuation and check fresh membership before using it.
 fn turn_team_workspace(
     app: &tauri::AppHandle,
     store: &Store,
     engine: &mut Engine,
     host: &mut capture::Host,
     cache: &mut super::projects::Cache,
-    current: &dyn Fn() -> bool,
-    account_current: &dyn Fn() -> bool,
-) -> Result<(), String> {
+    fences: (&dyn Fn() -> bool, &dyn Fn() -> bool),
+    regular_tick: bool,
+) -> Result<bool, String> {
+    let (current, account_current) = fences;
     let controller = app.state::<Controller>();
     let Some(session) = engine.session().cloned() else {
-        return Ok(());
+        return Ok(false);
     };
+    let mut runners = controller
+        .sync
+        .team_runners
+        .lock()
+        .map_err(|_| "Cloud sync is unavailable.")?;
+    if !regular_tick && !runners.values().any(Runner::discovery_continuation_due) {
+        return Ok(false);
+    }
     let policies = store
         .saved_team_sync_policies(
             &session.user.id,
@@ -485,26 +382,28 @@ fn turn_team_workspace(
             &session.iss,
         )
         .map_err(|_| "Could not read team folder consent.")?;
-    let mut runners = controller
-        .sync
-        .team_runners
-        .lock()
-        .map_err(|_| "Cloud sync is unavailable.")?;
     if !policies.iter().any(|policy| {
         policy.membership_generation.is_some() && !policy.paused && has_folders(policy)
     }) {
         runners.clear();
-        return Ok(());
+        return Ok(false);
     }
     let binding = DestinationBinding {
         account_id: session.user.id.clone(),
         destination_id: session.workspace.id.clone(),
     };
+    let engine_generation = engine.generation;
     let eligible = engine.eligible_workspaces(&binding, account_current);
     if !current() {
-        return Ok(());
+        return Ok(false);
     }
-    let destinations = verified_team_turns(
+    if eligible.is_err() {
+        // A Personal continuation must not repeat a failed Team proof.
+        for runner in runners.values_mut() {
+            runner.continue_discovery = false;
+        }
+    }
+    let mut destinations = verified_team_turns(
         &policies,
         &session,
         &mut runners,
@@ -515,8 +414,15 @@ fn turn_team_workspace(
             }
         },
     );
+    if !regular_tick {
+        destinations.retain(|policy| {
+            runners
+                .get(&(session.user.id.clone(), policy.destination_id.clone()))
+                .is_some_and(Runner::discovery_continuation_due)
+        });
+    }
     if destinations.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let mut cursor = controller
         .sync
@@ -532,9 +438,11 @@ fn turn_team_workspace(
                 .is_none_or(|previous| &policy.destination_id > previous)
         })
         .unwrap_or(destinations[0]);
-    *cursor = Some(policy.destination_id.clone());
+    if regular_tick {
+        *cursor = Some(policy.destination_id.clone());
+    }
     let Some(generation) = &policy.membership_generation else {
-        return Ok(());
+        return Ok(false);
     };
     let runner = runners
         .entry((session.user.id.clone(), policy.destination_id.clone()))
@@ -546,8 +454,18 @@ fn turn_team_workspace(
             ..Runner::default()
         };
     }
+    let proof = eligible.as_deref().ok().and_then(|entries| {
+        TeamTurnProof::for_policy(&session, engine_generation, policy, entries)
+    });
     let failed = runner
-        .turn(store, host, engine, current, account_current, cache)
+        .turn(
+            store,
+            host,
+            engine,
+            current,
+            (account_current, proof),
+            cache,
+        )
         .is_err();
     let live = runner.report_status(store, host, engine, failed, account_current, |_| {});
     if current()
@@ -561,7 +479,7 @@ fn turn_team_workspace(
                 .with_device_upload_enabled(true),
         );
     }
-    Ok(())
+    Ok(!failed && runner.discovery_continuation_due())
 }
 
 /// A failed lookup is not evidence of removal. Keep scheduling state only for
@@ -631,6 +549,44 @@ fn team_has_proof(policy: &Policy, entries: &[auth::EligibleWorkspace]) -> bool 
         })
 }
 
+/// Reuse the selected Team's membership only within the turn that fetched it.
+struct TeamTurnProof<'a> {
+    session: &'a auth::Session,
+    engine_generation: u64,
+    policy: &'a Policy,
+}
+
+impl<'a> TeamTurnProof<'a> {
+    /// Create proof only for the selected destination and membership generation.
+    fn for_policy(
+        session: &'a auth::Session,
+        engine_generation: u64,
+        policy: &'a Policy,
+        entries: &[auth::EligibleWorkspace],
+    ) -> Option<Self> {
+        (policy.account_id == session.user.id
+            && policy.resource_origin.as_deref() == Some(session.resource.as_str())
+            && policy.issuer_origin.as_deref() == Some(session.iss.as_str())
+            && team_has_proof(policy, entries))
+        .then_some(Self {
+            session,
+            engine_generation,
+            policy,
+        })
+    }
+
+    /// Check the grant and exact route again after refresh and policy reload.
+    fn matches(&self, session: &auth::Session, engine_generation: u64, policy: &Policy) -> bool {
+        self.engine_generation == engine_generation
+            && self.session.same_grant(session)
+            && self.policy.account_id == policy.account_id
+            && self.policy.resource_origin == policy.resource_origin
+            && self.policy.issuer_origin == policy.issuer_origin
+            && self.policy.destination_id == policy.destination_id
+            && self.policy.membership_generation == policy.membership_generation
+    }
+}
+
 /// Do not present retained counters as authority to retry after a failed lookup.
 fn team_lookup_failed(policy: &Policy, live: Option<Status>, error: auth::Failure) -> Status {
     let mut status = team_policy_status(policy, live, None);
@@ -640,6 +596,7 @@ fn team_lookup_failed(policy: &Policy, live: Option<Status>, error: auth::Failur
     };
     status.retry_available = false;
     status.upload_progress = None;
+    status.upload_transfer = None;
     status
 }
 
@@ -740,6 +697,15 @@ fn emit_status(app: &tauri::AppHandle, status: Status) -> Status {
 }
 
 impl Runner {
+    /// Continue only a drained slice with an unread source. A control change can
+    /// clear the cursor between the turn that requested this and the short tick.
+    fn discovery_continuation_due(&self) -> bool {
+        self.continue_discovery
+            && self.discovery_cursor.is_some()
+            && self.candidates.is_empty()
+            && self.state != State::StorageUnavailable
+    }
+
     fn has_retry_grant(&self, session: &auth::Session, destination: &str) -> bool {
         self.retry_grant.as_ref().is_some_and(|grant| {
             grant.account_id == session.user.id
@@ -968,9 +934,9 @@ impl Runner {
         policy: &Policy,
         current: &dyn Fn() -> bool,
         cache: &mut super::projects::Cache,
-    ) -> bool {
+    ) -> DiscoveryRefresh {
         if !current() {
-            return false;
+            return DiscoveryRefresh::Unchanged;
         }
         let binding = (
             policy.account_id.clone(),
@@ -1003,7 +969,7 @@ impl Runner {
                 .next_reconcile
                 .is_some_and(|time| time > Instant::now())
         {
-            return false;
+            return DiscoveryRefresh::Unchanged;
         }
         if self.discovery_cursor.is_none() {
             self.discovery_blocked = false;
@@ -1012,6 +978,8 @@ impl Runner {
         let cursor = self.discovery_cursor.clone().unwrap_or_default();
         match discover_policy_page(policy, current, cache, &cursor) {
             Ok((candidates, next_cursor, coverage)) => {
+                let slice_advanced = coverage.opencode_slice_yielded
+                    && next_cursor.as_ref().is_some_and(|next| next != &cursor);
                 self.backfill_page = self.backfill_revision.is_some();
                 if self.backfill_page
                     && let Some(progress) = &mut self.backfill_progress
@@ -1038,9 +1006,13 @@ impl Runner {
                     .discovery_cursor
                     .is_none()
                     .then(|| Instant::now() + Duration::from_secs(60));
-                true
+                if slice_advanced {
+                    DiscoveryRefresh::YieldedOpenCodeSlice
+                } else {
+                    DiscoveryRefresh::ReadPage
+                }
             }
-            Err(_) if !current() => false,
+            Err(_) if !current() => DiscoveryRefresh::Unchanged,
             Err(_) => {
                 self.backfill_revision = None;
                 self.backfill_page = false;
@@ -1049,7 +1021,7 @@ impl Runner {
                     progress.abort("discovery_unavailable");
                 }
                 self.next_reconcile = Some(Instant::now() + Duration::from_secs(60));
-                false
+                DiscoveryRefresh::Unchanged
             }
         }
     }
@@ -1146,6 +1118,7 @@ impl Runner {
                 value.retry_available = false;
                 value.backfill_in_progress = false;
                 value.upload_progress = None;
+                value.upload_transfer = None;
                 value
             }
         };
@@ -1171,9 +1144,11 @@ impl Runner {
         host: &mut capture::Host,
         engine: &mut Engine,
         current: &dyn Fn() -> bool,
-        account_current: &dyn Fn() -> bool,
+        authority: (&dyn Fn() -> bool, Option<TeamTurnProof<'_>>),
         cache: &mut super::projects::Cache,
     ) -> Result<(), String> {
+        let (account_current, team_proof) = authority;
+        self.continue_discovery = false;
         let device_enabled = store
             .cloud_device_upload_enabled()
             .map_err(|_| "Could not read Cloud upload controls.")?;
@@ -1296,6 +1271,7 @@ impl Runner {
             return Ok(());
         }
         if let Some(generation) = policy.membership_generation.as_deref()
+            && !team_proof.is_some_and(|proof| proof.matches(&session, engine.generation, &policy))
             && !eligible_team(
                 engine,
                 &policy.account_id,
@@ -1755,7 +1731,8 @@ impl Runner {
             }
             return Ok(());
         }
-        if self.refresh_candidates(&policy, current, cache)
+        let discovery = self.refresh_candidates(&policy, current, cache);
+        if !matches!(discovery, DiscoveryRefresh::Unchanged)
             && let Some(progress) = &mut self.backfill_progress
         {
             progress.observe_page(store, &self.candidates, !self.backfill_page);
@@ -2441,6 +2418,7 @@ impl Runner {
         } else {
             State::Ready
         };
+        self.continue_discovery = matches!(discovery, DiscoveryRefresh::YieldedOpenCodeSlice);
         Ok(())
     }
 }
@@ -2768,25 +2746,10 @@ fn status_for_destination(
             .cloud_sync_outcome_counts(&session.user.id, destination, &session.resource)
             .map_err(|_| "Could not read accepted source state.")?;
     }
-    status.progress.negotiated = true;
-    let mut has_progress = false;
-    for entry in entries {
-        if entry.identity.account_id == session.user.id
-            && entry.identity.destination_id == destination
-            && jobs
-                .iter()
-                .any(|job| job.identity == entry.identity && job.allowed(&policy))
-        {
-            has_progress = true;
-            status.progress.add(
-                entry
-                    .progress()
-                    .map_err(|_| "Could not read saved capture progress.")?,
-            );
-        }
-    }
-    if !has_progress {
-        status.progress.negotiated = false;
+    let (progress, transfer) = saved_transfer_progress(&policy, &jobs, &entries)?;
+    status.progress = progress;
+    if !policy.paused && matches!(state, State::Ready | State::Syncing) {
+        status.upload_transfer = transfer;
     }
     if engine.session().is_none() {
         return Ok(Status {

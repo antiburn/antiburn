@@ -523,6 +523,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> (String, BTreeMap<String, S
 struct Authority {
     other_team: AtomicBool,
     workspaces_unavailable: AtomicBool,
+    workspace_lookups: AtomicUsize,
     origin: String,
     workspace: Workspace,
     membership: AtomicUsize,
@@ -597,6 +598,7 @@ impl AuthTransport for Arc<Authority> {
         _: &Config,
         _: &str,
     ) -> Result<Vec<auth::EligibleWorkspace>, auth::Failure> {
+        self.workspace_lookups.fetch_add(1, Ordering::AcqRel);
         if self.workspaces_unavailable.load(Ordering::Acquire) {
             return Err(auth::Failure::Offline);
         }
@@ -1060,6 +1062,7 @@ impl Fixture {
         let authority = Arc::new(Authority {
             other_team: AtomicBool::new(false),
             workspaces_unavailable: AtomicBool::new(false),
+            workspace_lookups: AtomicUsize::new(0),
             origin: service.origin.clone(),
             workspace: workspace.clone(),
             membership: AtomicUsize::new(0),
@@ -1117,7 +1120,7 @@ impl Fixture {
                 &mut self.host,
                 &mut self.engine,
                 &current,
-                &|| true,
+                (&|| true, None),
                 &mut self.cache,
             )
             .unwrap();
@@ -1133,7 +1136,7 @@ impl Fixture {
                 &mut self.host,
                 &mut self.engine,
                 &current,
-                &|| true,
+                (&|| true, None),
                 &mut self.cache,
             )
             .is_err();
@@ -1282,6 +1285,67 @@ impl Fixture {
             )
             .unwrap();
         database
+    }
+}
+
+#[test]
+fn cloud_team_scheduler_reuses_current_turn_proof_and_rechecks_after_grant_change() {
+    let workspace = Workspace {
+        id: "team".into(),
+        name: "Example Team".into(),
+        kind: WorkspaceKind::Team,
+    };
+    for changed_grant in [false, true] {
+        let mut fixture = Fixture::for_workspace(READY, 0, workspace.clone());
+        fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+        let session = fixture.engine.session().unwrap().clone();
+        let binding = DestinationBinding {
+            account_id: session.user.id.clone(),
+            destination_id: session.workspace.id.clone(),
+        };
+        let before = fixture.authority.workspace_lookups.load(Ordering::Acquire);
+        let engine_generation = fixture.engine.generation;
+        let entries = fixture
+            .engine
+            .eligible_workspaces(&binding, &|| true)
+            .unwrap();
+        let selected_policy = fixture.policy.clone();
+        let proof =
+            TeamTurnProof::for_policy(&session, engine_generation, &selected_policy, &entries)
+                .unwrap();
+        assert_eq!(
+            fixture.authority.workspace_lookups.load(Ordering::Acquire),
+            before + 1
+        );
+        if changed_grant {
+            fixture.sign_in_again();
+            fixture.authority.membership.store(1, Ordering::Release);
+        }
+        let before_turn = fixture.authority.workspace_lookups.load(Ordering::Acquire);
+        fixture
+            .runner
+            .turn(
+                &fixture.store,
+                &mut fixture.host,
+                &mut fixture.engine,
+                &|| true,
+                (&|| true, Some(proof)),
+                &mut fixture.cache,
+            )
+            .unwrap();
+        assert_eq!(
+            fixture.authority.workspace_lookups.load(Ordering::Acquire),
+            before_turn + usize::from(changed_grant)
+        );
+        assert_eq!(
+            fixture.runner.state,
+            if changed_grant {
+                State::ReauthRequired
+            } else {
+                State::Ready
+            }
+        );
+        assert_eq!(fixture.service.requests.load(Ordering::Acquire), 0);
     }
 }
 
@@ -1943,6 +2007,25 @@ fn cloud_scheduler_route_denial_keeps_account_and_saved_upload() {
 }
 
 #[test]
+fn cloud_scheduler_does_not_continue_discovery_early_during_route_backoff() {
+    let mut fixture = Fixture::new(READY, 0);
+    let cursor = DiscoveryCursor {
+        after: Some("unread-source".into()),
+        ..DiscoveryCursor::default()
+    };
+    fixture.runner.discovery_cursor = Some(cursor.clone());
+    fixture.runner.continue_discovery = true;
+    assert!(fixture.runner.discovery_continuation_due());
+    fixture.runner.route_denied_until = Some(Instant::now() + Duration::from_secs(60));
+
+    fixture.turn();
+
+    assert_eq!(fixture.runner.state, State::RouteDenied);
+    assert_eq!(fixture.runner.discovery_cursor, Some(cursor));
+    assert!(!fixture.runner.discovery_continuation_due());
+}
+
+#[test]
 fn cloud_scheduler_capability_denial_waits_before_retrying() {
     let mut fixture = Fixture::new(CAPS_DENIED, 0);
     let start = Instant::now();
@@ -2464,9 +2547,20 @@ fn cloud_scheduler_cursor_chunked_capture_counts_after_integrity_acceptance() {
     assert_eq!(queued.state, CaptureState::Queued);
     let manifest = queued.manifest.unwrap();
     assert_eq!(manifest.streams[0].stream_id, "cursor-ide-rows");
+    let status = serde_json::to_value(observed.last().unwrap()).unwrap();
+    assert_eq!(status["uploadProgress"]["uploaded"], 0);
+    assert!(status["uploadTransfer"].is_null());
+
+    fixture.turn_published(&mut observed);
+    let transferring = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    let progress = transferring.progress().unwrap();
+    assert!(progress.confirmed_upload_bytes > 0);
     assert_eq!(
-        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"]["uploaded"],
-        0
+        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadTransfer"],
+        serde_json::json!({
+            "sentBytes": progress.confirmed_upload_bytes,
+            "totalBytes": progress.required_transfer_bytes,
+        })
     );
     for _ in 0..10 {
         fixture.runner.next_integrity_poll = None;
@@ -4172,8 +4266,8 @@ fn cloud_scheduler_backfill_only_offers_new_and_changed_sources() {
     assert_eq!(
         serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
         serde_json::json!({
-            "uploaded": 1, "total": null, "blocked": 0, "unsupported": 0,
-            "scanIncomplete": false
+            "uploaded": 1, "total": null, "found": 3, "blocked": 0,
+            "unsupported": 0, "scanIncomplete": false
         })
     );
     fixture.schedule_backfill();
@@ -4862,7 +4956,7 @@ fn cloud_scheduler_quarantined_partial_capture_keeps_its_identity_and_blocks_rec
                 &mut fixture.host,
                 &mut fixture.engine,
                 &|| true,
-                &|| true,
+                (&|| true, None),
                 &mut fixture.cache
             )
             .is_ok()
@@ -4912,7 +5006,7 @@ fn cloud_scheduler_missing_pending_state_does_not_authorize_capture_or_recovery(
                 &mut fixture.host,
                 &mut fixture.engine,
                 &|| true,
-                &|| true,
+                (&|| true, None),
                 &mut fixture.cache
             )
             .is_ok()
@@ -4976,7 +5070,7 @@ fn cloud_scheduler_quarantined_queued_capture_is_not_abandoned_or_replaced() {
                 &mut fixture.host,
                 &mut fixture.engine,
                 &|| true,
-                &|| true,
+                (&|| true, None),
                 &mut fixture.cache
             )
             .is_ok()

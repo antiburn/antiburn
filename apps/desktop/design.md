@@ -2145,6 +2145,10 @@ approval and **Sync now** after approval. A failure can change the action in
 place to **Try again**, **Review folders**, or **Check Cloud**. Do not add a
 second button for the same step. Show an upload switch only when it can pause
 or resume uploads.
+Show one short status line beside the action. During a scan or upload, show
+**Syncing** with a spinner. Use confirmed bytes for one upload when the size
+is known. Otherwise use session counts or a short activity label. Keep folder
+switches and workspace dropdowns in place while they are disabled.
 Keep repository approval in the same folder picker. Use one short scope note
 for pending Git choices. Do not add separate worktree or migration controls.
 The folder list shows existing directories. Keep exact saved rules that are

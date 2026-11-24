@@ -1,4 +1,4 @@
-use super::{BUSY, BlockingWork, Priority};
+use super::{BACKFILL_ADMISSION_TIMEOUT, BUSY, BlockingWork, Priority};
 use std::{
     future::{Future, poll_fn},
     pin::Pin,
@@ -62,4 +62,21 @@ async fn cloud_backfill_cancelled_wait_releases_queue_space() {
     assert_waiting(next.as_mut()).await;
     drop(running);
     assert_eq!(next.await, Ok("started"));
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn cloud_backfill_times_out_without_starting_work() {
+    let work = BlockingWork::default();
+    let running = work.admission.try_acquire().unwrap();
+    let mut queued = std::pin::pin!(work.run::<(), _>(Priority::Backfill, || {
+        panic!("expired backfill ran");
+    }));
+    assert_waiting(queued.as_mut()).await;
+    tokio::time::advance(BACKFILL_ADMISSION_TIMEOUT).await;
+    drop(running);
+    assert_eq!(queued.await, Err(BUSY.into()));
+    assert_eq!(
+        work.run(Priority::Backfill, || Ok("started")).await,
+        Ok("started")
+    );
 }

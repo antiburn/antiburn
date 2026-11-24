@@ -321,10 +321,14 @@ export interface CloudOngoingStatus {
   uploadProgress?: {
     uploaded: number
     total: number | null
+    /** Sessions found so far, not a final count. */
+    found?: number
     blocked?: number
     unsupported?: number
     scanIncomplete?: boolean
   }
+  /** Confirmed compressed bytes for one queued upload, not the total for all folders. */
+  uploadTransfer?: { sentBytes: number; totalBytes: number }
   /** Local recovery and remote warning are independent of saved upload consent. */
   localResetAvailable?: boolean
   remoteRevocationUnconfirmed?: boolean

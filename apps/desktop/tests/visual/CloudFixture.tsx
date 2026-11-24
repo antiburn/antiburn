@@ -339,11 +339,28 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
           ongoing = {
             ...ongoing,
             backfillInProgress: false,
-            ...(name === "settings-attention" && { uploadProgress: { uploaded: 3, total: 8 } }),
+            ...(name === "settings-attention" && {
+              status: "syncing",
+              uploadProgress: { uploaded: 3, total: 8 },
+            }),
           }
           listener(ongoingStatus())
         }
         const event = "cloud-fixture:finish-sync"
+        const updateTransfer = () => {
+          ongoing = {
+            ...ongoing,
+            uploadTransfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
+          }
+          listener(ongoingStatus())
+        }
+        const finishTransfer = () => {
+          ongoing = { ...ongoing, status: "ready", uploadProgress: { uploaded: 8, total: 8 } }
+          delete ongoing.uploadTransfer
+          listener(ongoingStatus())
+        }
+        const transferEvent = "cloud-fixture:update-transfer"
+        const transferDoneEvent = "cloud-fixture:finish-transfer"
         const updateQueue = () => {
           showQueueProgress = !showQueueProgress
           listener(ongoingStatus())
@@ -351,9 +368,13 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         const queueEvent = "cloud-fixture:update-queue"
         window.addEventListener(event, finish)
         window.addEventListener(queueEvent, updateQueue)
+        window.addEventListener(transferEvent, updateTransfer)
+        window.addEventListener(transferDoneEvent, finishTransfer)
         return () => {
           window.removeEventListener(event, finish)
           window.removeEventListener(queueEvent, updateQueue)
+          window.removeEventListener(transferEvent, updateTransfer)
+          window.removeEventListener(transferDoneEvent, finishTransfer)
         }
       },
       groups: async (_binding, after) => {
@@ -526,7 +547,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         ongoing = {
           ...ongoing,
           backfillInProgress: true,
-          uploadProgress: { uploaded: 2, total: null },
+          uploadProgress: { uploaded: 2, found: 436, total: null },
         }
         return ongoing
       },

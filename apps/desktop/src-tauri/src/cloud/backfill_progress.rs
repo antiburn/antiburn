@@ -14,6 +14,8 @@ const MAX_TRACKED_SOURCES: usize = 4096;
 pub(super) struct UploadProgress {
     uploaded: usize,
     total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found: Option<usize>,
     blocked: usize,
     unsupported: usize,
     scan_incomplete: bool,
@@ -368,6 +370,8 @@ impl BackfillProgress {
             UploadProgress {
                 uploaded,
                 total: (self.finished && !self.incomplete && !status.backfill_in_progress)
+                    .then_some(self.sources.len()),
+                found: (status.backfill_in_progress && !self.sources.is_empty())
                     .then_some(self.sources.len()),
                 blocked,
                 unsupported,

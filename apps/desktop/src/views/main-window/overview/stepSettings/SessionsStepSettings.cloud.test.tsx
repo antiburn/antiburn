@@ -302,14 +302,18 @@ it.each(["pause", "scan"])(
     render(<SessionsStepSettings />)
     const sync = await screen.findByRole("button", { name: "Sync now" })
     const upload = () => screen.getByRole("switch", { name: uploadLabel })
-    const expectNoFolderSwitch = () =>
-      expect(screen.queryByRole("switch", { name: studioLabel })).not.toBeInTheDocument()
+    const folder = screen.getByRole("switch", { name: studioLabel })
+    const expectDisabledFolderSwitch = () => {
+      expect(screen.getByRole("switch", { name: studioLabel })).toBe(folder)
+      expect(folder).toBeChecked()
+      expect(folder).toBeDisabled()
+    }
     fireEvent.click(sync)
     expect(screen.getByText("Starting sync…")).toBeVisible()
     expect(upload()).toBeChecked()
     expect(upload()).toBeEnabled()
-    expectNoFolderSwitch()
-    expect(screen.getByText("Updating…")).toBeVisible()
+    expectDisabledFolderSwitch()
+    expect(screen.queryByText("Updating…")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Sign out" })).toBeDisabled()
 
     fireEvent.click(upload())
@@ -320,12 +324,12 @@ it.each(["pause", "scan"])(
       first === "pause" ? [finishPause, finishBackfill] : [finishBackfill, finishPause]
     await act(async () => finishFirst())
     expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
-    expectNoFolderSwitch()
+    expectDisabledFolderSwitch()
     await act(async () => finishLast())
 
     expect(upload()).not.toBeChecked()
     expect(upload()).toBeEnabled()
-    const folder = screen.getByRole("switch", { name: studioLabel })
+    expect(screen.getByRole("switch", { name: studioLabel })).toBe(folder)
     expect(folder).toBeChecked()
     expect(folder).toBeEnabled()
     expect(screen.queryByText("Scanning folders…")).not.toBeInTheDocument()

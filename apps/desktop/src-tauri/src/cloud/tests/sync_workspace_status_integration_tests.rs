@@ -38,7 +38,7 @@ fn cloud_sync_turn_distinguishes_closed_local_admission_from_an_account_change()
                     assert!(account_is_current);
                     false
                 },
-                &|| account_is_current,
+                (&|| account_is_current, None),
                 &mut cache,
             )
             .unwrap();
