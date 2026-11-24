@@ -117,6 +117,73 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
   }
 })
 
+it("reloads folders immediately when an event clears a setup error during backoff", async () => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    emit({ setupError: "Synthetic setup failure" })
+    await vi.advanceTimersByTimeAsync(32_000)
+    expect(session.getSnapshot().projects?.retryStage).toBe("setup")
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    const reads = vi.mocked(port.read).mock.calls.length
+
+    emit({ setupError: null })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().projects).toMatchObject({ loaded: true, loading: false })
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(port.read).toHaveBeenCalledTimes(reads)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("cancels setup backoff when recovery arrives during an account reload", async () => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  const read = vi.mocked(port.read)
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    const healthy = session.getSnapshot().cloud
+    emit({ setupError: "Synthetic setup failure" })
+    await vi.advanceTimersByTimeAsync(32_000)
+    expect(session.getSnapshot().projects?.retryStage).toBe("setup")
+
+    let finishAccountRead!: () => void
+    read.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAccountRead = () => resolve(healthy)
+        }),
+    )
+    const pending = session.load()
+    expect(session.getSnapshot().busy).toBe(true)
+    emit({ setupError: null })
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+
+    finishAccountRead()
+    await pending
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().projects).toMatchObject({ loaded: true, loading: false })
+    const reads = read.mock.calls.length
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(read).toHaveBeenCalledTimes(reads)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
 it.each(["sign-out", "source change", "pane exit", "pane hidden"] as const)(
   "cancels a scheduled retry on %s",
   async (change) => {

@@ -392,6 +392,8 @@ export class CloudSession {
         const stop = await this.port.watch((value) => {
           if (this.active && generation === this.generation) {
             const previous = this.snapshot.cloud
+            // A recovery event cancels backoff even while an account read is pending.
+            if (previous.setupError && !value.setupError) this.projectReader.abort()
             this.receive(value)
             if (cloudFolderReadChanged(previous, this.snapshot)) void this.loadProjects()
           }

@@ -1,11 +1,6 @@
 const retryDelays = [150, 400]
 const maxDelay = 30_000
 
-/** Desktop no longer recognizes the account bound to this read. */
-export function invalidCloudReadScope(error: unknown) {
-  return cloudReadScopeMessage(error) !== undefined
-}
-
 /** Map only closed desktop errors. Never show raw command errors. */
 export function cloudReadScopeMessage(error: unknown) {
   const message = error instanceof Error ? error.message : error
@@ -17,12 +12,9 @@ export function cloudReadScopeMessage(error: unknown) {
     case "The signed-in workspace is not available for selection.":
       return "The selected Cloud workspace is no longer available."
     case "Cloud account changed.":
-      return cloudReadScopeChangedMessage
+      return "Cloud access changed. Check your sign-in or workspace access."
   }
 }
-
-export const cloudReadScopeChangedMessage =
-  "Cloud access changed. Check your sign-in or workspace access."
 
 /** Retry reads only. Abort the wait when the account or source scope changes. */
 export async function retryCloudRead<T>(
@@ -38,7 +30,7 @@ export async function retryCloudRead<T>(
       const value = await read()
       if (last || !retryResult(value)) return value
     } catch (error) {
-      if (last || invalidCloudReadScope(error)) throw error
+      if (last || cloudReadScopeMessage(error) !== undefined) throw error
     }
     signal.throwIfAborted()
     if (attempt === retryDelays.length) onExtendedRetry?.()

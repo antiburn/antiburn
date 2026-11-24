@@ -313,10 +313,13 @@ export function CloudAccount({
   folderRowId?: string
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
+  const [retryingSignInRead, setRetryingSignInRead] = useState(false)
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed =
     value.loaded && !!value.error && !value.cloud.identity && !waitingForBrowser
+  const checkingAgain = retryingSignInRead && value.busy && !value.cloud.identity
+  const checkingAccount = !value.loaded || checkingAgain
   const cleanupPending = cloudAccountCleanupPending(value.cloud)
   const requiresAccountCleanup = cleanupPending && value.cloud.status === "reauth_required"
   const needsSignOut =
@@ -329,7 +332,7 @@ export function CloudAccount({
       ? value.projects?.workspaces?.length
       : undefined
   const accountMessage = readFailed
-    ? "Could not check Cloud sign-in. Close and reopen Settings to check again."
+    ? "Could not check Cloud sign-in."
     : value.error
       ? value.error === CLOUD_BUSY_MESSAGE
         ? "Cloud is busy."
@@ -347,9 +350,9 @@ export function CloudAccount({
         <div className="min-w-0">
           <p
             className="type-headline text-label wrap-anywhere"
-            role={!value.loaded ? "status" : undefined}
+            role={checkingAccount ? "status" : undefined}
           >
-            {!value.loaded
+            {checkingAccount
               ? "Checking Cloud sign-in…"
               : readFailed
                 ? "Cloud account"
@@ -373,7 +376,19 @@ export function CloudAccount({
             </p>
           )}
         </div>
-        {value.loaded && !readFailed && !value.cloud.authEnabled && !needsSignOut && (
+        {(readFailed || checkingAgain) && (
+          <button
+            className="ui-push-button shrink-0"
+            disabled={value.busy || retryingSignInRead}
+            onClick={() => {
+              setRetryingSignInRead(true)
+              void session.load().finally(() => setRetryingSignInRead(false))
+            }}
+          >
+            Check again
+          </button>
+        )}
+        {!checkingAccount && !readFailed && !value.cloud.authEnabled && !needsSignOut && (
           <button
             className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-control type-callout text-label-secondary hover:text-label disabled:opacity-50"
             disabled={value.busy}
@@ -382,7 +397,7 @@ export function CloudAccount({
             Learn more <ArrowUpRight size={13} aria-hidden="true" />
           </button>
         )}
-        {value.loaded &&
+        {!checkingAccount &&
           value.cloud.authEnabled &&
           !readFailed &&
           !value.cloud.identity &&
@@ -659,14 +674,26 @@ function CloudProjectsAccount({
   const starting = value.sync.status === "starting"
   if (!identity || value.cloud.status !== "signed_in") return null
   if (!personalCloudDestination(value.cloud.destination ?? null)) {
-    if (value.error) return null
+    const isTeam = value.cloud.destination?.kind === "team"
+    if (value.error && isTeam) return null
     return (
       <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-        <p className="type-footnote text-label-secondary" role="status">
-          {value.cloud.destination?.kind === "team"
-            ? "Personal uploads are unavailable for this connection."
-            : "Could not verify your Cloud workspaces."}
-        </p>
+        {!value.error && (
+          <p className="type-footnote text-label-secondary" role="status">
+            {isTeam
+              ? "Personal uploads are unavailable for this connection."
+              : "Could not verify your Cloud workspaces."}
+          </p>
+        )}
+        {!isTeam && (
+          <button
+            className="ui-push-button"
+            disabled={value.busy}
+            onClick={() => void session.load()}
+          >
+            Check again
+          </button>
+        )}
       </div>
     )
   }
