@@ -1,6 +1,7 @@
 use super::*;
 use crate::store::cloud_capture::RootScope;
-use std::{fs, path::PathBuf};
+use discovery::discover_policy_page_with_clock;
+use std::{cell::Cell, fs, path::PathBuf};
 
 fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
@@ -50,6 +51,7 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
             project_path: project.to_str().unwrap().into(),
         }],
         project_choices: BTreeMap::new(),
+        repository_rules: Vec::new(),
         paused: false,
     };
     (directory, policy, project, outside)
@@ -61,57 +63,117 @@ fn cloud_scheduler_pages_wait_for_queue_drain_and_use_current_recorded_cwds() {
     let mut runner = Runner::default();
     let mut cache = super::super::projects::Cache::default();
     runner.refresh_candidates(&policy, &|| true, &mut cache);
-    assert_eq!(runner.candidates.len(), 512);
+    let first_count = runner.candidates.len();
+    assert!((1..=512).contains(&first_count));
     let cursor = runner.discovery_cursor.clone().unwrap();
-    assert_eq!(cursor.after.as_deref(), Some("session-0511"));
+    assert_eq!(
+        cursor.after.as_deref(),
+        runner
+            .candidates
+            .back()
+            .map(|selection| selection.candidate.native_session_id())
+    );
     runner.next_reconcile = None;
     runner.refresh_candidates(&policy, &|| true, &mut cache);
     assert_eq!(runner.discovery_cursor.as_ref(), Some(&cursor));
-    assert_eq!(runner.candidates.len(), 512);
-    runner.candidates.clear();
+    assert_eq!(runner.candidates.len(), first_count);
     let connection = rusqlite::Connection::open(&policy.roots[0].path).unwrap();
+    let excluded = format!("session-{first_count:04}");
     connection
         .execute(
-            "UPDATE session_v2 SET directory=?1 WHERE id='session-0512'",
-            [outside.to_str().unwrap()],
+            "UPDATE session_v2 SET directory=?1 WHERE id=?2",
+            [outside.to_str().unwrap(), &excluded],
         )
         .unwrap();
-    runner.refresh_candidates(&policy, &|| true, &mut cache);
-    assert_eq!(runner.candidates.len(), 511);
+    let mut selected = Vec::new();
+    loop {
+        selected.extend(
+            runner
+                .candidates
+                .drain(..)
+                .map(|selection| selection.candidate.native_session_id().to_owned()),
+        );
+        let Some(cursor) = runner.discovery_cursor.clone() else {
+            break;
+        };
+        assert!(!matches!(
+            runner.refresh_candidates(&policy, &|| true, &mut cache),
+            DiscoveryRefresh::Unchanged
+        ));
+        assert_ne!(runner.discovery_cursor.as_ref(), Some(&cursor));
+    }
     assert_eq!(
-        runner
-            .candidates
-            .front()
-            .unwrap()
-            .candidate
-            .native_session_id(),
-        "session-0513"
+        selected,
+        (0..=1024)
+            .filter(|index| *index != first_count)
+            .map(|index| format!("session-{index:04}"))
+            .collect::<Vec<_>>()
     );
-    assert_eq!(
-        runner.discovery_cursor.as_ref().unwrap().after.as_deref(),
-        Some("session-1023")
-    );
-    runner.candidates.clear();
-    runner.refresh_candidates(&policy, &|| true, &mut cache);
-    assert_eq!(runner.candidates.len(), 1);
-    assert!(runner.discovery_cursor.is_none());
     assert!(runner.next_reconcile.unwrap() > Instant::now());
-    let source_id = runner.candidates[0].candidate.source_id().to_owned();
-    runner.candidates.clear();
     runner.refresh_candidates(&policy, &|| true, &mut cache);
     assert!(runner.candidates.is_empty());
     runner.next_reconcile = None;
     runner.refresh_candidates(&policy, &|| true, &mut cache);
-    assert_eq!(runner.candidates.len(), 512);
-    let last = antiburn_cloud_capture::reopen_opencode(
-        Path::new(&policy.roots[0].path),
-        "session-1024",
-        &Limits::default(),
+    assert_eq!(
+        runner.candidates[0].candidate.native_session_id(),
+        "session-0000"
+    );
+}
+
+#[test]
+fn cloud_scheduler_yields_between_opencode_digests_and_resumes_with_fresh_versions() {
+    let (_directory, policy, _, _) = fixture();
+    let connection = rusqlite::Connection::open(&policy.roots[0].path).unwrap();
+    connection
+        .execute("DELETE FROM session_v2 WHERE id > 'session-0002'", [])
+        .unwrap();
+    let mut cache = super::super::projects::Cache::default();
+    let start = Instant::now();
+    let (before, _, _) = discover_policy_page_with_clock(
+        &policy,
+        &|| true,
+        &mut cache,
+        &DiscoveryCursor::default(),
+        || start,
     )
-    .unwrap()
-    .in_source_scope("scope")
     .unwrap();
-    assert_eq!(last.source_id(), source_id);
+    assert_eq!(before.len(), 3);
+
+    let read_slice = |cache: &mut _, cursor: &DiscoveryCursor| {
+        let clock = Cell::new(start);
+        let (selected, next, coverage) =
+            discover_policy_page_with_clock(&policy, &|| true, cache, cursor, || {
+                let now = clock.get();
+                clock.set(now + Duration::from_secs(1));
+                now
+            })
+            .unwrap();
+        assert!(!coverage.blocked && !coverage.partial);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(coverage.opencode_slice_yielded, next.is_some());
+        (selected, next)
+    };
+    let (first, next) = read_slice(&mut cache, &DiscoveryCursor::default());
+    assert_eq!(first[0].candidate.native_session_id(), "session-0000");
+    assert_eq!(first[0].observation, before[0].observation);
+    let next = next.unwrap();
+    assert_eq!(next.after.as_deref(), Some("session-0000"));
+    connection
+        .execute(
+            "INSERT INTO session_message VALUES ('new','session-0001','user',1,'{}')",
+            [],
+        )
+        .unwrap();
+
+    let (second, next) = read_slice(&mut cache, &next);
+    assert_eq!(second[0].candidate.native_session_id(), "session-0001");
+    assert_ne!(second[0].observation, before[1].observation);
+    let next = next.unwrap();
+    assert_eq!(next.after.as_deref(), Some("session-0001"));
+    let (third, next) = read_slice(&mut cache, &next);
+    assert_eq!(third[0].candidate.native_session_id(), "session-0002");
+    assert_eq!(third[0].observation, before[2].observation);
+    assert!(next.is_none());
 }
 
 #[cfg(unix)]
@@ -195,33 +257,36 @@ fn cloud_scheduler_backfill_starts_over_and_retains_its_own_page_position() {
     let mut runner = Runner::default();
     let mut cache = super::super::projects::Cache::default();
     runner.refresh_candidates(&policy, &|| true, &mut cache);
+    let first_cursor = runner.discovery_cursor.clone().unwrap();
     runner.candidates.clear();
     runner.refresh_candidates(&policy, &|| true, &mut cache);
-    assert_eq!(
-        runner.discovery_cursor.as_ref().unwrap().after.as_deref(),
-        Some("session-1023")
-    );
+    let second_cursor = runner.discovery_cursor.as_ref().unwrap();
+    assert!(second_cursor.after > first_cursor.after);
 
     runner.schedule_backfill(&policy, "test-grant");
-    for (first, count) in [
-        ("session-0000", 512),
-        ("session-0512", 512),
-        ("session-1024", 1),
-    ] {
-        runner.refresh_candidates(&policy, &|| true, &mut cache);
+    let mut scanned = 0;
+    loop {
+        assert!(!matches!(
+            runner.refresh_candidates(&policy, &|| true, &mut cache),
+            DiscoveryRefresh::Unchanged
+        ));
         assert!(runner.backfill_page);
-        assert_eq!(
-            runner
-                .candidates
-                .front()
-                .unwrap()
-                .candidate
-                .native_session_id(),
-            first
-        );
-        assert_eq!(runner.candidates.len(), count);
-        runner.candidates.clear();
+        assert!(!runner.candidates.is_empty());
+        let cursor = runner.discovery_cursor.clone();
+        runner.schedule_backfill(&policy, "test-grant");
+        assert_eq!(runner.discovery_cursor, cursor);
+        for selection in runner.candidates.drain(..) {
+            assert_eq!(
+                selection.candidate.native_session_id(),
+                format!("session-{scanned:04}")
+            );
+            scanned += 1;
+        }
+        if cursor.is_none() {
+            break;
+        }
     }
+    assert_eq!(scanned, 1025);
     runner.refresh_candidates(&policy, &|| true, &mut cache);
     assert!(!runner.backfill_page);
     assert!(runner.backfill_revision.is_none());
@@ -341,8 +406,15 @@ fn cloud_scheduler_unavailable_root_does_not_skip_healthy_roots() {
         },
     );
     let mut cache = super::super::projects::Cache::default();
-    let (first, next, coverage) =
-        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    let now = Instant::now();
+    let (first, next, coverage) = discover_policy_page_with_clock(
+        &policy,
+        &|| true,
+        &mut cache,
+        &DiscoveryCursor::default(),
+        || now,
+    )
+    .unwrap();
     assert!(coverage.blocked);
     assert!(next.is_some());
     assert_eq!(first.len(), 512);
@@ -355,18 +427,27 @@ fn cloud_scheduler_content_observation_errors_do_not_discard_healthy_pages() {
     connection.execute("INSERT INTO session_message VALUES ('broken','session-0001','user',1,?1)",
         [r#"{"files":[{"uri":"media:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#]).unwrap();
     let mut cache = super::super::projects::Cache::default();
-    let (first, cursor, coverage) =
-        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    let now = Instant::now();
+    let (first, cursor, coverage) = discover_policy_page_with_clock(
+        &policy,
+        &|| true,
+        &mut cache,
+        &DiscoveryCursor::default(),
+        || now,
+    )
+    .unwrap();
     assert!(coverage.blocked);
     assert_eq!(first.len(), 511);
     assert_eq!(first[0].candidate.native_session_id(), "session-0000");
     assert_eq!(first[1].candidate.native_session_id(), "session-0002");
     let (second, cursor, coverage) =
-        discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
+        discover_policy_page_with_clock(&policy, &|| true, &mut cache, &cursor.unwrap(), || now)
+            .unwrap();
     assert!(!coverage.blocked && !coverage.partial);
     assert_eq!(second.len(), 512);
     let (last, cursor, coverage) =
-        discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
+        discover_policy_page_with_clock(&policy, &|| true, &mut cache, &cursor.unwrap(), || now)
+            .unwrap();
     assert!(!coverage.blocked && !coverage.partial);
     assert!(cursor.is_none());
     assert_eq!(last.len(), 1);
@@ -417,7 +498,10 @@ fn cloud_scheduler_page_cursors_reset_for_each_authority_and_policy_binding() {
         );
         assert_eq!(
             runner.discovery_cursor.as_ref().unwrap().after.as_deref(),
-            Some("session-0511")
+            runner
+                .candidates
+                .back()
+                .map(|selection| selection.candidate.native_session_id())
         );
     }
 }

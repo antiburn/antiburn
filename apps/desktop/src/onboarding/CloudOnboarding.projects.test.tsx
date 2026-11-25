@@ -19,6 +19,7 @@ it("uses Start as explicit grouped consent without saving row defaults", async (
     await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" }),
   ).toBeChecked()
   expect(screen.getByText("1 worktree")).toBeVisible()
+  expect(screen.queryByText(/Matching Git checkouts are included/)).not.toBeInTheDocument()
   expect(screen.queryByText("/Example/claude/projects/studio")).not.toBeInTheDocument()
   const start = screen.getByRole("button", { name: "Start syncing" })
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
@@ -41,6 +42,51 @@ it("uses Start as explicit grouped consent without saving row defaults", async (
   expect(screen.queryByRole("button", { name: /Retry|Remove/ })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Done" }))
   expect(done).toHaveBeenCalledOnce()
+})
+
+it("shows the repository scope and recognizes the saved group at a new checkout", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const path = "/Example/new/Studio"
+  const anchor = projectGroup().projects[0]!
+  const group = projectGroup({
+    id: "repo-studio",
+    path,
+    folderPaths: [path],
+    worktreeCount: 0,
+    repositoryWide: true,
+    projects: [{ ...anchor, projectPath: path }],
+  })
+  ongoing.groups.mockResolvedValue({
+    groups: [group],
+    sourceRoots: [{ sourceKind: anchor.sourceKind, path: anchor.sourcePath }],
+    nextCursor: null,
+    partial: false,
+  })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+
+  expect(await screen.findByText(/Matching Git checkouts are included/)).toBeVisible()
+  expect(screen.getByRole("switch", { name: `Sync Studio: ${path}` })).toBeChecked()
+  act(() =>
+    emitSync(
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projects: [anchor],
+        exactProjects: [],
+        repositoryGroupIds: [group.id],
+        repositoryFolders: [{ groupId: group.id, projects: [anchor] }],
+        savedFolders: [{ groupId: group.id, path: anchor.projectPath }],
+      }),
+    ),
+  )
+  expect(screen.getByText(/Sync is already set up for Personal workspace/)).toBeVisible()
+  expect(screen.queryByText(/Matching Git checkouts are included/)).not.toBeInTheDocument()
+  expect(screen.queryByRole("switch", { name: `Sync Studio: ${path}` })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
 })
 
 it("requires a folder destination and distinguishes Personal from a Team with the same name", async () => {
@@ -93,6 +139,24 @@ it("keeps the folder switch for one verified workspace", async () => {
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
+it("does not show a worktree count when Desktop could not verify the group", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.groups.mockResolvedValue({
+    groups: [projectGroup({ groupingComplete: false, captureSupported: false })],
+    sourceRoots: [],
+    nextCursor: null,
+    partial: false,
+  })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  expect(await screen.findByText("/Example/Studio")).toBeVisible()
+  expect(screen.queryByText("Worktrees not verified")).not.toBeInTheDocument()
+  expect(screen.queryByText("1 worktree")).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
+})
+
 it("uses the existing account to save folder consent only for the chosen Team", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const begin = vi.spyOn(port, "begin")
@@ -131,7 +195,7 @@ it("uses the existing account to save folder consent only for the chosen Team", 
 })
 
 it("confirms a mixed draft and retries only the folder route that failed", async () => {
-  const { port, ongoing } = cloudProjectFixture()
+  const { port, ongoing, emit } = cloudProjectFixture()
   const docsProject = {
     sourceKind: "claude_jsonl" as const,
     sourcePath: "/Example/claude/projects/docs",
@@ -167,6 +231,7 @@ it("confirms a mixed draft and retries only the folder route that failed", async
         selectedSources: consent.selectedSources,
         projectChoices: consent.projectChoices,
       })
+      emit({ syncEnabled: true })
       return personalStatus
     })
     .mockRejectedValueOnce(new Error("Team unavailable"))
@@ -204,6 +269,9 @@ it("confirms a mixed draft and retries only the folder route that failed", async
   expect(
     await screen.findByText(/Could not confirm folder sync for Example Team/),
   ).toBeVisible()
+  act(() => emit({ syncEnabled: true }))
+  expect(screen.getByText(/Could not confirm folder sync for Example Team/)).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument()
   expect(ongoing.enable).toHaveBeenNthCalledWith(
     1,
     expect.objectContaining({
@@ -234,27 +302,56 @@ it("confirms a mixed draft and retries only the folder route that failed", async
 it("keeps Start disabled while workspace availability is loading or missing", async () => {
   const { port, ongoing } = cloudProjectFixture()
   let finish!: (workspaces: CloudWorkspace[]) => void
-  port.workspaces = vi.fn(
-    () =>
-      new Promise<CloudWorkspace[]>((resolve) => {
-        finish = resolve
-      }),
-  )
+  port.workspaces = vi
+    .fn(async (): Promise<CloudWorkspace[]> => [team])
+    .mockImplementationOnce(
+      () =>
+        new Promise<CloudWorkspace[]>((resolve) => {
+          finish = resolve
+        }),
+    )
   render(
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
   expect(await screen.findByText(/Checking workspace destinations/)).toBeVisible()
   const start = screen.getByRole("button", { name: "Start syncing" })
   expect(start).toBeDisabled()
-  expect(screen.queryByRole("switch")).not.toBeInTheDocument()
+  const provisional = await screen.findByRole("switch", { name: /Sync Studio/ })
+  expect(provisional).toBeDisabled()
+  expect(provisional).not.toBeChecked()
+  expect(ongoing.groups).toHaveBeenCalledOnce()
   await waitFor(() => expect(port.workspaces).toHaveBeenCalledOnce())
   await act(async () => finish([team]))
-  expect(screen.getByText(/Workspace availability could not be confirmed/)).toBeVisible()
-  expect(screen.getByRole("button", { name: "Refresh folders" })).toBeEnabled()
+  expect(await screen.findByText(/Workspace availability could not be confirmed/)).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
+  expect(provisional).toBeDisabled()
   expect(start).toBeDisabled()
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("starts sync for verified folders while a later page is retrying", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const group = projectGroup()
+  ongoing.groups.mockRejectedValue(new Error("Page unavailable")).mockResolvedValueOnce({
+    groups: [group],
+    sourceRoots: [{ sourceKind: "claude_jsonl", path: group.projects[0]!.sourcePath }],
+    nextCursor: { environment: "native", cwd: "/Example/Next" },
+    partial: true,
+  })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  fireEvent.click(await screen.findByRole("button", { name: "Load more folders" }))
+  expect(await screen.findByText("Still checking for more folders.")).toBeVisible()
+  const start = screen.getByRole("button", { name: "Start syncing" })
+  expect(start).toBeEnabled()
+  fireEvent.click(start)
+  await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
+  expect(ongoing.enable).toHaveBeenCalledWith(
+    expect.objectContaining({ projects: group.projects }),
+  )
 })
 
 it("does not treat a previously checked folder as a new Personal choice", async () => {
@@ -390,7 +487,7 @@ it("loads another page without approving new members until Start", async () => {
   )
   await screen.findByRole("switch")
   expect(ongoing.groups).toHaveBeenCalledTimes(1)
-  ongoing.groups.mockResolvedValueOnce({
+  ongoing.groups.mockResolvedValue({
     groups: [
       projectGroup({
         folderPaths: [...projectGroup().folderPaths, "/Example/external/studio-review"],
@@ -449,7 +546,9 @@ it.each([
   { partial: false, nextCursor: { environment: "native", cwd: "/Example/Next" } },
 ])("keeps an incomplete empty folder page neutral: %j", async (page) => {
   const { port, ongoing } = cloudProjectFixture()
-  ongoing.groups.mockResolvedValueOnce({ groups: [], sourceRoots: [], ...page })
+  const listing = { groups: [], sourceRoots: [], ...page }
+  if (page.partial) ongoing.groups.mockResolvedValue(listing)
+  else ongoing.groups.mockResolvedValueOnce(listing)
   render(
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
@@ -468,7 +567,7 @@ it.each([
         }),
     )
     fireEvent.click(screen.getByRole("button", { name: "Load more folders" }))
-    expect(await screen.findByText("Loading project folders…")).toBeVisible()
+    expect(await screen.findByText("Loading more folders…")).toBeVisible()
     expect(screen.queryByText(/No project folders found/)).not.toBeInTheDocument()
     await act(async () =>
       finish({
@@ -513,18 +612,18 @@ it("shows a complete empty result only after its pending discovery finishes", as
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
-it("offers failure recovery instead of claiming an empty folder result", async () => {
+it("retries a transient folder read without flashing an error or an empty list", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups.mockRejectedValueOnce(new Error("Synthetic discovery failure"))
   render(
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
-  expect(
-    await screen.findByText("Could not load project folders. Try again in Cloud Settings."),
-  ).toBeVisible()
+  await screen.findByText("Loading project folders…")
+  expect(screen.queryByText(/could not check your session folders/i)).not.toBeInTheDocument()
   expect(screen.queryByText(/No project folders found/)).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole("button", { name: "Refresh folders" }))
+  expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
   expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  expect(ongoing.groups).toHaveBeenCalledTimes(2)
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
@@ -542,13 +641,11 @@ it("reloads account setup before retrying discovery after a setup failure", asyn
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
   await waitFor(() => expect(ongoing.groups).toHaveBeenCalledOnce())
-  act(() => emit({ setupError: "Synthetic setup failure" }))
-  expect(screen.getByText("Synthetic setup failure")).toBeVisible()
-  const retry = screen.getByRole("button", { name: "Refresh folders" })
-  expect(retry).toBeEnabled()
   vi.mocked(port.read).mockResolvedValue(healthy)
-  fireEvent.click(retry)
-  expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  act(() => emit({ setupError: "Synthetic setup failure" }))
+  expect(screen.queryByText("Synthetic setup failure")).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
+  expect(ongoing.groups).toHaveBeenCalledOnce()
   await act(async () =>
     finish({
       groups: [],
@@ -557,13 +654,13 @@ it("reloads account setup before retrying discovery after a setup failure", asyn
       partial: false,
     }),
   )
-  expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
   expect(screen.queryByText(/No project folders found/)).not.toBeInTheDocument()
   expect(ongoing.groups).toHaveBeenCalledTimes(2)
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
-it("shows one refresh action for unqualified folders after a complete check", async () => {
+it("explains unqualified folders after a complete check without offering another read", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups.mockResolvedValue({
     groups: [projectGroup({ captureSupported: false, projects: [] })],
@@ -576,7 +673,7 @@ it("shows one refresh action for unqualified folders after a complete check", as
   )
   expect(await screen.findByText("Could not check uploads for some folders.")).toBeVisible()
   expect(screen.getAllByText("Could not check uploads for some folders.")).toHaveLength(1)
-  expect(screen.getByRole("button", { name: "Refresh folders" })).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
   expect(document.querySelector("footer")?.querySelectorAll("p")).toHaveLength(0)
 })

@@ -280,6 +280,7 @@ pub(super) struct HttpTransport<'a> {
     resource_origin: String,
     membership_generation: Option<String>,
     expected_file_generation: Option<&'a str>,
+    source_authority: Option<&'a dyn Fn() -> bool>,
     pub failure: Option<Failure>,
     pub retry_after: Option<Duration>,
     /// Status and renewal both refused the exact frozen binding with a conflict.
@@ -305,6 +306,7 @@ impl<'a> HttpTransport<'a> {
             resource_origin: resource_origin.into(),
             membership_generation: None,
             expected_file_generation: None,
+            source_authority: None,
             failure: None,
             retry_after: None,
             status_renewal_conflict: false,
@@ -325,12 +327,39 @@ impl<'a> HttpTransport<'a> {
         self
     }
 
+    /// Recheck a live repository rule before reading content, sending a PUT, or finalizing.
+    pub(super) fn with_source_authority(mut self, check: &'a dyn Fn() -> bool) -> Self {
+        self.source_authority = Some(check);
+        self
+    }
+
+    /// Keep a local pause or policy change separate from loss of account access.
+    fn check_current_authority(&self) -> Result<(), TransportError> {
+        if !(self.account_current)() || self.engine.session().is_none() {
+            return Err(TransportError::Unauthorized);
+        }
+        if !(self.current)() {
+            return Err(TransportError::Rejected);
+        }
+        Ok(())
+    }
+
     fn request(
         &mut self,
         identity: &CaptureIdentity,
         route: Route,
         body: &impl Serialize,
     ) -> Result<ApiResponse, TransportError> {
+        if matches!(route, Route::Finalize)
+            && let Err(error) = self.check_source_authority()
+        {
+            self.failure = Some(if error == TransportError::Unauthorized {
+                Failure::Unauthorized
+            } else {
+                Failure::Rejected
+            });
+            return Err(error);
+        }
         match self.engine.capture_request(
             identity,
             (&self.resource_origin, self.membership_generation.as_deref()),
@@ -608,6 +637,18 @@ fn signed_request(
 }
 
 impl Transport for HttpTransport<'_> {
+    fn check_source_authority(&self) -> Result<(), TransportError> {
+        self.check_current_authority()?;
+        if let Some(check) = self.source_authority {
+            let allowed = check();
+            self.check_current_authority()?;
+            if !allowed {
+                return Err(TransportError::Rejected);
+            }
+        }
+        Ok(())
+    }
+
     fn expected_file_generation(&self) -> Option<&str> {
         self.expected_file_generation
     }
@@ -687,6 +728,7 @@ impl Transport for HttpTransport<'_> {
         )?;
         let part: Part = self.decode(response)?;
         let (url, headers) = signed_request(part, chunk)?;
+        self.check_source_authority()?;
         let mut bytes = Vec::with_capacity(chunk.compressed_bytes as usize);
         body.take(chunk.compressed_bytes + 1)
             .read_to_end(&mut bytes)
@@ -694,20 +736,15 @@ impl Transport for HttpTransport<'_> {
         if bytes.len() as u64 != chunk.compressed_bytes {
             return Err(TransportError::Rejected);
         }
-        if !(self.current)() || self.engine.session().is_none() {
-            return Err(TransportError::Unauthorized);
-        }
         // This client has no default bearer or cookie storage.
-        let response = auth::client(&url)
+        let request = auth::client(&url)
             .map_err(|_| TransportError::Rejected)?
             .put(url)
             .headers(headers)
-            .body(bytes)
-            .send()
-            .map_err(|_| TransportError::Offline)?;
-        if !(self.current)() {
-            return Err(TransportError::Unauthorized);
-        }
+            .body(bytes);
+        self.check_source_authority()?;
+        let response = request.send().map_err(|_| TransportError::Offline)?;
+        self.check_current_authority()?;
         if response.status().is_success() {
             Ok(())
         } else {

@@ -6,6 +6,8 @@ export type ToggleSwitchProps = {
   /** Required: the switch renders no visible label of its own. */
   "aria-label": string
   "aria-describedby"?: string | undefined
+  /** Prevent changes without moving focus when work starts. */
+  "aria-disabled"?: boolean | undefined
   /** `| undefined` so a wrapper can forward its own optional value under
    *  `exactOptionalPropertyTypes`. */
   disabled?: boolean | undefined
@@ -22,14 +24,18 @@ export function ToggleSwitch({
   disabled = false,
   "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
+  "aria-disabled": ariaDisabled,
 }: ToggleSwitchProps) {
   return (
     <Switch.Root
-      className="ui-switch"
+      className="ui-switch aria-disabled:opacity-50"
       checked={checked}
-      onCheckedChange={onCheckedChange}
+      onCheckedChange={(next) => {
+        if (!ariaDisabled) onCheckedChange(next)
+      }}
       aria-label={ariaLabel}
       aria-describedby={ariaDescribedBy}
+      aria-disabled={ariaDisabled || undefined}
       disabled={disabled}
     >
       <Switch.Thumb className="ui-switch-thumb" />

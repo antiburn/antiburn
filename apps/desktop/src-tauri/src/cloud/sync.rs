@@ -13,18 +13,19 @@ use crate::store::{
     cloud_capture::{
         SourceSelection,
         sync::{
-            Job, JobState, MAX_RECORDED_PROJECT_PATH_BYTES, ONGOING_CONSENT_VERSION, Policy,
-            ProjectSelection, SourceObservation,
+            Job, JobState, MAX_RECORDED_PROJECT_PATH_BYTES, MAX_SYNC_PROJECT_BINDINGS,
+            MAX_SYNC_PROJECT_PATHS, MAX_SYNC_SOURCE_ROOTS, ONGOING_CONSENT_VERSION, Policy,
+            ProjectSelection,
         },
     },
 };
-use antiburn_cloud_capture::{CaptureState, QueueEntry, TransferProgress, Transport as _};
+use antiburn_cloud_capture::{CaptureState, QueueEntry, Transport as _};
 #[cfg(all(test, unix))]
 use antiburn_cloud_capture::{Limits, MetadataSections, discover_claude, discover_opencode};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -36,9 +37,20 @@ use tokio::sync::Notify;
 
 #[path = "backfill_progress.rs"]
 mod backfill_progress;
+mod device_upload;
 mod discovery;
+mod folder_move;
 #[path = "git_checkout.rs"]
 mod git_checkout;
+mod project_directories;
+mod repository_capture;
+mod repository_policy;
+mod runtime_progress;
+mod scheduler_tick;
+mod transfer_progress;
+use repository_policy::{
+    has_folders, revoke_repository, saved_folders, saved_team_folder_id, team_policy_status,
+};
 
 use backfill_progress::{BackfillProgress, SourceProblem, UploadProgress};
 #[cfg(all(test, unix))]
@@ -50,11 +62,16 @@ use discovery::{
     reopen_waiting_source,
 };
 pub(super) use discovery::{discover_root_page, metadata_limits, source_observation};
+use folder_move::{verify_project_move, verify_project_move_to_new_policy};
+use project_directories::{exact_project_directories, validate_project_directories};
+pub(super) use scheduler_tick::start;
+use transfer_progress::{Progress, UploadTransfer, saved_transfer_progress};
 
 const RESERVATION_RETRY_DELAY: Duration = Duration::from_secs(15);
 const INTEGRITY_POLL_DELAY: Duration = Duration::from_secs(5);
 const FINALIZATION_PROBE_LIMIT: u8 = 3;
 const ROUTE_DENIAL_RETRY_DELAY: Duration = Duration::from_secs(60);
+const SYNC_CONTROL_ADMISSION_WAIT: Duration = Duration::from_secs(5);
 
 /// Explicit full session content confirmation for initial and future sessions.
 /// Old source selections and upload preferences cannot deserialize as consent.
@@ -71,6 +88,7 @@ pub(crate) struct Consent {
     full_content: bool,
     ongoing: bool,
     attachments: bool,
+    move_from: Option<MoveFrom>,
 }
 
 /// One Settings change. Adding projects requires a new full session confirmation.
@@ -84,6 +102,17 @@ pub(crate) struct ProjectChange {
     projects: Vec<ProjectSelection>,
     folder_paths: Vec<String>,
     expected_policy_revision: String,
+    /// For a move, revoke only these exact saved selections.
+    expected_removals: Option<Vec<ProjectSelection>>,
+    move_from: Option<MoveFrom>,
+}
+
+/// The source workspace and its policy revision after the move's removal step.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MoveFrom {
+    destination_id: String,
+    policy_revision: String,
 }
 
 /// Confirm the exact saved folder list and any explicit additions for one Team.
@@ -117,27 +146,6 @@ pub(crate) enum State {
     StorageUnavailable,
 }
 
-/// Confirmed compressed-byte counters for the current account's saved entries.
-#[derive(Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Progress {
-    negotiated: bool,
-    total_compressed_bytes: u64,
-    required_transfer_bytes: u64,
-    reused_bytes: u64,
-    confirmed_upload_bytes: u64,
-}
-
-impl Progress {
-    fn add(&mut self, value: TransferProgress) {
-        self.negotiated &= value.negotiated;
-        self.total_compressed_bytes += value.total_compressed_bytes;
-        self.required_transfer_bytes += value.required_transfer_bytes;
-        self.reused_bytes += value.reused_bytes;
-        self.confirmed_upload_bytes += value.confirmed_upload_bytes;
-    }
-}
-
 /// Account-bound renderer state. It contains no capture IDs, payload, signed
 /// URLs, service diagnostics, credentials, or authority to read content.
 #[derive(Clone, Default, Serialize)]
@@ -156,6 +164,12 @@ pub(crate) struct Status {
     workspace_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     saved_folders: Option<Vec<SavedFolder>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    repository_group_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    repository_folders: Vec<repository_policy::RepositoryFolder>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exact_projects: Option<Vec<ProjectSelection>>,
     /// Current Team eligibility is verified, but saved folder consent is stale.
     folder_confirmation_required: bool,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
@@ -167,8 +181,16 @@ pub(crate) struct Status {
     retry_available: bool,
     /// Desktop still has a requested sweep for this saved policy.
     backfill_in_progress: bool,
+    /// The explicit scan still has discovery, upload, or automatic verification work.
+    full_sync_in_progress: bool,
+    /// Normal discovery or resumable saved work remains, even without scan counters.
+    background_sync_in_progress: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     upload_progress: Option<UploadProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background_progress: Option<UploadProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upload_transfer: Option<UploadTransfer>,
     selected_sources: Vec<SourceSelection>,
     projects: Vec<ProjectSelection>,
     project_choices: BTreeMap<String, bool>,
@@ -194,8 +216,12 @@ impl Status {
         self.device_upload_enabled = enabled;
         self.retry_available &= enabled;
         self.backfill_in_progress &= enabled;
+        self.full_sync_in_progress &= enabled;
+        self.background_sync_in_progress &= enabled;
         if !enabled {
             self.upload_progress = None;
+            self.background_progress = None;
+            self.upload_transfer = None;
             self.automatic_recovery_count = None;
         }
         if !enabled && self.consent_version.is_some() {
@@ -256,8 +282,14 @@ struct Runner {
     retry_grant: Option<RetryGrant>,
     binding: Option<(String, String, Option<String>, String)>,
     discovery_cursor: Option<DiscoveryCursor>,
+    continue_discovery: bool,
     backfill_revision: Option<String>,
     backfill_progress: Option<BackfillProgress>,
+    /// Keep explicit run ownership until its scheduled uploads and verification drain.
+    full_sync_pending: bool,
+    background_progress: Option<BackfillProgress>,
+    /// The normal sweep has read a page that has not drained through its final cursor.
+    background_page: bool,
     backfill_page: bool,
     /// Give backfill a discovery turn before another integrity poll, even if the
     /// time between scheduler turns exceeds the poll delay.
@@ -265,10 +297,20 @@ struct Runner {
     cursor: Option<String>,
     next_integrity_poll: Option<Instant>,
     discovery_blocked: bool,
+    /// A failed provider read or capability lookup cannot advance discovery now.
+    /// This hint affects status only, not scheduling or upload admission.
+    discovery_unavailable: bool,
     unsupported_format: bool,
     state: State,
     last_status: Option<Status>,
     last_status_origin: Option<String>,
+    repository_migration: Option<(String, Instant)>,
+}
+
+enum DiscoveryRefresh {
+    Unchanged,
+    ReadPage,
+    YieldedOpenCodeSlice,
 }
 
 struct RetryGrant {
@@ -307,8 +349,7 @@ impl Scheduler {
         previous.wrapping_add(2) | 1
     }
 
-    /// Release the in-memory fence only after a successful write. A more recent
-    /// OFF request still closes admission until its own write completes.
+    /// Release this fence only for the current request. A newer OFF replaces it.
     fn finish_device_change(&self, expected: u64) -> Result<(), String> {
         self.device_pause
             .compare_exchange(expected, expected & !1, Ordering::AcqRel, Ordering::Acquire)
@@ -327,126 +368,30 @@ impl Scheduler {
     }
 }
 
-/// Start once from Cloud initialization, regardless of renderer lifetime.
-/// Only one blocking closure may run at a time. Busy turns wait for the next tick.
-pub(super) fn start(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let wake = app.state::<Controller>().sync.wake.clone();
-            tokio::select! {
-                _ = wake.notified() => {},
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {},
-            }
-            let work = app.state::<Controller>().blocking.clone();
-            let content_generation = app
-                .state::<Controller>()
-                .sync
-                .generation
-                .load(Ordering::Acquire);
-            let worker_app = app.clone();
-            let _ = work
-                .run(Priority::Normal, move || {
-                    let controller = worker_app.state::<Controller>();
-                    let mut engine = controller
-                        .engine
-                        .lock()
-                        .map_err(|_| "Cloud is unavailable.")?;
-                    let mut runner = controller
-                        .sync
-                        .runner
-                        .lock()
-                        .map_err(|_| "Cloud sync is unavailable.")?;
-                    let store = worker_app.state::<Store>();
-                    let setup_failed = ensure_cloud_setup(&controller.setup_ready, &store).is_err();
-                    let account_generation = controller.account_generation.load(Ordering::Acquire);
-                    let engine_generation = engine.generation;
-                    let current = || {
-                        controller.account_generation.load(Ordering::Acquire) == account_generation
-                            && controller.sync.generation.load(Ordering::Acquire)
-                                == content_generation
-                    };
-                    let account_current = || {
-                        engine_generation == account_generation
-                            && controller.account_generation.load(Ordering::Acquire)
-                                == account_generation
-                    };
-                    let upload_current = || controller.sync.device_admission_open() && current();
-                    let device_enabled = if setup_failed {
-                        Err("Could not read Cloud upload controls.".into())
-                    } else {
-                        controller.sync.device_upload_enabled(&store)
-                    };
-                    let mut host = controller
-                        .capture
-                        .lock()
-                        .map_err(|_| "Session capture is unavailable.")?;
-                    let mut project_cache = controller
-                        .project_cache
-                        .lock()
-                        .map_err(|_| "Project discovery is unavailable.")?;
-                    let failed = device_enabled.is_err()
-                        || runner
-                            .turn(
-                                &store,
-                                &mut host,
-                                &mut engine,
-                                &upload_current,
-                                &account_current,
-                                &mut project_cache,
-                            )
-                            .is_err();
-                    if current() {
-                        runner.report_status(
-                            &store,
-                            &mut host,
-                            &engine,
-                            failed,
-                            &account_current,
-                            |status| {
-                                emit_status(
-                                    &worker_app,
-                                    status.with_device_upload_enabled(matches!(
-                                        device_enabled,
-                                        Ok(true)
-                                    )),
-                                );
-                            },
-                        );
-                        super::emit_snapshot(&worker_app, super::snapshot(&worker_app, &engine));
-                    }
-                    if matches!(device_enabled, Ok(true)) && upload_current() && account_current() {
-                        turn_team_workspace(
-                            &worker_app,
-                            &store,
-                            &mut engine,
-                            &mut host,
-                            &mut project_cache,
-                            &upload_current,
-                            &account_current,
-                        )?;
-                    }
-                    Ok(())
-                })
-                .await;
-        }
-    });
-}
-
-/// Run one exact Team policy per tick using the account engine. Old policies
-/// without a membership generation are visible, but never enter this runner.
+/// Run one exact Team policy per tick. On a short tick, run only a pending
+/// discovery continuation and check fresh membership before using it.
 fn turn_team_workspace(
     app: &tauri::AppHandle,
     store: &Store,
     engine: &mut Engine,
     host: &mut capture::Host,
     cache: &mut super::projects::Cache,
-    current: &dyn Fn() -> bool,
-    account_current: &dyn Fn() -> bool,
-) -> Result<(), String> {
+    fences: (&dyn Fn() -> bool, &dyn Fn() -> bool),
+    regular_tick: bool,
+) -> Result<bool, String> {
+    let (current, account_current) = fences;
     let controller = app.state::<Controller>();
     let Some(session) = engine.session().cloned() else {
-        return Ok(());
+        return Ok(false);
     };
+    let mut runners = controller
+        .sync
+        .team_runners
+        .lock()
+        .map_err(|_| "Cloud sync is unavailable.")?;
+    if !regular_tick && !runners.values().any(Runner::discovery_continuation_due) {
+        return Ok(false);
+    }
     let policies = store
         .saved_team_sync_policies(
             &session.user.id,
@@ -455,26 +400,28 @@ fn turn_team_workspace(
             &session.iss,
         )
         .map_err(|_| "Could not read team folder consent.")?;
-    let mut runners = controller
-        .sync
-        .team_runners
-        .lock()
-        .map_err(|_| "Cloud sync is unavailable.")?;
     if !policies.iter().any(|policy| {
-        policy.membership_generation.is_some() && !policy.paused && !policy.projects.is_empty()
+        policy.membership_generation.is_some() && !policy.paused && has_folders(policy)
     }) {
         runners.clear();
-        return Ok(());
+        return Ok(false);
     }
     let binding = DestinationBinding {
         account_id: session.user.id.clone(),
         destination_id: session.workspace.id.clone(),
     };
+    let engine_generation = engine.generation;
     let eligible = engine.eligible_workspaces(&binding, account_current);
     if !current() {
-        return Ok(());
+        return Ok(false);
     }
-    let destinations = verified_team_turns(
+    if eligible.is_err() {
+        // A Personal continuation must not repeat a failed Team proof.
+        for runner in runners.values_mut() {
+            runner.continue_discovery = false;
+        }
+    }
+    let mut destinations = verified_team_turns(
         &policies,
         &session,
         &mut runners,
@@ -485,8 +432,15 @@ fn turn_team_workspace(
             }
         },
     );
+    if !regular_tick {
+        destinations.retain(|policy| {
+            runners
+                .get(&(session.user.id.clone(), policy.destination_id.clone()))
+                .is_some_and(Runner::discovery_continuation_due)
+        });
+    }
     if destinations.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let mut cursor = controller
         .sync
@@ -502,9 +456,11 @@ fn turn_team_workspace(
                 .is_none_or(|previous| &policy.destination_id > previous)
         })
         .unwrap_or(destinations[0]);
-    *cursor = Some(policy.destination_id.clone());
+    if regular_tick {
+        *cursor = Some(policy.destination_id.clone());
+    }
     let Some(generation) = &policy.membership_generation else {
-        return Ok(());
+        return Ok(false);
     };
     let runner = runners
         .entry((session.user.id.clone(), policy.destination_id.clone()))
@@ -516,8 +472,18 @@ fn turn_team_workspace(
             ..Runner::default()
         };
     }
+    let proof = eligible.as_deref().ok().and_then(|entries| {
+        TeamTurnProof::for_policy(&session, engine_generation, policy, entries)
+    });
     let failed = runner
-        .turn(store, host, engine, current, account_current, cache)
+        .turn(
+            store,
+            host,
+            engine,
+            current,
+            (account_current, proof),
+            cache,
+        )
         .is_err();
     let live = runner.report_status(store, host, engine, failed, account_current, |_| {});
     if current()
@@ -531,7 +497,7 @@ fn turn_team_workspace(
                 .with_device_upload_enabled(true),
         );
     }
-    Ok(())
+    Ok(!failed && runner.discovery_continuation_due())
 }
 
 /// A failed lookup is not evidence of removal. Keep scheduling state only for
@@ -547,7 +513,7 @@ fn verified_team_turns<'a>(
         .iter()
         .filter(|policy| {
             !policy.paused
-                && !policy.projects.is_empty()
+                && has_folders(policy)
                 && eligible.is_ok_and(|entries| team_has_proof(policy, entries))
         })
         .collect::<Vec<_>>();
@@ -564,7 +530,7 @@ fn verified_team_turns<'a>(
         if let Some(policy) = policies.iter().find(|policy| &policy.destination_id == id) {
             if let Err(error) = eligible
                 && !policy.paused
-                && !policy.projects.is_empty()
+                && has_folders(policy)
                 && runner.team.as_ref().is_some_and(|(team, generation)| {
                     team == id && Some(generation) == policy.membership_generation.as_ref()
                 })
@@ -601,6 +567,44 @@ fn team_has_proof(policy: &Policy, entries: &[auth::EligibleWorkspace]) -> bool 
         })
 }
 
+/// Reuse the selected Team's membership only within the turn that fetched it.
+struct TeamTurnProof<'a> {
+    session: &'a auth::Session,
+    engine_generation: u64,
+    policy: &'a Policy,
+}
+
+impl<'a> TeamTurnProof<'a> {
+    /// Create proof only for the selected destination and membership generation.
+    fn for_policy(
+        session: &'a auth::Session,
+        engine_generation: u64,
+        policy: &'a Policy,
+        entries: &[auth::EligibleWorkspace],
+    ) -> Option<Self> {
+        (policy.account_id == session.user.id
+            && policy.resource_origin.as_deref() == Some(session.resource.as_str())
+            && policy.issuer_origin.as_deref() == Some(session.iss.as_str())
+            && team_has_proof(policy, entries))
+        .then_some(Self {
+            session,
+            engine_generation,
+            policy,
+        })
+    }
+
+    /// Check the grant and exact route again after refresh and policy reload.
+    fn matches(&self, session: &auth::Session, engine_generation: u64, policy: &Policy) -> bool {
+        self.engine_generation == engine_generation
+            && self.session.same_grant(session)
+            && self.policy.account_id == policy.account_id
+            && self.policy.resource_origin == policy.resource_origin
+            && self.policy.issuer_origin == policy.issuer_origin
+            && self.policy.destination_id == policy.destination_id
+            && self.policy.membership_generation == policy.membership_generation
+    }
+}
+
 /// Do not present retained counters as authority to retry after a failed lookup.
 fn team_lookup_failed(policy: &Policy, live: Option<Status>, error: auth::Failure) -> Status {
     let mut status = team_policy_status(policy, live, None);
@@ -609,75 +613,12 @@ fn team_lookup_failed(policy: &Policy, live: Option<Status>, error: auth::Failur
         _ => State::ReauthRequired,
     };
     status.retry_available = false;
+    status.backfill_in_progress = false;
+    status.full_sync_in_progress = false;
+    status.background_sync_in_progress = false;
     status.upload_progress = None;
-    status
-}
-
-fn saved_team_folder_id(path: &str) -> String {
-    format!(
-        "saved-{}",
-        super::projects::group_id("saved-team-folder", path)
-    )
-}
-
-/// Name exact saved paths so Settings can revoke a rule without rediscovery.
-fn saved_folders(policy: &Policy) -> Vec<SavedFolder> {
-    policy
-        .projects
-        .iter()
-        .map(|project| &project.project_path)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|path| SavedFolder {
-            group_id: saved_team_folder_id(path),
-            path: path.clone(),
-        })
-        .collect()
-}
-
-/// Restore the local permission even when no current Team proof exists. Show
-/// confirmation only with fresh eligibility for the exact Team.
-fn team_policy_status(
-    policy: &Policy,
-    live: Option<Status>,
-    eligible: Option<&[auth::EligibleWorkspace]>,
-) -> Status {
-    let generation = eligible
-        .into_iter()
-        .flatten()
-        .find(|entry| {
-            entry.workspace.id == policy.destination_id
-                && entry.workspace.kind == auth::WorkspaceKind::Team
-        })
-        .and_then(|entry| entry.membership_generation.as_deref());
-    let folder_confirmation_required = !policy.projects.is_empty()
-        && generation.is_some_and(|generation| policy.needs_team_membership(generation));
-    let mut status = live
-        .filter(|value| {
-            !folder_confirmation_required
-                && value.account_id.as_deref() == Some(&policy.account_id)
-                && value.destination_id.as_deref() == Some(&policy.destination_id)
-                && value.policy_revision.as_deref() == Some(&policy.revision)
-        })
-        .unwrap_or(Status {
-            status: State::ReauthRequired,
-            ..Status::default()
-        });
-    status.account_id = Some(policy.account_id.clone());
-    status.destination_id = Some(policy.destination_id.clone());
-    status.consent_version = Some(policy.consent_version.clone());
-    status.policy_revision = Some(policy.revision.clone());
-    status.workspace_name = policy.workspace_name.clone();
-    status.team_statuses.clear();
-    status.folder_confirmation_required = folder_confirmation_required;
-    status.saved_folders = Some(saved_folders(policy));
-    status.paused = policy.paused;
-    status.source_confirmation_required = policy.paused;
-    status.projects = policy.projects.clone();
-    status.project_choices = policy.project_choices.clone();
-    if policy.paused || !eligible.is_some_and(|entries| team_has_proof(policy, entries)) {
-        status.automatic_recovery_count = None;
-    }
+    status.background_progress = None;
+    status.upload_transfer = None;
     status
 }
 
@@ -704,7 +645,7 @@ fn saved_team_statuses(
         )
         .map_err(|_| "Could not read saved team consent.")?;
     let eligible = current
-        .filter(|_| policies.iter().any(|policy| !policy.projects.is_empty()))
+        .filter(|_| policies.iter().any(has_folders))
         .map(|current| {
             let binding = DestinationBinding {
                 account_id: anchor.user.id.clone(),
@@ -778,6 +719,15 @@ fn emit_status(app: &tauri::AppHandle, status: Status) -> Status {
 }
 
 impl Runner {
+    /// Continue only a drained slice with an unread source. A control change can
+    /// clear the cursor between the turn that requested this and the short tick.
+    fn discovery_continuation_due(&self) -> bool {
+        self.continue_discovery
+            && self.discovery_cursor.is_some()
+            && self.candidates.is_empty()
+            && self.state != State::StorageUnavailable
+    }
+
     fn has_retry_grant(&self, session: &auth::Session, destination: &str) -> bool {
         self.retry_grant.as_ref().is_some_and(|grant| {
             grant.account_id == session.user.id
@@ -844,6 +794,10 @@ impl Runner {
         }
         self.backfill_revision = Some(policy.revision.clone());
         self.backfill_progress = Some(BackfillProgress::new(policy, grant_id));
+        self.full_sync_pending = true;
+        self.background_progress = None;
+        self.background_page = false;
+        self.discovery_unavailable = false;
         self.backfill_page = false;
         self.backfill_discovery_due = false;
         self.candidates.clear();
@@ -851,50 +805,16 @@ impl Runner {
         self.next_reconcile = None;
     }
 
-    fn backfill_status(&self, mut status: Status, grant_id: Option<&str>) -> Status {
-        let progress = self
-            .backfill_progress
-            .as_ref()
-            .filter(|progress| grant_id.is_some_and(|grant| progress.matches_grant(grant)));
-        status.backfill_in_progress = !status.paused
-            && progress.is_some()
-            && self.backfill_revision.is_some()
-            && self.backfill_revision == status.policy_revision;
-        status.upload_progress = progress.and_then(|progress| progress.status(&status));
-        status
-    }
-
     /// Return the current backfill progress without treating Retry as a new scan.
     fn retry_status(
         &mut self,
         saved: &BTreeSet<String>,
         grant_id: &str,
-        read_status: impl FnOnce(State, Option<&Self>) -> Result<Status, String>,
+        read_status: impl FnOnce(State, Option<&mut Self>) -> Result<Status, String>,
     ) -> Result<Status, String> {
         let state = self.retry(saved);
-        Ok(self.backfill_status(read_status(state, Some(self))?, Some(grant_id)))
-    }
-
-    fn finish_backfill_scan(&mut self) {
-        if self.backfill_page && self.candidates.is_empty() && self.discovery_cursor.is_none() {
-            if let Some(progress) = &mut self.backfill_progress {
-                progress.finish();
-                if progress.needs_refresh() {
-                    self.next_reconcile = None;
-                }
-            }
-            self.backfill_revision = None;
-            self.backfill_page = false;
-        }
-    }
-
-    /// Recheck a source when its accepted version differs from the scan.
-    fn observe_backfill_acceptance(&mut self, store: &Store, job: &Job) {
-        if let Some(progress) = &mut self.backfill_progress
-            && progress.observe_acceptance(store, job)
-        {
-            self.request_backfill_refresh();
-        }
+        let status = read_status(state, Some(self))?;
+        Ok(self.backfill_status(status, Some(grant_id)))
     }
 
     /// Start a full normal refresh so an unresolved source cannot be behind its cursor.
@@ -1006,9 +926,9 @@ impl Runner {
         policy: &Policy,
         current: &dyn Fn() -> bool,
         cache: &mut super::projects::Cache,
-    ) -> bool {
+    ) -> DiscoveryRefresh {
         if !current() {
-            return false;
+            return DiscoveryRefresh::Unchanged;
         }
         let binding = (
             policy.account_id.clone(),
@@ -1022,6 +942,7 @@ impl Runner {
             self.backfill_page = false;
             self.next_reconcile = None;
             self.next_reservation = None;
+            self.discovery_unavailable = false;
             self.binding = Some(binding);
             if self
                 .backfill_progress
@@ -1029,6 +950,15 @@ impl Runner {
                 .is_some_and(|progress| !progress.matches(policy))
             {
                 self.backfill_progress = None;
+                self.full_sync_pending = false;
+            }
+            if self
+                .background_progress
+                .as_ref()
+                .is_some_and(|progress| !progress.matches(policy))
+            {
+                self.background_progress = None;
+                self.background_page = false;
             }
         }
         if self.backfill_revision.as_deref() != Some(&policy.revision) {
@@ -1041,16 +971,22 @@ impl Runner {
                 .next_reconcile
                 .is_some_and(|time| time > Instant::now())
         {
-            return false;
+            return DiscoveryRefresh::Unchanged;
         }
         if self.discovery_cursor.is_none() {
             self.discovery_blocked = false;
             self.unsupported_format = false;
+            self.start_background_scan(policy);
         }
         let cursor = self.discovery_cursor.clone().unwrap_or_default();
         match discover_policy_page(policy, current, cache, &cursor) {
             Ok((candidates, next_cursor, coverage)) => {
+                self.discovery_unavailable = false;
+                let slice_advanced = coverage.opencode_slice_yielded
+                    && next_cursor.as_ref().is_some_and(|next| next != &cursor);
                 self.backfill_page = self.backfill_revision.is_some();
+                self.background_page =
+                    !self.full_sync_pending && self.background_progress.is_some();
                 if self.backfill_page
                     && let Some(progress) = &mut self.backfill_progress
                 {
@@ -1060,6 +996,12 @@ impl Runner {
                     } else {
                         progress.record_decision("discovery_page_complete");
                     }
+                }
+                if self.background_page
+                    && let Some(progress) = &mut self.background_progress
+                    && (coverage.partial || coverage.blocked)
+                {
+                    progress.mark_incomplete();
                 }
                 tracing::debug!(
                     event = "cloud_sync_discovery_page",
@@ -1076,129 +1018,36 @@ impl Runner {
                     .discovery_cursor
                     .is_none()
                     .then(|| Instant::now() + Duration::from_secs(60));
-                true
+                if slice_advanced {
+                    DiscoveryRefresh::YieldedOpenCodeSlice
+                } else {
+                    DiscoveryRefresh::ReadPage
+                }
             }
-            Err(_) if !current() => false,
+            Err(_) if !current() => DiscoveryRefresh::Unchanged,
             Err(_) => {
+                self.discovery_unavailable = true;
                 self.backfill_revision = None;
                 self.backfill_page = false;
                 self.discovery_blocked = true;
                 if let Some(progress) = &mut self.backfill_progress {
                     progress.abort("discovery_unavailable");
                 }
+                self.background_page = false;
+                if let Some(progress) = &mut self.background_progress {
+                    progress.abort("discovery_unavailable");
+                }
                 self.next_reconcile = Some(Instant::now() + Duration::from_secs(60));
-                false
+                DiscoveryRefresh::Unchanged
             }
         }
     }
 
-    /// Record a reason only when this backfill has already counted the source.
+    /// Record a problem only in runs that already counted the source.
     fn observe_backfill_problem(&mut self, source_id: &str, problem: Option<SourceProblem>) {
-        if let Some(progress) = &mut self.backfill_progress {
+        for progress in self.progress_trackers() {
             progress.observe_problem(source_id, problem);
         }
-    }
-
-    /// Publish a closed failure without rereading failed storage. Retained
-    /// counters are last-known values for the same account and service only.
-    /// `storage_known: false` makes their current values explicitly unknown.
-    fn report_status(
-        &mut self,
-        store: &Store,
-        host: &mut capture::Host,
-        engine: &Engine,
-        failed: bool,
-        account_current: &dyn Fn() -> bool,
-        publish: impl FnOnce(Status),
-    ) -> Status {
-        if failed {
-            self.backfill_revision = None;
-            self.backfill_page = false;
-            self.backfill_progress = None;
-        } else {
-            self.finish_backfill_scan();
-        }
-        let read = if failed {
-            Err("Capture storage is unavailable.".to_owned())
-        } else if !account_current() {
-            Ok(Status {
-                status: State::ReauthRequired,
-                ..Status::default()
-            })
-        } else {
-            status_for_destination(
-                store,
-                host,
-                engine,
-                self.state,
-                self.team.as_ref().map(|(id, _)| id.as_str()),
-                Some(self),
-            )
-        };
-        let mut result = match read {
-            Ok(value) => {
-                let grant_id = engine.session().map(|session| session.grant_id.as_str());
-                if let Some(progress) = &mut self.backfill_progress
-                    && grant_id.is_some_and(|grant| progress.matches_grant(grant))
-                {
-                    progress.log_progress();
-                }
-                let value = self.backfill_status(value, grant_id);
-                self.last_status = Some(value.clone());
-                self.last_status_origin = engine.resource_origin().map(str::to_owned);
-                value
-            }
-            Err(_) => {
-                self.state = State::StorageUnavailable;
-                self.backfill_revision = None;
-                self.backfill_page = false;
-                self.backfill_progress = None;
-                let previous = self.last_status.as_ref().filter(|previous| {
-                    account_current()
-                        && self.last_status_origin.as_deref() == engine.resource_origin()
-                        && engine.session().is_some_and(|session| {
-                            previous.account_id.as_deref() == Some(&session.user.id)
-                                && previous.destination_id.as_deref()
-                                    == Some(
-                                        self.team
-                                            .as_ref()
-                                            .map_or(session.workspace.id.as_str(), |(id, _)| id),
-                                    )
-                        })
-                });
-                let mut value = previous.cloned().unwrap_or_default();
-                if account_current()
-                    && let Some(session) = engine.session()
-                {
-                    value.account_id = Some(session.user.id.clone());
-                    value.destination_id = Some(
-                        self.team
-                            .as_ref()
-                            .map_or(&session.workspace.id, |(id, _)| id)
-                            .clone(),
-                    );
-                }
-                value.status = State::StorageUnavailable;
-                value.storage_known = false;
-                value.automatic_recovery_count = None;
-                value.retry_available = false;
-                value.backfill_in_progress = false;
-                value.upload_progress = None;
-                value
-            }
-        };
-        if !account_current() {
-            result = Status {
-                status: if self.state == State::StorageUnavailable {
-                    State::StorageUnavailable
-                } else {
-                    State::ReauthRequired
-                },
-                ..Status::default()
-            };
-        }
-        publish(result.clone());
-        result
     }
 
     /// Reconcile receipts locally even after logout. Network and source work need
@@ -1209,9 +1058,11 @@ impl Runner {
         host: &mut capture::Host,
         engine: &mut Engine,
         current: &dyn Fn() -> bool,
-        account_current: &dyn Fn() -> bool,
+        authority: (&dyn Fn() -> bool, Option<TeamTurnProof<'_>>),
         cache: &mut super::projects::Cache,
     ) -> Result<(), String> {
+        let (account_current, team_proof) = authority;
+        self.continue_discovery = false;
         let device_enabled = store
             .cloud_device_upload_enabled()
             .map_err(|_| "Could not read Cloud upload controls.")?;
@@ -1231,14 +1082,20 @@ impl Runner {
                 store
                     .accept_cloud_sync(entry)
                     .map_err(|_| "Could not save accepted capture state.")?;
+                self.observe_accepted_transfer(&job, entry)?;
                 self.observe_backfill_acceptance(store, &job);
                 host.spool()?
                     .acknowledge_accepted(&entry.identity)
                     .map_err(|_| "Could not acknowledge accepted capture state.")?;
             }
         }
-        if !account_current() || !current() {
-            self.state = State::ReauthRequired;
+        let account_is_current = account_current();
+        if !account_is_current || !current() {
+            self.state = if account_is_current {
+                State::Paused
+            } else {
+                State::ReauthRequired
+            };
             return Ok(());
         }
         if let Err(error) = engine.refresh(now(), account_current) {
@@ -1260,12 +1117,22 @@ impl Runner {
                 .is_some_and(|progress| !progress.matches_grant(&session.grant_id))
         {
             self.backfill_progress = None;
+            self.full_sync_pending = false;
             self.backfill_revision = None;
             self.backfill_page = false;
             self.backfill_discovery_due = false;
             self.candidates.clear();
             self.discovery_cursor = None;
             self.next_reconcile = None;
+        }
+        if let Some(session) = &session
+            && self
+                .background_progress
+                .as_ref()
+                .is_some_and(|progress| !progress.matches_grant(&session.grant_id))
+        {
+            self.background_progress = None;
+            self.background_page = false;
         }
         // Auth and acknowledged receipts are independent of upload admission.
         if !device_enabled || !current() {
@@ -1310,6 +1177,12 @@ impl Runner {
             self.candidates.clear();
             return Ok(());
         }
+        let policy = repository_policy::try_migration(
+            store,
+            policy,
+            &mut self.repository_migration,
+            current,
+        );
         if policy.paused || !current() {
             self.state = State::Paused;
             self.candidates.clear();
@@ -1323,6 +1196,7 @@ impl Runner {
             return Ok(());
         }
         if let Some(generation) = policy.membership_generation.as_deref()
+            && !team_proof.is_some_and(|proof| proof.matches(&session, engine.generation, &policy))
             && !eligible_team(
                 engine,
                 &policy.account_id,
@@ -1474,6 +1348,22 @@ impl Runner {
             let Some(job) = jobs.iter().find(|job| job.identity == entry.identity) else {
                 return Err("Saved capture binding is unavailable.".into());
             };
+            if entry.state == CaptureState::Queued
+                && !repository_capture::saved_job_origin_current(job)
+            {
+                store
+                    .set_cloud_sync_job_state(job, JobState::Fenced)
+                    .map_err(|_| "Could not save the changed repository state.")?;
+                self.retry_deadlines.insert(
+                    job.identity.capture_id.clone(),
+                    (
+                        now_instant + ROUTE_DENIAL_RETRY_DELAY,
+                        upload::Failure::Unavailable,
+                    ),
+                );
+                self.state = State::Fenced;
+                return Ok(());
+            }
             let origin = job
                 .resource_origin
                 .as_deref()
@@ -1504,6 +1394,16 @@ impl Runner {
                     let kind = failure
                         .as_ref()
                         .map_or(upload::Failure::Unavailable, |err| err.failure);
+                    if !unsupported
+                        && matches!(
+                            kind,
+                            upload::Failure::Unavailable
+                                | upload::Failure::Unauthorized
+                                | upload::Failure::Rejected
+                        )
+                    {
+                        self.discovery_unavailable = true;
+                    }
                     if kind == upload::Failure::RouteDenied {
                         self.defer_route_denial(failure.and_then(|err| err.retry_after));
                         return Ok(());
@@ -1530,11 +1430,18 @@ impl Runner {
                 self.unsupported_saved_uploads
                     .remove(&job.identity.capture_id);
             }
+            let source_authority = || repository_capture::saved_job_origin_current(job);
             let mut transport =
                 upload::HttpTransport::new(engine, account_current, current, origin, None)
+                    .with_source_authority(&source_authority)
                     .with_membership_generation(job.membership_generation.as_deref());
             let started = Instant::now();
             let mut result = host.spool()?.resume_step(&entry.identity, &mut transport);
+            if result.is_err() && !current() {
+                // Keep the saved job resumable when local admission closes.
+                self.state = State::Paused;
+                return Ok(());
+            }
             let saved_replay_attempts = self
                 .conflict_finalization_replays
                 .get(&entry.identity.capture_id)
@@ -1752,6 +1659,7 @@ impl Runner {
                 store
                     .accept_cloud_sync(&step.entry)
                     .map_err(|_| "Could not save accepted capture state.")?;
+                self.observe_accepted_transfer(job, &step.entry)?;
                 self.observe_backfill_acceptance(store, job);
                 host.spool()?
                     .acknowledge_accepted(&step.entry.identity)
@@ -1759,13 +1667,20 @@ impl Runner {
             }
             return Ok(());
         }
-        if self.refresh_candidates(&policy, current, cache)
+        let discovery = self.refresh_candidates(&policy, current, cache);
+        if !matches!(discovery, DiscoveryRefresh::Unchanged)
             && let Some(progress) = &mut self.backfill_progress
         {
             progress.observe_page(store, &self.candidates, !self.backfill_page);
             if !self.backfill_page && self.discovery_cursor.is_none() {
                 progress.finish_refresh();
             }
+        }
+        if !matches!(discovery, DiscoveryRefresh::Unchanged)
+            && self.background_page
+            && let Some(progress) = &mut self.background_progress
+        {
+            progress.observe_page(store, &self.candidates, false);
         }
         if current() {
             self.backfill_discovery_due = false;
@@ -1815,7 +1730,9 @@ impl Runner {
                         candidate,
                         scope: job.source_scope_id.clone(),
                         project: job.project_path.clone(),
+                        repository_origin: job.repository_origin.clone(),
                         observation: job.observation_key.clone(),
+                        folder_group_id: None,
                     });
                 }
                 Err(_) => {
@@ -1905,10 +1822,6 @@ impl Runner {
                     JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
                 )
             });
-            let skip_matching_receipt = !self.backfill_page
-                || self.backfill_progress.as_ref().is_some_and(|progress| {
-                    progress.accepted_during_scan(selection.candidate.source_id())
-                });
             if store
                 .cloud_sync_source(
                     &policy.account_id,
@@ -1922,8 +1835,7 @@ impl Runner {
                 .map_err(|_| "Could not read accepted source state.")?
                 .is_some_and(|source| {
                     source.suppressed
-                        || (skip_matching_receipt
-                            && waiting.is_none()
+                        || (waiting.is_none()
                             && source.observation_key.as_deref() == Some(&selection.observation))
                 })
             {
@@ -1941,7 +1853,10 @@ impl Runner {
                     account_current,
                     current,
                 ) {
-                    Ok(capabilities) => slot.insert(capabilities),
+                    Ok(capabilities) => {
+                        self.discovery_unavailable = false;
+                        slot.insert(capabilities)
+                    }
                     Err(failure) if failure.failure == upload::Failure::RouteDenied => {
                         self.defer_route_denial(failure.retry_after);
                         self.candidates.push_front(selection);
@@ -1960,6 +1875,7 @@ impl Runner {
                             _ => State::UploadUnavailable,
                         };
                         if matches!(self.state, State::UploadUnavailable | State::ReauthRequired) {
+                            self.discovery_unavailable = true;
                             self.backfill_revision = None;
                             self.backfill_page = false;
                             if let Some(progress) = &mut self.backfill_progress {
@@ -1968,6 +1884,10 @@ impl Runner {
                                 } else {
                                     "capabilities_unavailable"
                                 });
+                            }
+                            self.background_page = false;
+                            if let Some(progress) = &mut self.background_progress {
+                                progress.abort("capabilities_unavailable");
                             }
                         }
                         self.candidates.push_front(selection);
@@ -1986,25 +1906,24 @@ impl Runner {
             let limits = capabilities.limits.clone();
             host.configure_limits(limits.clone())?;
             let folders = if let Some(job) = waiting {
-                job.project_folders
-                    .iter()
-                    .map(Path::new)
-                    .map(Path::to_owned)
-                    .collect()
+                waiting_project_directories(job)
+            } else if selection.repository_origin.is_some() {
+                vec![Path::new(&selection.project).to_owned()]
             } else {
-                policy
-                    .projects
-                    .iter()
-                    .filter(|project| {
-                        Path::new(&selection.project).starts_with(&project.project_path)
-                            && policy.roots.iter().any(|root| {
-                                root.source_scope_id == selection.scope
-                                    && root.source_kind == project.source_kind
-                                    && root.path == project.source_path
-                            })
-                    })
-                    .map(|project| Path::new(&project.project_path).to_owned())
-                    .collect()
+                exact_project_directories(
+                    policy
+                        .projects
+                        .iter()
+                        .filter(|project| {
+                            Path::new(&selection.project).starts_with(&project.project_path)
+                                && policy.roots.iter().any(|root| {
+                                    root.source_scope_id == selection.scope
+                                        && root.source_kind == project.source_kind
+                                        && root.path == project.source_path
+                                })
+                        })
+                        .map(|project| project.project_path.as_str()),
+                )
             };
             let project_selection = antiburn_cloud_capture::ProjectSelection::new(folders);
             let projects = project_selection
@@ -2049,7 +1968,7 @@ impl Runner {
                         return Ok(());
                     }
                     if excluded {
-                        if let Some(progress) = &mut self.backfill_progress {
+                        for progress in self.progress_trackers() {
                             progress.observe_exclusion(selection.candidate.source_id());
                         }
                         continue;
@@ -2057,6 +1976,9 @@ impl Runner {
                     if self.backfill_page
                         && let Some(progress) = &mut self.backfill_progress
                     {
+                        progress.mark_incomplete();
+                    }
+                    if let Some(progress) = &mut self.background_progress {
                         progress.mark_incomplete();
                     }
                     self.discovery_blocked = true;
@@ -2090,6 +2012,24 @@ impl Runner {
                 self.observe_backfill_problem(candidate.source_id(), Some(SourceProblem::Blocked));
                 continue;
             }
+            if let Some(origin) = &selection.repository_origin
+                && !repository_capture::recheck_repository_project(
+                    &policy,
+                    &selection.scope,
+                    origin,
+                    &selection.project,
+                    &recorded_paths,
+                )
+            {
+                if let Some(job) = waiting {
+                    store
+                        .set_cloud_sync_job_state(job, JobState::Interrupted)
+                        .map_err(|_| "Could not save the changed capture project state.")?;
+                }
+                self.discovery_blocked = true;
+                self.observe_backfill_problem(candidate.source_id(), Some(SourceProblem::Blocked));
+                continue;
+            }
             let recorded_paths = recorded_paths
                 .iter()
                 .map(|path| path.to_str().map(str::to_owned))
@@ -2116,20 +2056,26 @@ impl Runner {
             let mut job = if let Some(job) = saved {
                 job.clone()
             } else {
-                let Some(job) = store
-                    .enqueue_cloud_sync_with_paths(
+                let queued = match &selection.repository_origin {
+                    Some(origin) => store.enqueue_cloud_sync_for_repository(
                         &policy,
                         &selection.scope,
                         &selection.project,
                         selection.candidate.source_id(),
-                        if self.backfill_page {
-                            SourceObservation::Backfill(&selection.observation)
-                        } else {
-                            SourceObservation::ChangedOnly(&selection.observation)
-                        },
+                        &selection.observation,
+                        (origin, &recorded_paths),
+                    ),
+                    None => store.enqueue_cloud_sync_with_paths(
+                        &policy,
+                        &selection.scope,
+                        &selection.project,
+                        selection.candidate.source_id(),
+                        &selection.observation,
                         Some(&recorded_paths),
-                    )
-                    .map_err(|_| "Could not save a capture job. Saved bytes are kept.")?
+                    ),
+                };
+                let Some(job) =
+                    queued.map_err(|_| "Could not save a capture job. Saved bytes are kept.")?
                 else {
                     continue;
                 };
@@ -2222,6 +2168,7 @@ impl Runner {
                 return Ok(());
             }
             let source = upload::Source::from_candidate(&candidate);
+            let source_authority = || repository_capture::saved_job_origin_current(&job);
             let mut transport = upload::HttpTransport::new(
                 engine,
                 account_current,
@@ -2232,6 +2179,7 @@ impl Runner {
                 Some(source),
             )
             .with_membership_generation(job.membership_generation.as_deref())
+            .with_source_authority(&source_authority)
             .with_expected_file_generation(&job.observation_key);
             let result = if retry_reservation {
                 host.spool()?.retry_reservation(
@@ -2265,10 +2213,14 @@ impl Runner {
                     )?;
                 }
                 file_refresh_due = true;
-                if let Some(progress) = &mut self.backfill_progress
+                if self.full_sync_pending
+                    && let Some(progress) = &mut self.backfill_progress
                     && progress.refresh_changed_source(&job.identity.source_id)
                 {
                     self.request_backfill_refresh();
+                }
+                if let Some(progress) = &mut self.background_progress {
+                    progress.refresh_changed_source(&job.identity.source_id);
                 }
                 tracing::debug!(
                     event = "cloud_sync_capture_decision",
@@ -2281,7 +2233,7 @@ impl Runner {
                 store.suppress_cloud_sync(&job).map_err(
                     |_| "Could not save the Cloud deletion outcome. Saved captures are kept.",
                 )?;
-                if let Some(progress) = &mut self.backfill_progress {
+                for progress in self.progress_trackers() {
                     progress.observe_suppression(&job);
                 }
                 host.spool()?.cancel(&job.identity).map_err(
@@ -2424,6 +2376,7 @@ impl Runner {
         } else {
             State::Ready
         };
+        self.continue_discovery = matches!(discovery, DiscoveryRefresh::YieldedOpenCodeSlice);
         Ok(())
     }
 }
@@ -2578,6 +2531,15 @@ fn empty_preparation(entry: &QueueEntry) -> bool {
         && !entry.completion_submitted
 }
 
+/// Retry a waiting capture with the same project directory binding.
+fn waiting_project_directories(job: &Job) -> Vec<PathBuf> {
+    if job.repository_origin.is_some() {
+        vec![PathBuf::from(&job.project_path)]
+    } else {
+        exact_project_directories(job.project_folders.iter().map(String::as_str))
+    }
+}
+
 fn transport_state<T>(
     failure: Option<upload::Failure>,
     result: &Result<T, antiburn_cloud_capture::Error>,
@@ -2615,13 +2577,15 @@ fn status(
     status_for_destination(store, host, engine, state, None, None)
 }
 
+/// Read one destination and refresh its scan counters from the same spool snapshot.
+/// An absent runner leaves scan state unchanged. This does not request upload work.
 fn status_for_destination(
     store: &Store,
     host: &mut capture::Host,
     engine: &Engine,
     state: State,
     team: Option<&str>,
-    runner: Option<&Runner>,
+    runner: Option<&mut Runner>,
 ) -> Result<Status, String> {
     let Some(session) = engine.session() else {
         return Ok(Status {
@@ -2674,14 +2638,20 @@ fn status_for_destination(
     let can_offer_retry = !policy.paused
         && policy.team_grant_id.is_none()
         && !matches!(state, State::ReauthRequired | State::StorageUnavailable);
-    let recovery_runner = runner.filter(|_| can_offer_retry && state != State::Paused);
+    let recovery_runner = runner
+        .as_deref()
+        .filter(|_| can_offer_retry && state != State::Paused);
     status.automatic_recovery_count = recovery_runner.map(|_| 0);
     let mut retryable = Vec::new();
+    let mut pending_upload = false;
     for job in &jobs {
         if !job.allowed(&policy) {
             continue;
         }
         let entry = entries.iter().find(|entry| entry.identity == job.identity);
+        pending_upload |= runner
+            .as_deref()
+            .is_some_and(|runner| runner.has_scheduled_upload(job, entry, state));
         if recovery_runner
             .is_some_and(|runner| runner.will_recover_automatically(job, entry, state))
         {
@@ -2735,32 +2705,28 @@ fn status_for_destination(
     status.retry_available = !retryable.is_empty();
     status.consent_version = Some(policy.consent_version.clone());
     status.policy_revision = Some(policy.revision.clone());
-    status.projects = policy.projects.clone();
+    repository_policy::apply_folder_status(&mut status, &policy);
     status.project_choices = policy.project_choices.clone();
     if team.is_none() {
         (status.accepted_count, status.suppressed_count) = store
             .cloud_sync_outcome_counts(&session.user.id, destination, &session.resource)
             .map_err(|_| "Could not read accepted source state.")?;
     }
-    status.progress.negotiated = true;
-    let mut has_progress = false;
-    for entry in entries {
-        if entry.identity.account_id == session.user.id
-            && entry.identity.destination_id == destination
-            && jobs
-                .iter()
-                .any(|job| job.identity == entry.identity && job.allowed(&policy))
-        {
-            has_progress = true;
-            status.progress.add(
-                entry
-                    .progress()
-                    .map_err(|_| "Could not read saved capture progress.")?,
-            );
-        }
+    let (progress, transfer) = saved_transfer_progress(&policy, &jobs, &entries)?;
+    status.progress = progress;
+    if !policy.paused && matches!(state, State::Ready | State::Syncing) {
+        status.upload_transfer = transfer;
     }
-    if !has_progress {
-        status.progress.negotiated = false;
+    if let Some(runner) = runner {
+        for progress in runner.progress_trackers() {
+            if progress.matches(&policy) && progress.matches_grant(&session.grant_id) {
+                progress.observe_transfers(&policy, &jobs, &entries)?;
+            }
+        }
+        status.storage_known = true;
+        let pending_upload = pending_upload
+            && (status.status != State::Offline || engine.status == super::AuthStatus::SignedIn);
+        runner.update_runtime_progress(&policy, &session.grant_id, pending_upload, &mut status);
     }
     if engine.session().is_none() {
         return Ok(Status {
@@ -2859,7 +2825,10 @@ fn read_sync_status(app: &tauri::AppHandle, verify_teams: bool) -> Result<Status
 
 fn selected_sources(folders: &[Folder]) -> Result<Vec<SourceSelection>, String> {
     let roots = capture::selected_roots(folders);
-    if roots.is_empty() || roots.len() > 100 || roots.windows(2).any(|pair| pair[0] == pair[1]) {
+    if roots.is_empty()
+        || roots.len() > MAX_SYNC_SOURCE_ROOTS
+        || roots.windows(2).any(|pair| pair[0] == pair[1])
+    {
         return Err("Choose valid session sources before confirming Cloud sync.".into());
     }
     let provider_roots = if roots.iter().any(|root| root.source_kind.is_project_only()) {
@@ -3007,7 +2976,7 @@ pub(crate) async fn cloud_enable_sync(
     let generation = controller.account_generation.load(Ordering::Acquire);
     let content_generation = controller.sync.generation.load(Ordering::Acquire);
     let result = work
-        .run(Priority::Normal, move || {
+        .run(Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT), move || {
             let controller = app.state::<Controller>();
             let account_current =
                 || controller.account_generation.load(Ordering::Acquire) == generation;
@@ -3040,9 +3009,8 @@ pub(crate) async fn cloud_enable_sync(
                 || !consent.ongoing
                 || consent.attachments
                 || consent.selected_sources.is_empty()
-                || consent.selected_sources.len() > 100
+                || consent.selected_sources.len() > MAX_SYNC_SOURCE_ROOTS
                 || consent.projects.is_empty()
-                || consent.projects.len() > 100
                 || serde_json::to_vec(&consent.project_choices)
                     .map_err(|_| "Could not read confirmed project choices.")?
                     .len()
@@ -3054,14 +3022,7 @@ pub(crate) async fn cloud_enable_sync(
             }
             consent.selected_sources.sort();
             consent.projects.sort();
-            antiburn_cloud_capture::ProjectSelection::new(
-                consent
-                    .projects
-                    .iter()
-                    .map(|project| Path::new(&project.project_path).to_owned())
-                    .collect(),
-            )
-            .map_err(|_| "Choose existing project directories without path aliases.")?;
+            validate_project_directories(consent.projects.iter())?;
             let folders = consent
                 .selected_sources
                 .iter()
@@ -3089,7 +3050,7 @@ pub(crate) async fn cloud_enable_sync(
                     destination_id: session.workspace.id.clone(),
                 })
                 .ok_or("The selected workspace connection changed.")?;
-            super::projects::confirm_project_choices(
+            let (_, repository_anchors) = super::projects::confirm_project_choices_with_origins(
                 &store,
                 &mut *controller
                     .project_cache
@@ -3132,6 +3093,20 @@ pub(crate) async fn cloud_enable_sync(
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?
                 .configure_limits(capabilities.limits)?;
+            if let Some(move_from) = &consent.move_from {
+                let session = engine
+                    .session()
+                    .filter(|session| anchor.matches(session) && account_current())
+                    .ok_or("The selected workspace connection changed.")?;
+                verify_project_move_to_new_policy(
+                    &store,
+                    session,
+                    &binding.destination_id,
+                    move_from,
+                    &consent.projects,
+                    &repository_anchors,
+                )?;
+            }
             controller
                 .sync
                 .generation
@@ -3147,7 +3122,7 @@ pub(crate) async fn cloud_enable_sync(
                 .filter(|session| session.user.id == consent.account_id && account_current())
                 .ok_or("The selected workspace connection changed.")?;
             let saved = store
-                .save_cloud_sync_policy_for_membership(
+                .save_cloud_sync_policy_with_repositories(
                     (
                         &consent.account_id,
                         &consent.destination_id,
@@ -3159,6 +3134,7 @@ pub(crate) async fn cloud_enable_sync(
                     &roots,
                     &consent.projects,
                     &consent.project_choices,
+                    &repository_anchors,
                     || {
                         account_current()
                             && controller.sync.generation.load(Ordering::Acquire)
@@ -3224,7 +3200,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
         additions,
     } = confirmation;
     if folder_paths.is_empty()
-        || folder_paths.len() > 100
+        || folder_paths.len() > MAX_SYNC_PROJECT_PATHS
         || !folder_paths
             .iter()
             .all(|path| crate::store::cloud_capture::sync::valid_project_path(path))
@@ -3236,11 +3212,11 @@ pub(crate) async fn cloud_reapprove_team_sync(
     if confirmed_paths.len() != count {
         return Err("Reload the saved Team folders before confirming.".into());
     }
-    if additions.len() > 100
+    if additions.len() > MAX_SYNC_PROJECT_PATHS
         || additions.values().any(Vec::is_empty)
-        || additions.values().map(Vec::len).sum::<usize>() > 100
+        || additions.values().map(Vec::len).sum::<usize>() > MAX_SYNC_PROJECT_BINDINGS
     {
-        return Err("Choose fewer Team folders and try again.".into());
+        return Err("Reload projects and choose supported Team folders.".into());
     }
     let choices: BTreeMap<_, _> = additions.keys().map(|id| (id.clone(), true)).collect();
     let projects: BTreeSet<_> = additions.into_values().flatten().collect();
@@ -3250,7 +3226,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
     let work = controller.blocking.clone();
     let wake = controller.sync.wake.clone();
     let result = work
-        .run(Priority::Wait(Duration::from_secs(5)), move || {
+        .run(Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT), move || {
             let controller = app.state::<Controller>();
             let account_current =
                 || controller.account_generation.load(Ordering::Acquire) == account_generation;
@@ -3281,19 +3257,14 @@ pub(crate) async fn cloud_reapprove_team_sync(
                 .ok_or("The selected workspace connection changed.")?;
             let store = app.state::<Store>();
             ensure_cloud_setup(&controller.setup_ready, &store)?;
+            let mut repository_anchors = BTreeMap::new();
             if !projects.is_empty() {
-                antiburn_cloud_capture::ProjectSelection::new(
-                    projects
-                        .iter()
-                        .map(|project| Path::new(&project.project_path).to_owned())
-                        .collect(),
-                )
-                .map_err(|_| "Choose existing project directories without path aliases.")?;
+                validate_project_directories(projects.iter())?;
                 let anchor = DestinationBinding {
                     account_id: session.user.id.clone(),
                     destination_id: session.workspace.id.clone(),
                 };
-                super::projects::confirm_project_choices(
+                (_, repository_anchors) = super::projects::confirm_project_choices_with_origins(
                     &store,
                     &mut *controller
                         .project_cache
@@ -3327,7 +3298,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
                     .configure_limits(capabilities.limits)?;
             }
             let saved = store
-                .renew_cloud_team_sync_policy(
+                .renew_cloud_team_sync_policy_with_repositories(
                     (
                         &account_id,
                         &destination_id,
@@ -3337,7 +3308,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
                     ),
                     &expected_policy_revision,
                     &confirmed_paths,
-                    (!projects.is_empty()).then_some((&projects, &choices)),
+                    (!projects.is_empty()).then_some((&projects, &choices, &repository_anchors)),
                     || {
                         current()
                             && engine
@@ -3379,11 +3350,20 @@ pub(crate) async fn cloud_reapprove_team_sync(
 #[tauri::command]
 pub(crate) async fn cloud_set_sync_project(
     app: tauri::AppHandle,
-    change: ProjectChange,
+    mut change: ProjectChange,
 ) -> Result<Status, String> {
-    use super::projects::confirm_project_choices;
+    use super::projects::confirm_project_choices_with_origins;
     use crate::store::cloud_capture::sync::valid_project_path;
 
+    if change.projects.len() > MAX_SYNC_PROJECT_BINDINGS
+        || change.folder_paths.len() > MAX_SYNC_PROJECT_PATHS
+        || change
+            .expected_removals
+            .as_ref()
+            .is_some_and(|removals| removals.len() > MAX_SYNC_PROJECT_BINDINGS)
+    {
+        return Err("Reload projects and choose a supported Cloud project.".into());
+    }
     let group_key = if !change.selected {
         change
             .group_id
@@ -3396,12 +3376,12 @@ pub(crate) async fn cloud_set_sync_project(
         || !group_key
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        || change.projects.len() > 100
-        || change.folder_paths.len() > 100
         || !change
             .folder_paths
             .iter()
             .all(|path| valid_project_path(path))
+        || (change.selected && change.expected_removals.is_some())
+        || (change.move_from.is_some() && !change.selected)
         || (change.selected && change.projects.is_empty())
     {
         return Err("Reload projects and choose a supported Cloud project.".into());
@@ -3415,10 +3395,10 @@ pub(crate) async fn cloud_set_sync_project(
     } else {
         controller.sync.generation.fetch_add(1, Ordering::AcqRel) + 1
     };
-    let priority = if change.selected {
-        Priority::Normal
-    } else {
+    let priority = if !change.selected {
         Priority::Cleanup
+    } else {
+        Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT)
     };
     let result = work
         .run(priority, move || {
@@ -3510,7 +3490,7 @@ pub(crate) async fn cloud_set_sync_project(
             let membership_generation = team.as_ref().map(|(generation, _)| generation.as_str());
             let reapprove = membership_generation
                 .is_some_and(|generation| policy.needs_team_membership(generation));
-            if reapprove && !policy.projects.is_empty() {
+             if reapprove && has_folders(&policy) {
                 return Err("Confirm the saved Team folders before adding more.".into());
             }
             if !current() {
@@ -3520,16 +3500,12 @@ pub(crate) async fn cloud_set_sync_project(
                 .capture
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?;
-            let (projects, fence, clear_source_hold) = if change.selected {
-                let projects: BTreeSet<_> = change.projects.into_iter().collect();
-                antiburn_cloud_capture::ProjectSelection::new(
-                    projects
-                        .iter()
-                        .map(|project| Path::new(&project.project_path).to_owned())
-                        .collect(),
-                )
-                .map_err(|_| "Choose existing project directories without path aliases.")?;
-                let allowed_roots = confirm_project_choices(
+             let mut repository_anchors = BTreeMap::new();
+             let remove_repository = !change.selected && policy.repository_rule_for_group(&change.group_id).is_some();
+             let (projects, fence, clear_source_hold) = if change.selected {
+                let projects: BTreeSet<_> = std::mem::take(&mut change.projects).into_iter().collect();
+                validate_project_directories(projects.iter())?;
+                 let (allowed_roots, verified_anchors) = confirm_project_choices_with_origins(
                     &store,
                     &mut *controller
                         .project_cache
@@ -3539,7 +3515,8 @@ pub(crate) async fn cloud_set_sync_project(
                     &[(change.group_id.clone(), true)].into(),
                     &projects,
                     &current,
-                )?;
+                 )?;
+                 repository_anchors = verified_anchors;
                 let clear_source_hold = policy.paused
                     && policy.roots.iter().all(|root| {
                         allowed_roots.iter().any(|allowed| {
@@ -3566,6 +3543,13 @@ pub(crate) async fn cloud_set_sync_project(
                     return Err("Cloud does not support the session formats in this folder.".into());
                 }
                 host.configure_limits(capabilities.limits)?;
+                if let Some(move_from) = &change.move_from {
+                    let active = engine
+                        .session()
+                        .filter(|active| active.same_grant(&session))
+                        .ok_or("The selected workspace connection changed.")?;
+                     verify_project_move(&store, active, &binding.destination_id, move_from, &projects, &repository_anchors)?;
+                }
                 controller
                     .sync
                     .generation
@@ -3579,7 +3563,7 @@ pub(crate) async fn cloud_set_sync_project(
                 (projects, content_generation + 1, clear_source_hold)
             } else {
                 (
-                    project_removals(&policy, &change)?,
+                     if remove_repository { BTreeSet::new() } else { project_removals(&policy, &change)? },
                     content_generation,
                     false,
                 )
@@ -3591,7 +3575,9 @@ pub(crate) async fn cloud_set_sync_project(
                         .session()
                         .is_some_and(|session| anchor.matches(session))
             };
-            let saved = if let Some((generation, name)) = team.as_ref().filter(|_| reapprove) {
+             let saved = if remove_repository {
+                 revoke_repository(&store, &policy, &change, &can_commit)
+             } else if let Some((generation, name)) = team.as_ref().filter(|_| reapprove) {
                 let roots = projects
                     .iter()
                     .map(|project| SourceSelection {
@@ -3602,7 +3588,7 @@ pub(crate) async fn cloud_set_sync_project(
                     .into_iter()
                     .collect::<Vec<_>>();
                 let projects = projects.into_iter().collect::<Vec<_>>();
-                store.reapprove_cloud_sync_policy_for_membership(
+                 store.reapprove_cloud_sync_policy_with_repositories(
                     &policy,
                     (
                         &binding.account_id,
@@ -3612,16 +3598,16 @@ pub(crate) async fn cloud_set_sync_project(
                         Some((generation, name)),
                     ),
                     &roots,
-                    &projects,
+                     (&projects, &repository_anchors),
                     &[(change.group_id, true)].into(),
                     can_commit,
                 )
             } else {
-                store.set_cloud_sync_project(
+                 store.set_cloud_sync_project_with_repositories(
                     &policy,
                     &change.group_id,
                     change.selected,
-                    &projects,
+                     (&projects, &repository_anchors),
                     clear_source_hold,
                     can_commit,
                 )
@@ -3708,6 +3694,11 @@ fn disable_team_folder(
     {
         return Err("Reload the saved team folder and try turning it off again.".into());
     }
+    if policy.repository_rule_for_group(&change.group_id).is_some() {
+        return revoke_repository(store, policy, change, current).map_err(|_| {
+            "Could not turn off team folder uploads. Reload folders and try again.".into()
+        });
+    }
     let removals = project_removals(policy, change)?;
     store
         .set_cloud_sync_project(policy, &change.group_id, false, &removals, false, current)
@@ -3747,22 +3738,30 @@ fn project_removals(
     if removals.is_empty() {
         return Err("The saved folder changed. Reload it and try again.".into());
     }
+    if let Some(expected) = &change.expected_removals
+        && expected.iter().collect::<BTreeSet<_>>() != removals.iter().collect()
+    {
+        return Err("The saved folder paths changed. Reload folders before moving them.".into());
+    }
     Ok(removals)
 }
 
 /// Change upload admission for every destination on this device. OFF fences
-/// in-flight work before waiting. ON does not retry interrupted captures.
+/// in-flight work before waiting. ON requires the caller's current Personal
+/// connection and does not retry interrupted captures.
 #[tauri::command]
 pub(crate) async fn cloud_set_sync_enabled(
     app: tauri::AppHandle,
     enabled: bool,
+    binding: Option<DestinationBinding>,
 ) -> Result<Status, String> {
     let controller = app.state::<Controller>();
     let work = controller.blocking.clone();
     let wake = controller.sync.wake.clone();
+    let account_generation = controller.account_generation.load(Ordering::Acquire);
     let (priority, expected_pause) = if enabled {
         (
-            Priority::Normal,
+            Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT),
             controller.sync.device_pause.load(Ordering::Acquire),
         )
     } else {
@@ -3771,16 +3770,16 @@ pub(crate) async fn cloud_set_sync_enabled(
     let result = work
         .run(priority, move || {
             let controller = app.state::<Controller>();
-            let pause = &controller.sync.device_pause;
-            if pause.load(Ordering::Acquire) != expected_pause {
-                return Err("Cloud upload controls changed. Try again.".into());
-            }
             let store = app.state::<Store>();
             ensure_cloud_setup(&controller.setup_ready, &store)?;
-            store
-                .set_cloud_device_upload_enabled(enabled)
-                .map_err(|_| "Could not save Cloud upload controls.")?;
-            controller.sync.finish_device_change(expected_pause)?;
+            device_upload::save_switch(
+                &controller,
+                &store,
+                enabled,
+                binding.as_ref(),
+                expected_pause,
+                account_generation,
+            )?;
             let result = read_sync_status(&app, false).unwrap_or_else(|_| Status {
                 status: State::StorageUnavailable,
                 device_upload_enabled: controller
@@ -3809,7 +3808,7 @@ pub(crate) async fn cloud_retry_sync(
 
 /// Start a fresh scan of one workspace's saved folders. This does not change
 /// consent, resume device uploads, retry failed jobs, or clear source outcomes.
-/// The service can reuse unchanged content; local deletion markers still apply.
+/// Skip matching acceptance receipts and keep local deletion markers.
 #[tauri::command]
 pub(crate) async fn cloud_backfill_sync(
     app: tauri::AppHandle,
@@ -3872,7 +3871,7 @@ async fn change_saved_upload_work(
             if policy.paused {
                 return Err("Confirm the changed Cloud folders first.".into());
             }
-            if action == SyncWork::Backfill && policy.projects.is_empty() {
+            if action == SyncWork::Backfill && !has_folders(&policy) {
                 return Err("Save folders before starting backfill.".into());
             }
             let team = if binding.matches(&session) {
@@ -3961,7 +3960,7 @@ async fn change_saved_upload_work(
                 ));
             }
             let retried = retry_saved_jobs(&store, host.spool()?, &policy, &still_authorized)?;
-            let mut read_status = |state, runner: Option<&Runner>| {
+            let mut read_status = |state, runner: Option<&mut Runner>| {
                 status_for_destination(
                     &store,
                     &mut host,
@@ -4053,6 +4052,10 @@ mod scheduler_tests;
 #[cfg(test)]
 #[path = "tests/sync_consent_tests.rs"]
 mod consent_tests;
+
+#[cfg(test)]
+#[path = "tests/sync_capacity_tests.rs"]
+mod capacity_tests;
 
 #[cfg(test)]
 #[path = "tests/sync_workspace_status_integration_tests.rs"]

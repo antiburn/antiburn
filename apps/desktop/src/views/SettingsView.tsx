@@ -100,7 +100,7 @@ export function SettingsView() {
         title="Sessions"
         description="Where antiburn looks for sessions, how far back it reads, and how long it keeps data."
       >
-        <SessionsStepSettings />
+        <SessionsStepSettings sharedCloudSession={session.cloudFolders} />
       </Pane>
     ),
     checks: () => (

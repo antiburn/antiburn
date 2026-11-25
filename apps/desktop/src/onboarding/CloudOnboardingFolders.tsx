@@ -9,12 +9,18 @@ import {
 
 const chooseWorkspace = ":choose-workspace"
 
+/** Label a scan count without implying that the scan covered the whole folder. */
+export function folderSessionsFoundLabel(count: number) {
+  return `${count} ${count === 1 ? "session" : "sessions"} found`
+}
+
 /** Show the main path and counts. Keep raw paths as selection authority. */
 export function CloudProjectFolderSummary({
   group,
   homeDirectory,
   id,
   stackPath = false,
+  syncFound,
 }: {
   group: CloudProjectGroup
   homeDirectory?: string | null | undefined
@@ -22,13 +28,18 @@ export function CloudProjectFolderSummary({
   id?: string
   /** Give the full path a wrapping line above the counts. */
   stackPath?: boolean
+  /** Use a verified sync scan count instead of the local index count. */
+  syncFound?: number | undefined
 }) {
-  const sessionLabel =
-    group.sessionCount == null
-      ? "Count unavailable"
-      : `${group.sessionCount} ${group.sessionCount === 1 ? "session" : "sessions"}`
+  const sessionLabel = group.discoveryStale
+    ? "Folder details need refresh"
+    : syncFound !== undefined
+      ? folderSessionsFoundLabel(syncFound)
+      : group.sessionCount == null
+        ? "Calculating count.."
+        : `${group.sessionCount} ${group.sessionCount === 1 ? "session" : "sessions"}`
   const worktreeLabel =
-    group.worktreeCount > 0
+    !group.discoveryStale && group.groupingComplete !== false && group.worktreeCount > 0
       ? `${group.worktreeCount} ${group.worktreeCount === 1 ? "worktree" : "worktrees"}`
       : null
   return (
@@ -67,18 +78,22 @@ export function CloudFolderSyncControl({
   descriptionId,
   selected,
   disabled,
+  busy = false,
   workspaces,
   destinationId,
   selectedWorkspace,
   typedWorkspaceLabels = false,
   wrapWorkspaceLabel = false,
   needsWorkspaceChoice = false,
+  keepWorkspacePicker = false,
   onSelect,
 }: {
   label: string
   descriptionId: string
   selected: boolean
   disabled: boolean
+  /** Disable changes during sync. A switch can keep its current focus. */
+  busy?: boolean
   workspaces?: readonly CloudWorkspace[] | undefined
   destinationId?: string | undefined
   selectedWorkspace?: string | undefined
@@ -88,11 +103,16 @@ export function CloudFolderSyncControl({
   wrapWorkspaceLabel?: boolean
   /** Ask for a destination when a checked draft has no workspace binding. */
   needsWorkspaceChoice?: boolean
+  /** Keep a staged change editable when a workspace disappears from the list. */
+  keepWorkspacePicker?: boolean
   onSelect: (selected: boolean, destination?: string) => void
 }) {
   const unavailableChoice =
     selectedWorkspace && !workspaces?.some((workspace) => workspace.id === selectedWorkspace)
-  if (destinationId && ((workspaces?.length ?? 0) > 1 || unavailableChoice)) {
+  if (
+    destinationId &&
+    (keepWorkspacePicker || (workspaces?.length ?? 0) > 1 || unavailableChoice)
+  ) {
     const value = needsWorkspaceChoice
       ? chooseWorkspace
       : selected
@@ -123,7 +143,7 @@ export function CloudFolderSyncControl({
             : `rounded-control bg-surface-card px-2 py-1 type-footnote text-label${typedWorkspaceLabels ? " min-h-8 min-w-0 max-w-[min(100%,12rem)] truncate" : ""}`
         }
         value={value}
-        disabled={disabled}
+        disabled={disabled || busy}
         onChange={(event) => {
           const target = event.currentTarget.value
           if (target === "") onSelect(false)
@@ -141,7 +161,7 @@ export function CloudFolderSyncControl({
     if (!wrapWorkspaceLabel) return picker
     return (
       <div
-        className={`relative flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-control bg-surface-card px-2 py-1 type-footnote text-label has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent-fill ${disabled ? "opacity-50" : ""}`}
+        className={`relative flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-control bg-surface-card px-2 py-1 type-footnote text-label has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent-fill ${disabled || busy ? "opacity-50" : ""}`}
       >
         <span className="min-w-0 wrap-anywhere" aria-hidden="true">
           {options.find(({ id }) => id === value)?.label}
@@ -157,6 +177,7 @@ export function CloudFolderSyncControl({
       aria-describedby={descriptionId}
       checked={selected}
       disabled={disabled}
+      aria-disabled={busy}
       onCheckedChange={onSelect}
     />
   )
@@ -182,6 +203,7 @@ export function CloudProjectFolders({
   destinationId,
   targets,
   savedDestinations,
+  id,
   onSelect,
 }: {
   groups: readonly CloudProjectGroup[]
@@ -193,11 +215,16 @@ export function CloudProjectFolders({
   targets?: Readonly<Record<string, string>> | undefined
   /** Name the saved destination for folders outside the onboarding batch. */
   savedDestinations?: ReadonlyMap<string, string>
+  /** Focus this list when the last page removes its Load more button. */
+  id?: string
   onSelect: (projectId: string, selected: boolean, destination?: string) => void
 }) {
   return (
     <div
+      id={id}
+      tabIndex={id ? -1 : undefined}
       className="cloud-folder-list min-h-0! max-h-none! flex-1"
+      role="group"
       aria-label="Cloud project folders"
     >
       {groups.length ? (
@@ -208,6 +235,7 @@ export function CloudProjectFolders({
             !!target && !workspaces?.some((workspace) => workspace.id === target)
           const showPicker = !!destinationId && ((workspaces?.length ?? 0) > 1 || unavailable)
           const selected = choices[group.id] ?? !showPicker
+          const unverified = group.discoveryStale || group.groupingComplete === false
           const savedDestination = savedDestinations?.get(group.id)
           return (
             <div
@@ -243,8 +271,12 @@ export function CloudProjectFolders({
                   <CloudFolderSyncControl
                     label={`${showPicker ? "Sync destination for" : "Sync"} ${group.name}: ${group.path}`}
                     descriptionId={descriptionId}
-                    selected={selected && (!showPicker || group.captureSupported === true)}
-                    disabled={disabled || (showPicker && !group.captureSupported)}
+                    selected={
+                      !unverified &&
+                      selected &&
+                      (!showPicker || group.captureSupported === true)
+                    }
+                    disabled={disabled || unverified || (showPicker && !group.captureSupported)}
                     workspaces={workspaces}
                     destinationId={destinationId}
                     selectedWorkspace={target}

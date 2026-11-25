@@ -575,6 +575,171 @@ fn cloud_execution_http_changed_origin_rejects_saved_work_before_auth_or_upload(
 }
 
 #[test]
+fn cloud_upload_checks_source_authority_before_reading_and_before_put() {
+    use super::super::upload::HttpTransport;
+    use antiburn_cloud_capture::TransportError;
+    use std::cell::Cell;
+    use std::io::Cursor;
+
+    struct ChunkReader<'a> {
+        bytes: Cursor<&'static [u8]>,
+        allowed: &'a Cell<bool>,
+    }
+
+    impl Read for ChunkReader<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            self.allowed.set(false);
+            self.bytes.read(bytes)
+        }
+    }
+
+    for allowed_at_start in [false, true] {
+        let object_storage = TcpListener::bind("127.0.0.1:0").unwrap();
+        object_storage.set_nonblocking(true).unwrap();
+        let url = format!(
+            "http://{}/object?partNumber=1&uploadId=synthetic",
+            object_storage.local_addr().unwrap()
+        );
+        let (origin, worker) = server(
+            200,
+            serde_json::json!({
+                "url": url,
+                "headers": { "content-length": "3" },
+                "part_number": 1,
+            })
+            .to_string(),
+            "",
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = connected(directory.path(), &origin);
+        let allowed = Cell::new(allowed_at_start);
+        let source_authority = || allowed.get();
+        let mut transport = HttpTransport::new(&mut engine, &|| true, &|| true, &origin, None)
+            .with_source_authority(&source_authority);
+        let manifest = CaptureManifest {
+            version: 1,
+            identity: identity(),
+            compression: "gzip".into(),
+            chunk_expanded_bytes: 3,
+            metadata_fingerprint: "a".repeat(64),
+            source_fingerprint: "b".repeat(64),
+            streams: Vec::new(),
+        };
+        let plan = UploadPlan {
+            identity: identity(),
+            manifest_sha256: "c".repeat(64),
+            plan_id: "plan".into(),
+            chunks: Vec::new(),
+            required_transfer_bytes: 3,
+            reused_bytes: 0,
+        };
+        let key = ChunkKey {
+            stream_id: "stream".into(),
+            index: 0,
+        };
+        let chunk = Chunk {
+            index: 0,
+            expanded_bytes: 3,
+            expanded_sha256: "d".repeat(64),
+            compressed_bytes: 3,
+            compressed_sha256: "e".repeat(64),
+        };
+        let mut reader = ChunkReader {
+            bytes: Cursor::new(b"abc"),
+            allowed: &allowed,
+        };
+        assert_eq!(
+            transport.upload_part("reservation", &manifest, &plan, &key, &chunk, &mut reader),
+            Err(TransportError::Rejected)
+        );
+        assert_eq!(
+            reader.bytes.position(),
+            if allowed_at_start { 3 } else { 0 }
+        );
+        assert_eq!(
+            object_storage.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(worker.join().unwrap().line.contains("/parts"));
+    }
+}
+
+#[test]
+fn cloud_upload_separates_local_authority_loss_from_account_loss() {
+    use super::super::upload::HttpTransport;
+    use antiburn_cloud_capture::TransportError;
+    use std::cell::Cell;
+
+    let directory = tempfile::tempdir().unwrap();
+    let origin = "http://127.0.0.1:1";
+    let mut engine = connected(directory.path(), origin);
+    let account_current = Cell::new(true);
+    let content_current = Cell::new(true);
+    let account = || account_current.get();
+    let content = || content_current.get();
+    let source_allowed = || {
+        content_current.set(false);
+        true
+    };
+    let transport = HttpTransport::new(&mut engine, &account, &content, origin, None)
+        .with_source_authority(&source_allowed);
+    assert_eq!(
+        transport.check_source_authority(),
+        Err(TransportError::Rejected)
+    );
+    account_current.set(false);
+    assert_eq!(
+        transport.check_source_authority(),
+        Err(TransportError::Unauthorized)
+    );
+}
+
+#[test]
+fn cloud_upload_rejects_finalization_and_saved_replay_when_source_proof_is_lost() {
+    use super::super::upload::{Failure, HttpTransport};
+    use antiburn_cloud_capture::TransportError;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let directory = tempfile::tempdir().unwrap();
+    let mut engine = connected(directory.path(), &origin);
+    let mut transport = HttpTransport::new(&mut engine, &|| true, &|| true, &origin, None)
+        .with_source_authority(&|| false);
+    let manifest = CaptureManifest {
+        version: 1,
+        identity: identity(),
+        compression: "gzip".into(),
+        chunk_expanded_bytes: 3,
+        metadata_fingerprint: "a".repeat(64),
+        source_fingerprint: "b".repeat(64),
+        streams: Vec::new(),
+    };
+    let plan = UploadPlan {
+        identity: identity(),
+        manifest_sha256: "c".repeat(64),
+        plan_id: "synthetic-plan".into(),
+        chunks: Vec::new(),
+        required_transfer_bytes: 0,
+        reused_bytes: 0,
+    };
+    transport.failure = Some(Failure::Conflict);
+    assert_eq!(
+        transport.complete("reservation", &manifest, &plan),
+        Err(TransportError::Rejected)
+    );
+    assert_eq!(transport.failure, Some(Failure::Rejected));
+    assert_eq!(
+        transport.replay_saved_finalization("reservation", &manifest, &plan),
+        Err(TransportError::Rejected)
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
 fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression() {
     use super::super::upload::{Failure, HttpTransport, Source};
     let valid = serde_json::json!({

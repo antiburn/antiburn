@@ -8,6 +8,74 @@ import {
   localToolsFixture,
 } from "./__tests__/cloudProjectFixtures"
 
+it("requests a full scan only for the current saved folder policy", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  ongoing.status.mockResolvedValue(saved)
+  const current = { ...saved, policyRevision: "new-policy" }
+  ongoing.backfill!.mockResolvedValue({ ...current, backfillInProgress: true })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().ongoing?.projects).toEqual(saved.projects),
+    )
+    const displayed = session.getSnapshot()
+    emitSync(current)
+    expect(await session.syncNow(displayed)).toBe(false)
+    expect(ongoing.backfill).not.toHaveBeenCalled()
+
+    expect(await session.syncNow(session.getSnapshot())).toBe(true)
+    expect(ongoing.backfill).toHaveBeenCalledExactlyOnceWith(
+      { accountId: "synthetic-account", destinationId: "synthetic-personal" },
+      "new-policy",
+    )
+    expect(ongoing.enable).not.toHaveBeenCalled()
+    expect(ongoing.retry).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("checks a saved Team even when the Personal scan request fails", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const personal = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  const team = { ...personal, destinationId: "synthetic-team", policyRevision: "team-policy" }
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Team", kind: "team" as const },
+  ])
+  ongoing.status.mockResolvedValue(personal)
+  ongoing.backfill
+    .mockRejectedValueOnce("Synthetic scan failure")
+    .mockResolvedValueOnce({ ...team, backfillInProgress: true })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.workspaces).toHaveLength(2))
+    emitSync(team)
+    expect(await session.syncNow(session.getSnapshot())).toBe(false)
+    expect(ongoing.backfill).toHaveBeenNthCalledWith(
+      2,
+      { accountId: "synthetic-account", destinationId: "synthetic-team" },
+      "team-policy",
+    )
+    expect(session.getSnapshot().uploadActionError).toBe("Could not start sync.")
+  } finally {
+    stop()
+  }
+})
+
 it("does not use an older rendered selection to authorize a legacy provider-source request", async () => {
   const value: CloudSnapshot = {
     ...emptyCloudSnapshot,
@@ -245,6 +313,95 @@ it("keeps exact saved choices ahead of defaults and local choices ahead of refre
   }
 })
 
+it("keeps later folder rows and their staged choices when the first page refreshes", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const later = projectGroup({ id: "later", label: "Later", path: "/Example/Later" })
+  const firstPage = {
+    groups: [projectGroup()],
+    sourceRoots: [
+      { sourceKind: "claude_jsonl" as const, path: "/Example/claude/projects/studio" },
+    ],
+    nextCursor: { environment: "native", cwd: "/Example/Studio" },
+    partial: false,
+  }
+  ongoing.groups
+    .mockResolvedValueOnce(firstPage)
+    .mockResolvedValueOnce({ ...firstPage, groups: [later], nextCursor: null })
+    .mockResolvedValueOnce(firstPage)
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    await session.loadMoreProjects()
+    session.selectProject("later", false)
+    await session.loadProjects()
+
+    expect(session.getSnapshot().projects).toMatchObject({
+      groups: [{ id: "studio", sessionCount: 12 }, { id: "later" }],
+      choices: { studio: true, later: false },
+      hasMore: false,
+    })
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("keeps disconnected rows visible without counting or approving cached members", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const studio = projectGroup()
+  const staleWorktree = "/Example/worktrees/older"
+  const olderProject = { ...studio.projects[0]!, projectPath: staleWorktree }
+  const oldStudio = projectGroup({
+    sessionCount: 15,
+    folderPaths: [...studio.folderPaths, staleWorktree],
+    projects: [...studio.projects, olderProject],
+  })
+  const later = projectGroup({
+    id: "later",
+    label: "Later",
+    path: staleWorktree,
+    folderPaths: [staleWorktree],
+    projects: [olderProject],
+  })
+  const first = {
+    groups: [studio],
+    sourceRoots: [
+      { sourceKind: "claude_jsonl" as const, path: studio.projects[0]!.sourcePath },
+    ],
+    nextCursor: { environment: "native", cwd: "/Example/Next" },
+    partial: false,
+  }
+  ongoing.groups
+    .mockResolvedValueOnce(first)
+    .mockResolvedValueOnce({ ...first, groups: [oldStudio, later], nextCursor: null })
+    .mockResolvedValueOnce({
+      ...first,
+      nextCursor: { ...first.nextCursor, cwd: "/Example/NewBoundary" },
+    })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    await session.loadMoreProjects()
+    expect(session.getSnapshot().projects?.groups[0]?.sessionCount).toBe(27)
+    await session.loadProjects()
+    expect(session.getSnapshot().projects).toMatchObject({
+      hasMore: true,
+      groups: [
+        { id: "studio", sessionCount: 12, memberPaths: studio.folderPaths },
+        { id: "later", sessionCount: null, discoveryStale: true, captureSupported: false },
+      ],
+    })
+    await session.startSync()
+    expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ projects: studio.projects }),
+    )
+  } finally {
+    stop()
+  }
+})
+
 it("starts desktop ongoing sync with exact current members and matching folders only", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups.mockResolvedValue({
@@ -327,20 +484,163 @@ it("rejects an older rendered Start after a later page adds a group member", asy
       ],
       sourceRoots: [{ sourceKind: "claude_jsonl", path: "/Example/claude/projects/studio" }],
       nextCursor: null,
-      partial: true,
+      partial: false,
     })
     await session.loadMoreProjects()
     expect(ongoing.groups.mock.calls[1]).toEqual([
       { accountId: "synthetic-account", destinationId: "synthetic-personal" },
       cursor,
     ])
-    expect(session.getSnapshot().projects).toMatchObject({ hasMore: false, partial: true })
+    expect(session.getSnapshot().projects).toMatchObject({ hasMore: false, partial: false })
     await session.startSync(rendered)
     expect(ongoing.enable).not.toHaveBeenCalled()
   } finally {
     stop()
   }
 })
+
+it("keeps existing folders and advances past an empty partial page", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const studio = projectGroup()
+  const secondCursor = { environment: "native", cwd: "/Example/Second" }
+  const thirdCursor = { environment: "native", cwd: "/Example/Third" }
+  ongoing.groups
+    .mockResolvedValueOnce({
+      groups: [studio],
+      sourceRoots: [{ sourceKind: "claude_jsonl", path: studio.projects[0]!.sourcePath }],
+      nextCursor: secondCursor,
+      partial: false,
+    })
+    .mockResolvedValueOnce({
+      groups: [],
+      sourceRoots: [],
+      nextCursor: thirdCursor,
+      partial: true,
+    })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    await session.loadMoreProjects()
+    expect(session.getSnapshot().projects).toMatchObject({
+      groups: [expect.objectContaining({ id: "studio", captureSupported: true })],
+      hasMore: true,
+      partial: true,
+    })
+    await session.loadMoreProjects()
+    expect(ongoing.groups.mock.calls.map(([, cursor]) => cursor)).toEqual([
+      null,
+      secondCursor,
+      thirdCursor,
+    ])
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("keeps Load more blocked until the timed-out native page releases the worker", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const studio = projectGroup()
+  const cursor = { environment: "native", cwd: "/Example/Next" }
+  const page = {
+    groups: [studio],
+    sourceRoots: [
+      { sourceKind: "claude_jsonl" as const, path: studio.projects[0]!.sourcePath },
+    ],
+    nextCursor: null,
+    partial: false,
+  }
+  let finish!: () => void
+  ongoing.groups
+    .mockResolvedValueOnce({ ...page, nextCursor: cursor })
+    .mockImplementationOnce(
+      () => new Promise((resolve) => (finish = () => resolve({ ...page, groups: [] }))),
+    )
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    const paging = session.loadMoreProjects()
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(session.getSnapshot().projects).toMatchObject({
+      paging: "pending",
+      loading: false,
+      loaded: true,
+      hasMore: true,
+      error: null,
+    })
+    await vi.advanceTimersByTimeAsync(23_000)
+    await paging
+    expect(session.getSnapshot().projects?.paging).toBe("pending")
+    await session.loadMoreProjects()
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+
+    finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(session.getSnapshot().projects?.paging).toBeUndefined()
+    expect(session.getSnapshot().projects?.hasMore).toBe(true)
+    await session.loadMoreProjects()
+    expect(ongoing.groups).toHaveBeenLastCalledWith(expect.anything(), cursor)
+    expect(ongoing.groups).toHaveBeenCalledTimes(3)
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it.each(["onboarding", "settings"] as const)(
+  "saves folder choices without waiting for a canceled local page in %s",
+  async (entry) => {
+    const { port, ongoing } = cloudProjectFixture()
+    const studio = projectGroup()
+    const firstPage = {
+      groups: [studio],
+      sourceRoots: [
+        { sourceKind: "claude_jsonl" as const, path: studio.projects[0]!.sourcePath },
+      ],
+      nextCursor: { environment: "native", cwd: "/Example/Studio" },
+      partial: false,
+    }
+    let finishPage!: (page: Awaited<ReturnType<typeof ongoing.groups>>) => void
+    ongoing.groups.mockResolvedValueOnce(firstPage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPage = resolve
+        }),
+    )
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+      if (entry === "settings") session.selectProject("studio", true, "synthetic-personal")
+      const paging = session.loadMoreProjects()
+      expect(session.getSnapshot().projects?.paging).toBe("loading")
+
+      const saving =
+        entry === "onboarding"
+          ? session.startSync()
+          : session.startPendingProjects(session.getSnapshot())
+      expect(session.getSnapshot().projects?.paging).toBe("pending")
+      await saving
+      expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ projects: studio.projects }),
+      )
+
+      finishPage({
+        ...firstPage,
+        groups: [projectGroup({ id: "later" })],
+        nextCursor: null,
+      })
+      await paging
+      expect(session.getSnapshot().projects?.paging).toBeUndefined()
+      expect(session.getSnapshot().projects?.groups.map(({ id }) => id)).toEqual(["studio"])
+    } finally {
+      stop()
+    }
+  },
+)
 
 it("does not admit a project whose desktop session folder was not returned", async () => {
   const { port, ongoing } = cloudProjectFixture()
@@ -356,6 +656,81 @@ it("does not admit a project whose desktop session folder was not returned", asy
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     await session.startSync()
     expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it.each([
+  ["receipt", "sourceConfirmationRequired"],
+  ["readback", "sourceConfirmationRequired"],
+  ["readback", "folderConfirmationRequired"],
+] as const)("keeps onboarding open when the %s has %s", async (evidence, flag) => {
+  const { port, ongoing } = cloudProjectFixture()
+  const review = ongoingStatus({
+    status: "paused",
+    paused: true,
+    consentVersion: "desktop-project-sync-v1",
+    policyRevision: "saved-policy",
+    projects: projectGroup().projects,
+    projectChoices: { studio: true },
+    [flag]: true,
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    session.selectProject("studio", true, "synthetic-personal")
+    ongoing.status.mockResolvedValue(review)
+    if (evidence === "receipt") ongoing.enable.mockResolvedValueOnce(review)
+    else ongoing.enable.mockRejectedValueOnce(new Error("Synthetic lost reply"))
+
+    await session.startSync()
+    expect(session.getSnapshot()).toMatchObject({
+      screen: "folders",
+      error:
+        "Could not confirm folder sync for Personal. Review saved folders in Settings before trying again.",
+      projects: { targets: { studio: "synthetic-personal" } },
+    })
+    expect(ongoing.status).toHaveBeenCalledTimes(2)
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+    expect(ongoing.setProject).not.toHaveBeenCalled()
+    expect(ongoing.confirmTeamFolders).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("uses readback after a superseded onboarding receipt without clearing the draft", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  ongoing.enable.mockImplementationOnce(async (consent) => {
+    const receipt = ongoingStatus({
+      status: "ready",
+      policyRevision: "saved-policy",
+      consentVersion: consent.version,
+      projects: consent.projects,
+      projectChoices: consent.projectChoices,
+    })
+    const latest = { ...receipt, policyRevision: "newer-policy" }
+    ongoing.status.mockResolvedValue(latest)
+    emitSync(latest)
+    return receipt
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    session.selectProject("studio", true, "synthetic-personal")
+    await session.startSync()
+    expect(session.getSnapshot()).toMatchObject({
+      screen: "complete",
+      error: null,
+      ongoing: { policyRevision: "newer-policy" },
+      projects: { targets: { studio: "synthetic-personal" } },
+    })
+    expect(ongoing.status).toHaveBeenCalledTimes(2)
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+    expect(ongoing.setProject).not.toHaveBeenCalled()
   } finally {
     stop()
   }
@@ -532,7 +907,7 @@ it.each(["account", "source", "selection"] as const)(
           groups: [projectGroup({ projects: [] })],
           sourceRoots: [],
           nextCursor: null,
-          partial: true,
+          partial: false,
         })
         await session.loadProjects()
       } else {

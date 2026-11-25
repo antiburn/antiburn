@@ -328,6 +328,7 @@ impl Spool {
         }
         entry.reservation_id = Some(reservation_id);
         self.save(&directory, &entry)?;
+        transport.check_source_authority()?;
 
         let (mut streams, metadata) = match prepared {
             PreparedSource::Claude {

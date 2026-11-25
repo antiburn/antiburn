@@ -101,7 +101,7 @@ permits retry. Other opener errors do not prove that handoff failed.
 Browser approval can create a connection before the callback arrives. Canceling,
 replacing, or losing that callback therefore preserves unconfirmed revocation.
 Without a refresh credential, Settings offers a local reset for that exact
-workspace. Reset permits a new connection but keeps the warning about remote
+workspace. Reset permits a new connection without waiting for remote
 revocation. An unresolved team approval does not block Personal sign-in. An
 explicit browser denial does not need a reset.
 
@@ -128,13 +128,13 @@ connection, sign in again instead of refreshing the old grant.
 
 Device authentication requests use the configured API origin:
 
-| Request                          | Proof                                                                                                       |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Request                          | Proof                                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
-| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
-| `GET /v1/devices/session`        | Access bearer                                                                                              |
-| `GET /v1/captures/destinations`  | Access bearer                                                                                              |
-| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                     |
+| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
+| `GET /v1/devices/session`        | Access bearer                                                                                                |
+| `GET /v1/captures/destinations`  | Access bearer                                                                                                |
+| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                       |
 
 Desktop uses the short OS hostname as `device_name`. It omits the domain suffix
 and falls back to `Antiburn Desktop` if the name is unavailable or unsuitable.
@@ -151,6 +151,12 @@ Each `workspace_id` is a UUID string and `type` is `personal` or `team`.
 Desktop verifies that the list includes the signed-in account's Personal
 workspace. With multiple eligible workspaces, the user chooses a destination
 for each folder. With only Personal available, Desktop shows a folder switch.
+If workspace discovery is temporarily unavailable, Desktop retries while the
+folder pane is open. In Settings, choose **Check again** if Desktop could not
+read the account or verify its Personal workspace. This does not enable upload.
+A workspace list response of `401` asks the user to sign in again. A `403` tells
+the user that access is denied. Neither response starts folder discovery or
+grants upload permission.
 
 One account approval covers Personal and current or future Teams where the
 account can upload. Approval does not turn on uploads or approve a folder. Each
@@ -178,9 +184,9 @@ or CLI-only endpoint. A connection approved only for upload cannot serve
 CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
 where the service offers them.
 
-| Request | Device scope | Page fields the CLI uses |
-| --- | --- | --- |
-| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | `items`, `page.next_cursor` |
+| Request                                                                                        | Device scope    | Page fields the CLI uses                                                          |
+| ---------------------------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]`                         | `sessions:list` | `items`, `page.next_cursor`                                                       |
 | `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
 
 Send the access token as `Authorization: Bearer <token>`. A cursor continues
@@ -229,7 +235,7 @@ cancelled account.
 Rejected refresh responses save the original and returned proofs for logout
 before updating local state. These cleanup credentials cannot restore a
 session. Best-effort logout can try both proofs without waiting on the main
-Cloud worker. A failed secure-storage write keeps an unconfirmed warning.
+Cloud worker. A failed secure-storage write leaves remote revocation unconfirmed.
 Decoded responses retain bounded logout proof even when token bounds or authority
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
@@ -246,9 +252,9 @@ finishes.
 At most one detached logout runs at a time for the account and old Team slots.
 An occupied slot skips the new attempt. Desktop does not queue it for later.
 The worker sends old proofs only to their original service and cannot change
-credentials or account state. Desktop records a warning if an attempt fails or
-is skipped. A confirmed logout does not add a warning or clear an older one.
-Close old connections in Cloud settings if Desktop reports this warning.
+credentials or account state. If Desktop cannot confirm remote revocation,
+the old grant can expire at its existing deadline. Settings does not show a
+warning about earlier attempts that no longer block this device.
 Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
@@ -270,7 +276,7 @@ can enable sync. Folder approval stays bound to the account, workspace, issuer,
 and resource. Team policies also save the membership generation. If the saved
 proof is missing or no longer current, Desktop holds uploads for those folders.
 Once Desktop verifies the current membership for the same Team, Settings lists
-the exact saved folders. **Save** approves that list and any folders you chose
+the exact saved folders. **Sync now** approves that list and any folders you chose
 for the same Team in one update. It checks the current policy revision and
 validates the new choices. It does not unlock old jobs, change their saved bytes,
 or resume a paused device.
@@ -281,7 +287,7 @@ and membership are current. Each upload has its own destination and capture ID.
 An unavailable workspace does not block another eligible destination. Existing
 jobs keep their original destination, capture ID, and retry conditions.
 
-An older capture with no saved issuer cannot retry. An explicit **Save** can
+An older capture with no saved issuer cannot retry. An explicit folder approval can
 replace folder consent that has no issuer with the current verified scope.
 Desktop does not add an issuer to old captures. Eligible sessions can use new
 capture IDs. Desktop keeps the old spool bytes and counts them toward its
@@ -289,18 +295,20 @@ storage limit. It also keeps accepted receipts and deletion markers for the
 same resource, account, and workspace.
 
 Sign-in, source access, and the legacy local **Upload sessions** preference do
-not grant upload consent. Use **Start syncing** during onboarding or **Save**
-in Settings to approve selected folders. Onboarding can approve folders for
-more than one workspace in one action. Desktop saves each workspace separately
-and checks whether it saved the exact folders. A failed route stays selected for
-retry. Settings saves one workspace at a time.
-To change a saved folder's destination, turn off the old rule, then
-approve the folder for the new destination. This does not move sessions already
-in Cloud. The new rule may upload older local sessions. `desktop-project-sync-v1`
-binds the account, workspace, exact provider sources, and approved
-project/worktree paths, with full content and ongoing sync enabled and external
-attachments disabled. It covers existing sessions and new sessions in those
-approved folder trees while uploads remain enabled.
+not grant upload consent. Use **Start syncing** to approve the first folder
+choices. Use **Sync now** to approve later choices in Settings. Onboarding can
+approve folders for more than one workspace in one action. Desktop saves each
+workspace separately and checks whether it saved the exact folders. A failed
+route stays selected for retry. Settings saves one workspace at a time.
+To change a verified saved folder's destination, choose the new workspace and
+select **Sync now**. Desktop removes the old rule before it approves the new one.
+This does not move sessions already in Cloud. The new rule may upload older local
+sessions. If Desktop confirms the removal but cannot save the new rule, the old
+rule stays off. Choose a workspace to start syncing the folder again.
+`desktop-project-sync-v1` binds the account, workspace, exact provider
+sources, and approved folders or repositories. It enables full content and
+ongoing sync, but not external attachments. It covers existing and new
+sessions that match those rules while uploads remain enabled.
 
 Full native content includes messages, private thinking, tool calls and results,
 and session metadata. It can contain secrets or private file text. OpenCode V2
@@ -315,44 +323,69 @@ not change consent.
 
 ### Project suggestions and worktrees
 
+On macOS and Linux, approval for a Git checkout with a supported fetch
+`origin` covers other local checkouts and linked worktrees with the same
+origin. Standard HTTPS and SSH forms can match on supported hosting services.
+For other endpoints, Desktop keeps the transport and full path, including
+any `.git` suffix. A saved origin label that does not prove the full path
+cannot grant upload access. Older opt-outs still apply unless you select
+the folder again. Desktop does not match a fork through its `upstream` remote.
+This is a local Git configuration check, not proof of remote ownership.
+
+Desktop keeps one rule per repository in each workspace. The rule uses only
+its approved provider sources. A non-Git folder or a checkout without a
+supported origin keeps exact-folder approval. Desktop can upgrade a legacy
+rule when the saved path is still the exact root of a verified checkout.
+The upgrade uses its current origin because the old rule did not store one.
+Desktop keeps the exact rule if an old exclusion or another workspace could
+conflict. The upgrade does not resume uploads or override a source exclusion.
+
 The project list uses cached local session metadata from all discovered agents.
-It can show projects for agents that cannot upload. Counts describe local or
-provider-source discovery, not accepted Cloud sessions. Only qualified Claude,
-OpenCode V2, Codex, Pi, and [Cursor](cursor.md) sources can produce upload jobs.
+It can show projects for agents that cannot upload. By default, folder rows
+show indexed local sessions. For an approved row in one verified workspace,
+Settings can instead show `N sessions found` from sync discovery. That count
+includes only sessions assigned to the row's saved rules. It is not a total or
+a count of new uploads. A session without one verified rule does not add to a
+row. Settings does not add row counts across workspaces.
+Only qualified Claude, OpenCode V2, Codex, Pi,
+and [Cursor](cursor.md) sources can produce upload jobs.
 A suggested project or checked row does not add support for another provider.
 
 With one eligible workspace, new onboarding choices start selected. With
 multiple workspaces, new choices start off. Loading the page or changing an
 onboarding row does not save consent or turn on uploads. Existing choices and
 saved opt-outs take precedence.
-**Start syncing** approves only the currently loaded selected groups and their
-exact current path members. **Load more folders** does not approve unseen groups.
+**Start syncing** approves only the selected groups. **Load more folders**
+does not approve unseen groups.
 Until confirmation, an existing saved policy stays unchanged.
 
+Settings reads more folder pages in the background. It keeps verified choices
+usable while later pages load or retry. A later page failure does not replace
+verified choices with an error. Discovery does not save or expand folder approval.
+
 After initial consent, Settings shows the saved folder rules. Turning off a
-group removes its approved paths immediately. Adding a folder does not grant
-permission until you select **Save**. Save approves full sessions and current
-worktrees for the selected groups. The first Save checks current source and
-recorded folder evidence, just like later additions. Changes check the current
-policy revision and do not change other groups, unseen pages, or the device
-pause. Turning off the last group does not delete saved captures.
-If a saved folder no longer appears in discovery, its exact saved row still
-lets you turn it off without access to the original source.
+group removes its folder or repository rule immediately. Adding a folder does not grant
+permission until you select **Sync now**. Folder approval covers full sessions
+for the selected folders and matching Git checkouts. First-time approval checks
+current source and recorded folder evidence, just like later additions.
+Changes check the current policy revision and do not change other groups,
+unseen pages, or the device pause. Turning off the last group does not delete
+saved captures.
+Settings lists folders with verified local directories. Use **Manage other
+saved folders** to turn off a saved rule that does not appear in the folder
+list. You do not need access to the original source to turn the rule off.
 
 Confirmation saves the complete `projectChoices` map, including exclusions,
 atomically with the upload policy. Status returns the same map for reopen.
 These group choices are UI preferences, separate from provider-file preferences.
-Only the policy's approved `projects` grant upload permission. Older policies
+Only the policy's folder and repository rules grant upload permission. Older policies
 without a choice map load an empty map; the UI requires review before changing
 their selection.
 
-For local paths, current local Git metadata can group a repository and its
-worktrees into one displayed project. This is a present-day display association,
-not historical session ownership or upload permission. Approval includes the
-exact current worktree paths in the selected group, including paths outside the
-main repository. A new worktree outside the already approved folder trees needs
-confirmation. Git association alone cannot add it to a saved policy. Foreign
-environment paths are not probed as local directories.
+Matching Git checkouts share one row. Desktop verifies the nearest checkout
+for a recorded directory. It does not need a list of every worktree to apply
+the saved repository rule. Foreign environment paths are not probed as local
+directories.
 
 Recorded project and working-directory (CWD) evidence controls session eligibility.
 Any proved source-owned CWD inside an approved folder or its descendants can match.
@@ -384,21 +417,34 @@ CWD evidence. Malformed or incomplete records can also block admission.
 OpenCode's recorded session directory does not prove a complete historical CWD list.
 See [project folder selection](capture.md#project-folder-selection) for the source rules.
 
-Listings are bounded and can report partial results. Successful source listings
-contain at most 512 candidates across up to 100 source roots. Folder discovery
-and Save give each root a first turn, then spend any remaining budget on
-provider pages in the same request. Cursor IDE uses its full assigned share
-because it does not report how many IDs it inspected. Codex and Pi count each
-inspected ID, even when opening the file fails. These pages use native ID order,
-not session dates. Before opening any session file, each Codex or Pi page indexes
-at most 4,096 directory entries. It descends at most three levels for Codex and
-one for Pi. **Load more folders** adds cached project suggestions. It does not
-scan all provider history.
+Folder listing uses a separate local worker from upload approval and sync.
+It uses the current signed-in account without refreshing the Cloud session.
+Settings can show local suggestions while it checks workspace access. A
+background refresh does not block already verified choices in the same scope.
 
-A saved policy permits at most 100 source/project path bindings. Missing access,
-unsupported schemas, and exceeded bounds do not become a complete empty listing
-or permission to upload an excluded source. Restore access or retry discovery in
-Settings.
+Listings can return partial results. Listing stops starting new provider
+reads after its 3-second work budget. An in-progress read can take longer.
+If Desktop checked some folder paths before deferring the rest, Settings
+can check the same page once in the background. These results do not replace
+the fresh checks required for approval.
+Folder approval checks current evidence and can inspect up to 4,096
+candidates across up to 100 source roots. Each provider page holds at most
+512 candidates. Desktop gives each root a first
+turn, then uses the remaining budget on later pages. Cursor IDE uses its full
+assigned share because it does not report how many IDs it inspected. Codex
+and Pi count each inspected ID, even when opening the file fails. These pages
+use native ID order, not session dates. Before opening any session file, each
+Codex or Pi page indexes at most 4,096 directory entries. It descends at most
+three levels for Codex and one for Pi. Later folder pages add cached project
+suggestions. They do not scan all provider history.
+Claude folder checks share a 64 MiB budget for uncached metadata reads. The
+first uncached transcript can use up to 128 MiB on its own. Evidence that does
+not fit the remaining budget makes the result partial.
+
+A saved policy permits at most 100 source roots and 100 distinct project
+directories. It can store up to 512 exact pairs of source and project directory.
+Missing access, unsupported schemas, and exceeded bounds do not become a
+complete empty listing or permission to upload an excluded source.
 Setup failures do not hide account cleanup controls.
 
 Before enabling sync or making a capture, Desktop reads
@@ -418,56 +464,69 @@ saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
 Settings → Sessions shows the account, verified workspace count, device upload
-switch, folder choices, and upload status. The normal view omits transfer counters.
+switch, folder choices, and a short sync status. The invitation section appears
+only when Desktop has a confirmed invitation or a join action is in progress.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
 uploads run or the policy is paused.
 Errors use an inline alert rather than muted routine status. Jobs excluded by the
 current folder policy retain their bytes but do not count as current upload failures.
 
+While the first account and sync-status reads are pending, Settings shows skeletons
+for the content that depends on those reads. It announces one accessible
+`Loading Cloud settings` status. Missing results do not imply a signed-out account,
+switch values, folder approval, or zero counters. Verified account and folder content
+stays visible during background refreshes in the same account, destination, and
+service scope. A read failure ends loading and shows a recovery action instead of
+an indefinite skeleton.
+
 `storageKnown` is true only when saved-state reads succeed. When false, status
 counters and progress are unknown or last-known values, not current results. The desktop
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
 values must match the current account, destination, and service.
 **Upload sessions to Antiburn Cloud** pauses or resumes uploads to every
-destination on this device. With no approved folders, the switch opens folder
-setup instead. The switch does not change folder approval or start a retry.
+destination on this device. Before the first folder approval, Settings shows the
+folder choices without a device switch. The switch does not change folder
+approval or start a retry.
 Folder changes while the device is paused do not resume uploads. On upgrade,
 an old workspace pause starts the device switch off. The old workspace pause
 stays in force until that workspace is reviewed, because it can also mean the
-saved source choices changed. **Save** can clear a source hold after Desktop
+saved source choices changed. **Sync now** can clear a source hold after Desktop
 checks the selected folders and verifies that all kept source bindings are still
 allowed. Restore access or remove folders with unavailable sources before saving.
 **Retry saved uploads** is separate. It does not
 resume the device switch, clear a source-change pause, or expand the selection.
 It retries only the displayed workspace and saved folder rules. If those rules
 change in another window, reload them before retrying.
-**Backfill sessions** asks Desktop to offer all available sessions in
-the named workspace's saved folders again, including unchanged sessions it
-previously uploaded. Cloud can reuse content for the same source. Desktop keeps
-deletion markers, existing jobs and bytes, and upload retry delays. Backfill
-does not re-offer an unchanged source if its saved job reaches integrity
-acceptance during the same scan. It does not turn on uploads, save draft choices,
-or retry failed jobs. Starting a scan does not confirm any uploads. Normal sync
-skips sessions when the accepted receipt matches their current version. After an
+**Start syncing** approves the first folder choices in Settings. **Sync now**
+applies pending folder changes. Both request a full scan of eligible saved
+folders after approval succeeds.
+The scan skips sessions when the accepted receipt matches their current version.
+Desktop keeps deletion markers, existing jobs and bytes, and upload retry delays.
+The scan does not resume paused uploads or retry failed jobs. Starting a scan
+does not confirm any uploads. While Desktop runs, scheduled sync continues with
+Settings closed. It skips matching receipts, reads sources in bounded pages,
+and uses one blocking Cloud worker. When it reaches the last discovery page, it
+sets the next discovery time 60 seconds ahead. After an
 upgrade, an unchanged Claude, Codex, or Pi file can be offered again if its
 receipt uses the old observation format. That receipt does not prove a match with
 `file-generation-v1`, so the re-offer can require more capture and transfer work.
-Desktop lets one backfill request wait for its current Cloud work to finish.
-If another request is already waiting, wait for it to start before requesting a
-second scan. Before scheduling, Desktop checks the account, upload controls, and
-saved folder policy again.
-Backfill starts at the first retained source key and scans in bounded pages.
+Desktop lets one scan request wait up to five seconds for its Cloud worker.
+If the worker stays busy, the request does not start. Try again when the
+worker is free. Before scheduling, Desktop checks the account, upload controls,
+and saved folder policy again.
+The full scan starts at the first retained source key and reads bounded pages.
 The desktop activity date range does not limit this scan. When the Claude
-metadata read budget is reached, the scan continues from the first unread
-source on a later turn. An unavailable source root or approved folder does not
-stop work in other verified folders. The scan reports a gap.
-Backfill cannot recover history the coding tool removed, use files outside
+metadata read budget or OpenCode content check budget is reached, the scan
+continues from the first unread source on a later turn. An unavailable source
+root or approved folder does not stop work in other verified folders. The
+scan reports a gap.
+The scan cannot recover history the coding tool removed, use files outside
 approved source roots, or read sources that exceed the provider limits.
 Settings shows when the scan is active. The scan can finish before Cloud
 accepts every upload.
-If Desktop restarts before the scan finishes, request backfill again.
-Each destination can report `uploadProgress` for its last explicit backfill in
+If Desktop restarts before the scan finishes, select **Sync now** again.
+Each destination can report `uploadProgress` for its last explicit scan in
 the current Desktop run and sign-in. `uploaded` counts Cloud acceptance for
 source versions found in that scan. `total` counts sources that match the saved
 folders and are not marked as deleted. `total` is null while the scan runs. It
@@ -485,6 +544,69 @@ format is unsupported. These two counts exclude versions with matching
 acceptance receipts. Neither the counts nor `total - uploaded` show the number
 of saved upload jobs.
 Settings does not show a percentage without a known nonzero total.
+`uploadProgress.transfer` reports required compressed bytes across the captures
+in that scan. `sentBytes` counts bytes backed by current service receipts.
+Desktop keeps accepted contributions after it removes their spool entries.
+Matching acceptance receipts from before the scan add no new transfer bytes.
+`totalBytes` stays null until discovery finishes without gaps and every source
+without a matching receipt has a known upload plan. Zero is valid for an empty
+scan or one whose source versions already have matching acceptance receipts.
+The counters exclude reused bytes and do not prove session acceptance.
+Repeated status reads do not add the same capture twice. Provisional receipt
+expiry can reduce `sentBytes`; Desktop does not keep invalidated credit.
+Earlier accepted versions retain their transfer work if the same source changes
+during the scan. Its new version needs its own plan or matching receipt before
+the total is known again. Proven folder exclusions and deletion markers remove
+that source's contributions. The tracker bounds both source and capture counts
+to 4,096. Reaching either bound can leave totals unknown. These counters share
+the session progress lifetime and its account, policy, and sign-in limits.
+Desktop can report `backgroundProgress` for a separate background sweep.
+It uses the same version and transfer rules as explicit progress. It does not
+reuse the last explicit scan or include other sweeps. `backgroundSyncInProgress`
+reports active background work, even before the sweep has measurements.
+`fullSyncInProgress` stays true after explicit discovery finishes if uploads
+or integrity checks can still advance. `backfillInProgress` reports explicit
+discovery only. Waiting for the next sweep does not count as work in progress.
+When present, the runtime activity flags take precedence over the general
+sync status, which can remain `syncing` after the last acceptance.
+Session counts describe accepted source versions. Transfer counts describe
+confirmed compressed bytes, not raw network traffic or session acceptance.
+Combined workspace counts use `session uploads`, such as
+`Syncing 3 of 8 session uploads`, because sending one local session to two
+workspaces counts as two deliveries. A combined session or byte total is known
+only when every included workspace supplies that measurement with a known total.
+A sum of known members is not a complete aggregate when another member is unknown.
+Settings does not combine an active full scan with background counters or with
+an idle workspace's earlier results.
+
+The same status shows background and explicit sync work. With measurements, it
+uses a short line such as `Syncing 2 of 5 sessions (12 MB transferred)`. If the
+total is unknown, `sessions found` describes only the sessions found so far.
+If discovery has no count, Settings shows the accepted count alone when known.
+Unavailable measurements are omitted. Settings does not guess totals,
+percentages, or time remaining.
+Without measurements, an explicit scan can show `Checking folders`. Transfer
+and automatic recovery can show `Syncing sessions`.
+When idle, Settings marks retained explicit results as `Last full scan` or
+`Folder scan incomplete`. These results include the known totals for sessions
+and transferred bytes. When active work has no scan measurements, Settings can
+show pending saved uploads.
+That count is not a scan total. If exactly one pending upload has a known byte
+counter, Settings labels it `Current upload` rather than using it as an
+aggregate transfer count.
+Without measurements, Settings shows the activity alone.
+Errors replace the progress line and offer a supported recovery action. Settings
+does not claim `Up to date` without evidence that the current scan scope is complete
+and has no pending, blocked, unsupported, or undiscovered work.
+The same footer button keeps its location and size. It shows `Syncing` and uses the
+native `disabled` attribute while a scan, upload, or automatic recovery is active.
+Completion of the command response does not enable it while background work
+remains active. It returns to `Sync now` only after that activity ends.
+While a scan is active, `found` can report how many matching sessions Desktop
+has found so far. It is not a final total. If Desktop can identify one current
+upload, `uploadTransfer` reports confirmed compressed bytes and the bytes the
+service requires for that upload. It does not count reused bytes or prove that
+Cloud accepted the session.
 `recoveryRequiredCount` identifies missing or incomplete local captures that
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings

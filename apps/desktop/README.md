@@ -126,8 +126,10 @@ The project list uses bounded cached metadata from all discovered agents.
 Current local Git metadata can group a repository and its worktrees for display.
 Suggestions do not imply upload support. Desktop uploads only formats the service
 advertises for Claude Code, OpenCode V2, Codex, and Pi. Draft choices do not save
-consent or enable uploads. **Start syncing** approves only the loaded selected
-folders and their current paths. New worktrees outside those paths need approval.
+consent or enable uploads. **Start syncing** approves the selected repositories
+and exact folders. Exact-folder approval does not extend to new worktrees
+outside those folders. Repository approval can cover later checkouts with the
+same verified Git origin.
 
 Sessions match when any proved source-owned project or working directory (CWD)
 falls inside an approved folder or its descendants. CWD changes are valid.

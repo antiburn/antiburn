@@ -16,6 +16,8 @@ mod http_tests;
 pub(crate) mod invitations;
 mod loopback;
 pub(crate) mod projects;
+mod repository_checkout;
+pub(crate) mod repository_origin;
 mod state;
 pub(crate) mod sync;
 #[cfg(test)]
@@ -169,6 +171,9 @@ pub(crate) struct Controller {
     capture: Mutex<capture::Host>,
     sync: sync::Scheduler,
     project_cache: Mutex<projects::Cache>,
+    project_listing: BlockingWork,
+    project_listing_cache: Mutex<projects::Cache>,
+    project_listing_authority: Mutex<Option<projects::ListingAuthority>>,
     attempt_generation: AtomicU64,
     account_generation: AtomicU64,
     invitations: Mutex<Option<invitations::Pending>>,
@@ -298,6 +303,23 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         draft = Draft::default();
         setup_error = None;
     }
+    if let Ok(mut authority) = app.state::<Controller>().project_listing_authority.lock() {
+        // Listing uses this proof without holding the engine during local scans.
+        // A stale snapshot cannot extend the grant or authorize uploads.
+        *authority = session
+            .filter(|session| {
+                setup_error.is_none() && session.workspace.kind == auth::WorkspaceKind::Personal
+            })
+            .zip(engine.listing_expiry())
+            .map(|(session, expires_at)| projects::ListingAuthority {
+                binding: DestinationBinding {
+                    account_id: session.user.id.clone(),
+                    destination_id: session.workspace.id.clone(),
+                },
+                generation: engine.generation,
+                expires_at,
+            });
+    }
     Snapshot {
         auth_enabled: engine.config.is_some(),
         invitation_enabled: session.is_some() && engine.invitations_enabled(),
@@ -393,6 +415,9 @@ pub fn initialize(
         capture: Mutex::new(capture::Host::new(directory)),
         sync: sync::Scheduler::default(),
         project_cache: Mutex::new(projects::Cache::default()),
+        project_listing: BlockingWork::default(),
+        project_listing_cache: Mutex::new(projects::Cache::default()),
+        project_listing_authority: Mutex::new(None),
         engine: Mutex::new(
             Engine::new(
                 Config::from_build(),
@@ -486,7 +511,15 @@ pub async fn cloud_workspaces(
         emit_snapshot(&app, snapshot(&app, &engine));
         result
             .map(|items| items.into_iter().map(|item| item.workspace).collect())
-            .map_err(|_| "Could not verify Cloud workspaces.".into())
+            .map_err(|failure| {
+                match failure {
+                    Failure::Cancelled => "Cloud account changed.",
+                    Failure::ReauthRequired => "Cloud workspace sign-in required.",
+                    Failure::Rejected => "Cloud workspace access denied.",
+                    _ => "Could not verify Cloud workspaces.",
+                }
+                .into()
+            })
     })
     .await
 }

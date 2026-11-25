@@ -2,6 +2,7 @@ use super::*;
 use antiburn_cloud_capture::{CAPTURE_VERSION, CaptureManifest, CaptureState, ServerStatus};
 
 const ORIGIN: &str = "https://api.example";
+const REPOSITORY: &str = "git.example.org/Group/Repo";
 
 fn selections() -> (Vec<SourceSelection>, Vec<ProjectSelection>) {
     (
@@ -44,6 +45,464 @@ fn job(store: &Store, policy: &Policy) -> Job {
         .unwrap()
 }
 
+fn repository_rule(policy: &Policy) -> RepositoryRule {
+    RepositoryRule {
+        origin: REPOSITORY.into(),
+        anchor_path: "/Example/project".into(),
+        scopes: [policy.roots[0].source_scope_id.clone()].into(),
+    }
+}
+
+#[test]
+fn cloud_initial_repository_approval_saves_scope_and_display_anchor_not_folder_grant() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let (roots, projects) = selections();
+    let anchors = [(projects[0].project_path.clone(), REPOSITORY.into())].into();
+    let choices = [(repository_group_id(REPOSITORY), true)].into();
+    let saved = store
+        .save_cloud_sync_policy_with_repositories(
+            ("account", "personal", ORIGIN, ORIGIN, None),
+            &roots,
+            &projects,
+            &choices,
+            &anchors,
+            || true,
+        )
+        .unwrap();
+    let scope = &saved.roots[0].source_scope_id;
+    assert!(saved.projects.is_empty());
+    assert_eq!(saved.projects_for_display(), projects);
+    assert_eq!(saved.repository_rules, vec![repository_rule(&saved)]);
+    assert_eq!(saved.project_choices, choices);
+    assert!(saved.allows_repository(scope, REPOSITORY));
+    assert!(!saved.allows_repository(scope, "git.example.org/Group/Other"));
+    assert!(!saved.allows(scope, "/Example/project/src"));
+    assert!(!saved.allows_repository("other-scope", REPOSITORY));
+    let raw = serde_json::to_value(&saved).unwrap();
+    assert_eq!(raw["repositoryRules"][0]["anchorPath"], "/Example/project");
+    assert_eq!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap(),
+        Some(saved)
+    );
+}
+
+#[test]
+fn cloud_repository_replacement_checks_scope_label_paths_order_and_current_policy() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let initial = policy(&store);
+    assert!(
+        serde_json::to_value(&initial)
+            .unwrap()
+            .get("repositoryRules")
+            .is_none()
+    );
+    let exact_job = job(&store, &initial);
+    assert!(
+        serde_json::to_value(&exact_job)
+            .unwrap()
+            .get("repository_origin")
+            .is_none()
+    );
+    store.set_cloud_device_upload_enabled(false).unwrap();
+    let policy = store.set_cloud_sync_paused(&initial, true).unwrap();
+    let rule = repository_rule(&policy);
+    let mut other = rule.clone();
+    other.origin = "ssh://git@[::1]:2222/Group/Other".into();
+    other.anchor_path = "/Example/other".into();
+    let mut invalid = vec![
+        vec![rule.clone(), rule.clone()],
+        vec![other.clone(), rule.clone()],
+        vec![RepositoryRule {
+            scopes: ["other-scope".into()].into(),
+            ..rule.clone()
+        }],
+        vec![RepositoryRule {
+            anchor_path: "/Example/../project".into(),
+            ..rule.clone()
+        }],
+    ];
+    for origin in [
+        "https://synthetic-user@git.example.org:8443/Group/Repo",
+        "https://git.example.org/Group/Repo",
+        "git.example.org/Group/Repo?token=secret",
+        "git.example.org/Group/../Repo",
+        "git.example.org:Group/Repo",
+        "/Example/project",
+    ] {
+        invalid.push(vec![RepositoryRule {
+            origin: origin.into(),
+            ..rule.clone()
+        }]);
+    }
+    for rules in invalid {
+        assert!(
+            store
+                .replace_cloud_repository_rules(&policy, rules, Vec::new(), || true)
+                .is_err()
+        );
+    }
+    assert!(
+        store
+            .replace_cloud_repository_rules(&policy, Vec::new(), Vec::new(), || true)
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .replace_cloud_repository_rules(&policy, vec![rule.clone()], Vec::new(), || true)
+            .unwrap_err()
+            .to_string(),
+        "Cloud exact folders still authorize saved uploads"
+    );
+    assert_eq!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap(),
+        Some(policy.clone())
+    );
+    store.abandon_cloud_sync_unreserved(&exact_job).unwrap();
+    let finished_job = store
+        .cloud_sync_job(&exact_job.identity.capture_id)
+        .unwrap();
+    assert_eq!(
+        store
+            .replace_cloud_repository_rules(&policy, vec![rule.clone()], Vec::new(), || false)
+            .unwrap_err()
+            .to_string(),
+        "Cloud account or upload controls changed"
+    );
+    assert_eq!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap(),
+        Some(policy.clone())
+    );
+    let saved = store
+        .replace_cloud_repository_rules(&policy, vec![rule, other], Vec::new(), || true)
+        .unwrap();
+    assert_ne!(saved.revision, policy.revision);
+    assert!(saved.paused);
+    assert!(!store.cloud_device_upload_enabled().unwrap());
+    assert_eq!(saved.roots, policy.roots);
+    assert_eq!(saved.project_choices, policy.project_choices);
+    assert_eq!(
+        store
+            .cloud_sync_job(&exact_job.identity.capture_id)
+            .unwrap(),
+        finished_job
+    );
+    assert!(
+        store
+            .replace_cloud_repository_rules(&policy, Vec::new(), initial.projects, || true)
+            .is_err()
+    );
+}
+
+#[test]
+fn cloud_repository_add_and_revoke_keep_legacy_job_and_other_folders() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let (roots, projects) = selections();
+    let binding = (
+        "account",
+        "team",
+        ORIGIN,
+        ORIGIN,
+        Some(("generation", "Team")),
+    );
+    let policy = store
+        .save_cloud_sync_policy_for_membership(binding, &roots, &projects, &BTreeMap::new(), || {
+            true
+        })
+        .unwrap();
+    let exact_job = job(&store, &policy);
+    let group = repository_group_id(REPOSITORY);
+    let other_selection = ProjectSelection {
+        source_path: "/Example/other-sources".into(),
+        project_path: "/Example/clone".into(),
+        ..projects[0].clone()
+    };
+    let anchors = [(other_selection.project_path.clone(), REPOSITORY.into())].into();
+    let selected = [other_selection.clone()].into();
+    assert!(
+        store
+            .set_cloud_sync_project_with_repositories(
+                &policy,
+                &group,
+                true,
+                (&selected, &anchors),
+                false,
+                || false,
+            )
+            .is_err()
+    );
+    let approved = store
+        .set_cloud_sync_project_with_repositories(
+            &policy,
+            &group,
+            true,
+            (&selected, &anchors),
+            false,
+            || true,
+        )
+        .unwrap();
+    let scope = &approved.roots[0].source_scope_id;
+    assert_eq!(approved.roots[0].path, other_selection.source_path);
+    assert_eq!(approved.projects, projects);
+    assert!(exact_job.allowed(&approved));
+    assert!(!approved.allows(scope, &other_selection.project_path));
+    let paths = vec!["/Example/future-clone/src".to_string()];
+    assert!(
+        store
+            .enqueue_cloud_sync_for_repository(
+                &approved,
+                scope,
+                "/Example/wrong-path",
+                &format!("{scope}/repo"),
+                "one",
+                (REPOSITORY, &paths),
+            )
+            .is_err()
+    );
+    let repo_job = store
+        .enqueue_cloud_sync_for_repository(
+            &approved,
+            scope,
+            &paths[0],
+            &format!("{scope}/repo"),
+            "one",
+            (REPOSITORY, &paths),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(repo_job.repository_origin.as_deref(), Some(REPOSITORY));
+    assert_eq!(repo_job.recorded_project_paths, Some(paths));
+    assert!(repo_job.allowed(&approved));
+    let mut different_membership = approved.clone();
+    different_membership.membership_generation = Some("different".into());
+    assert!(!repo_job.allowed(&different_membership));
+    let mut legacy = approved.clone();
+    legacy.membership_generation = None;
+    assert!(!legacy.allows_repository(scope, REPOSITORY));
+    assert!(
+        store
+            .revoke_cloud_repository(&approved, &group, REPOSITORY, || false)
+            .is_err()
+    );
+    let revoked = store
+        .revoke_cloud_repository(&approved, &group, REPOSITORY, || true)
+        .unwrap();
+    assert_eq!(revoked.project_choices.get(&group), Some(&false));
+    assert_eq!(revoked.projects_for_display(), projects);
+    assert!(revoked.repository_rules.is_empty());
+    assert!(!repo_job.allowed(&revoked));
+    assert!(exact_job.allowed(&revoked));
+    assert_eq!(
+        store.cloud_sync_job(&repo_job.identity.capture_id).unwrap(),
+        Some(repo_job)
+    );
+}
+
+#[test]
+fn cloud_team_renewal_reviews_saved_repository_anchors_and_adds_verified_rules() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let (roots, projects) = selections();
+    let binding = ("account", "team", ORIGIN, ORIGIN, Some(("old", "Team")));
+    let anchors = [(projects[0].project_path.clone(), REPOSITORY.into())].into();
+    let policy = store
+        .save_cloud_sync_policy_with_repositories(
+            binding,
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+            &anchors,
+            || true,
+        )
+        .unwrap();
+    let policy = store.set_cloud_sync_paused(&policy, true).unwrap();
+    store.set_cloud_device_upload_enabled(false).unwrap();
+    let next = ("account", "team", ORIGIN, ORIGIN, Some(("new", "Team")));
+    let new_origin = "git.example.org/Group/Other";
+    let new_anchor = "/Example/other";
+    let additions = [ProjectSelection {
+        source_path: "/Example/new-sources".into(),
+        project_path: new_anchor.into(),
+        ..projects[0].clone()
+    }]
+    .into();
+    let new_choices = [(repository_group_id(new_origin), true)].into();
+    let new_anchors = [(new_anchor.to_owned(), new_origin.to_owned())].into();
+    let args = Some((&additions, &new_choices, &new_anchors));
+    let confirmed = [projects[0].project_path.clone()].into();
+    assert!(
+        store
+            .renew_cloud_team_sync_policy_with_repositories(
+                next,
+                &policy.revision,
+                &[new_anchor.to_owned()].into(),
+                args,
+                || true,
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .renew_cloud_team_sync_policy_with_repositories(
+                next,
+                &policy.revision,
+                &confirmed,
+                args,
+                || false,
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store.cloud_sync_policy("account", "team", ORIGIN).unwrap(),
+        Some(policy.clone())
+    );
+    let renewed = store
+        .renew_cloud_team_sync_policy_with_repositories(
+            next,
+            &policy.revision,
+            &confirmed,
+            args,
+            || true,
+        )
+        .unwrap();
+    assert_eq!(renewed.membership_generation.as_deref(), Some("new"));
+    assert!(renewed.paused);
+    assert!(!store.cloud_device_upload_enabled().unwrap());
+    assert!(renewed.projects.is_empty());
+    assert_eq!(renewed.repository_rules.len(), 2);
+    assert!(
+        renewed
+            .repository_rules
+            .contains(&policy.repository_rules[0])
+    );
+    assert_eq!(renewed.project_choices, new_choices);
+    for rule in &renewed.repository_rules {
+        assert_eq!(rule.scopes.len(), 1);
+        assert!(renewed.allows_repository(rule.scopes.first().unwrap(), &rule.origin));
+    }
+}
+
+#[test]
+fn cloud_repository_migration_converts_only_approved_bindings_after_exact_jobs_finish() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let (mut roots, mut projects) = selections();
+    let path = projects[0].project_path.clone();
+    let other_source = "/Example/z-sources";
+    roots.push(SourceSelection {
+        source_kind: roots[0].source_kind,
+        path: other_source.into(),
+    });
+    let untouched = ProjectSelection {
+        project_path: "/Example/unrelated".into(),
+        ..projects[0].clone()
+    };
+    projects.push(untouched.clone());
+    projects.push(ProjectSelection {
+        source_path: other_source.into(),
+        ..projects[0].clone()
+    });
+    let policy = store
+        .save_cloud_sync_policy_for_membership(
+            ("account", "personal", ORIGIN, ORIGIN, None),
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+            || true,
+        )
+        .unwrap();
+    let job = job(&store, &policy);
+    let anchors = [(path.clone(), REPOSITORY.to_owned())].into();
+    assert_eq!(
+        store
+            .migrate_cloud_repository_anchors(&policy, &anchors, || true)
+            .unwrap_err()
+            .to_string(),
+        "Cloud exact folders still authorize saved uploads"
+    );
+    store.abandon_cloud_sync_unreserved(&job).unwrap();
+    assert!(
+        store
+            .migrate_cloud_repository_anchors(
+                &policy,
+                &[("/Example/unknown".into(), REPOSITORY.into())].into(),
+                || true
+            )
+            .is_err()
+    );
+    let saved = store
+        .migrate_cloud_repository_anchors(&policy, &anchors, || true)
+        .unwrap();
+    assert_eq!(saved.projects, vec![untouched]);
+    assert_eq!(saved.projects_for_display(), projects);
+    assert_eq!(saved.roots, policy.roots);
+    assert_eq!(saved.repository_rules[0].scopes.len(), 2);
+    for root in &saved.roots {
+        assert!(!saved.allows(&root.source_scope_id, &path));
+        assert!(saved.allows_repository(&root.source_scope_id, REPOSITORY));
+    }
+}
+
+#[test]
+fn cloud_repository_migration_keeps_ambiguous_legacy_rules_exact() {
+    for with_exclusion in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        let (roots, projects) = selections();
+        let choices = if with_exclusion {
+            BTreeMap::from([("unmapped-old-group".into(), false)])
+        } else {
+            BTreeMap::new()
+        };
+        let policy = store
+            .save_cloud_sync_policy_for_membership(
+                ("account", "personal", ORIGIN, ORIGIN, None),
+                &roots,
+                &projects,
+                &choices,
+                || true,
+            )
+            .unwrap();
+        if !with_exclusion {
+            store
+                .save_cloud_sync_policy_for_membership(
+                    ("account", "team", ORIGIN, ORIGIN, Some(("current", "Team"))),
+                    &roots,
+                    &projects,
+                    &BTreeMap::new(),
+                    || true,
+                )
+                .unwrap();
+        }
+        let anchors = [(projects[0].project_path.clone(), REPOSITORY.into())].into();
+        assert!(
+            store
+                .migrate_cloud_repository_anchors(&policy, &anchors, || true)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .cloud_sync_policy("account", "personal", ORIGIN)
+                .unwrap(),
+            Some(policy)
+        );
+    }
+}
+
 fn accepted(job: &Job) -> QueueEntry {
     let manifest = CaptureManifest {
         version: CAPTURE_VERSION,
@@ -69,6 +528,111 @@ fn accepted(job: &Job) -> QueueEntry {
         upload_plan: None,
         server_status: Some(status),
         completion_submitted: true,
+    }
+}
+
+#[test]
+fn cloud_saved_team_policy_accepts_512_bindings_and_rejects_growth() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let roots: Vec<_> = (0..8)
+        .map(|index| SourceSelection {
+            source_kind: SourceKind::ClaudeJsonl,
+            path: format!("/Example/source-{index}"),
+        })
+        .collect();
+    let mut projects = Vec::new();
+    for root in &roots {
+        for index in 0..64 {
+            projects.push(ProjectSelection {
+                source_kind: root.source_kind,
+                source_path: root.path.clone(),
+                project_path: format!("/Example/worktree-{index:02}"),
+            });
+        }
+    }
+    assert_eq!(projects.len(), MAX_SYNC_PROJECT_BINDINGS);
+    let initial = store
+        .save_cloud_sync_policy_for_grant(
+            ("account", "team", ORIGIN, ORIGIN, Some(("old", "Team"))),
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let saved = store
+        .saved_team_sync_policies("account", "personal", ORIGIN, ORIGIN)
+        .unwrap();
+    assert_eq!(saved, vec![initial.clone()]);
+    let paths = projects
+        .iter()
+        .map(|project| project.project_path.clone())
+        .collect();
+    let renewed = store
+        .renew_cloud_team_sync_policy(
+            ("account", "team", ORIGIN, ORIGIN, Some(("new", "Team"))),
+            &initial.revision,
+            &paths,
+            None,
+            || true,
+        )
+        .unwrap();
+    assert_eq!(renewed.projects, projects);
+    assert_eq!(renewed.roots, initial.roots);
+    let extra = ProjectSelection {
+        source_path: "/Example/source-8".into(),
+        ..projects[0].clone()
+    };
+    let outcome =
+        store.set_cloud_sync_project(&renewed, "extra", true, &[extra].into(), false, || true);
+    assert_eq!(
+        outcome.unwrap_err().to_string(),
+        "Cloud project bindings exceed the policy limit"
+    );
+    assert_eq!(
+        store.cloud_sync_policy("account", "team", ORIGIN).unwrap(),
+        Some(renewed)
+    );
+}
+
+#[test]
+fn cloud_policy_growth_caps_combined_distinct_paths_and_roots() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let original = policy(&store);
+    let first = &original.projects[0];
+    let extra_paths: BTreeSet<_> = (0..MAX_SYNC_PROJECT_PATHS)
+        .map(|index| ProjectSelection {
+            project_path: format!("/Example/worktree-{index}"),
+            ..first.clone()
+        })
+        .collect();
+    let extra_roots: BTreeSet<_> = (0..MAX_SYNC_SOURCE_ROOTS)
+        .map(|index| ProjectSelection {
+            source_path: format!("/Example/source-{index}"),
+            ..first.clone()
+        })
+        .collect();
+    for (additions, expected) in [
+        (
+            extra_paths,
+            "Cloud project directories exceed the policy limit",
+        ),
+        (extra_roots, "Cloud source roots exceed the policy limit"),
+    ] {
+        check_project_binding_limits(additions.iter()).unwrap();
+        let error = store
+            .set_cloud_sync_project(&original, "extra", true, &additions, false, || true)
+            .unwrap_err();
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(
+            store
+                .cloud_sync_policy("account", "personal", ORIGIN)
+                .unwrap(),
+            Some(original.clone())
+        );
     }
 }
 
@@ -409,6 +973,71 @@ fn cloud_team_membership_reapproval_needs_empty_current_consent_and_keeps_old_jo
     assert_eq!(
         store.cloud_sync_job(&old_job.identity.capture_id).unwrap(),
         Some(old_job)
+    );
+}
+
+#[test]
+fn cloud_device_upload_resume_keeps_the_exact_previous_preference_on_rejection() {
+    for previous in [None, Some(false), Some(true)] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        if let Some(enabled) = previous {
+            store.set_cloud_device_upload_enabled(enabled).unwrap();
+        }
+
+        assert!(
+            !store
+                .resume_cloud_device_uploads(|| false, || panic!("stale before commit"))
+                .unwrap()
+        );
+        assert_eq!(
+            saved_device_upload_enabled(&store.lock()).unwrap(),
+            previous
+        );
+
+        assert!(
+            !store
+                .resume_cloud_device_uploads(|| true, || false)
+                .unwrap()
+        );
+        assert_eq!(
+            saved_device_upload_enabled(&store.lock()).unwrap(),
+            previous
+        );
+
+        assert!(store.resume_cloud_device_uploads(|| true, || true).unwrap());
+        assert!(store.cloud_device_upload_enabled().unwrap());
+    }
+}
+
+#[test]
+fn cloud_device_upload_rejection_needs_no_compensating_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    store.set_cloud_device_upload_enabled(false).unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TRIGGER reject_compensating_off
+             BEFORE UPDATE OF enabled ON cloud_device_upload
+             WHEN NEW.enabled = 0
+             BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;",
+        )
+        .unwrap();
+
+    assert!(
+        !store
+            .resume_cloud_device_uploads(|| true, || false)
+            .unwrap()
+    );
+    drop(store);
+    let reopened = Store::open(directory.path()).unwrap();
+    reopened.initialize_cloud_setup().unwrap();
+    assert_eq!(
+        saved_device_upload_enabled(&reopened.lock()).unwrap(),
+        Some(false)
     );
 }
 

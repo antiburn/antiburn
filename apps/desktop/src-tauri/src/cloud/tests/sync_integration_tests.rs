@@ -4,7 +4,11 @@ use antiburn_cloud_capture::{
     CaptureIdentity, CaptureManifest, Chunk, ChunkKey, ServerStatus, Spool, Transport,
     TransportError, UploadPlan,
 };
-use std::{fs, io::Read, path::PathBuf};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::PathBuf,
+};
 
 fn write_session(root: &Path, id: &str, cwd: &Path, tool_path: &Path) {
     fs::write(
@@ -50,6 +54,7 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
             project_path: selected.to_str().unwrap().into(),
         }],
         project_choices: BTreeMap::new(),
+        repository_rules: Vec::new(),
         paused: false,
     };
     (directory, policy, selected, outside)
@@ -111,7 +116,7 @@ fn interrupted_upload(store: &Store, spool: &mut Spool, policy: &Policy, id: &st
             &selection.scope,
             project,
             candidate.source_id(),
-            SourceObservation::ChangedOnly(id),
+            id,
             Some(std::slice::from_ref(project)),
         )
         .unwrap()
@@ -131,6 +136,17 @@ fn interrupted_upload(store: &Store, spool: &mut Spool, policy: &Policy, id: &st
         .set_cloud_sync_job_state(&job, JobState::Interrupted)
         .unwrap();
     job
+}
+
+#[test]
+fn cloud_project_directory_validation_keeps_aliases_visible() {
+    let (_directory, policy, project, _) = fixture();
+    let mut alias = policy.projects[0].clone();
+    alias.project_path = format!("{}/.", project.display());
+    assert_eq!(
+        validate_project_directories([policy.projects[0].clone(), alias].iter()),
+        Err("Choose existing project directories without path aliases.".into())
+    );
 }
 
 #[test]
@@ -282,7 +298,193 @@ fn cloud_sync_allowlist_uses_recorded_cwd_and_descendants_not_tool_paths_or_work
             .iter()
             .all(|source| policy.allows(&source.scope, &source.project))
     );
+    let folders = saved_folders(&policy);
+    assert_eq!(folders.len(), 1);
+    assert!(
+        sources
+            .iter()
+            .all(|source| source.folder_group_id.as_ref() == Some(&folders[0].group_id))
+    );
     assert!(discover_policy(&policy, &|| false).unwrap().is_empty());
+}
+
+#[test]
+fn exact_folder_count_omits_a_session_that_matches_overlapping_saved_folders() {
+    let (_directory, mut policy, selected, outside) = fixture();
+    policy.projects.push(ProjectSelection {
+        project_path: selected.join("src").to_str().unwrap().into(),
+        ..policy.projects[0].clone()
+    });
+    let root = Path::new(&policy.roots[0].path);
+    write_session(
+        root,
+        "overlap",
+        &selected.join("src"),
+        &outside.join("file"),
+    );
+    let sources = discover_policy(&policy, &|| true).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].folder_group_id, None);
+}
+
+#[test]
+fn exact_folder_count_uses_distinct_saved_rule_ids_for_separate_paths() {
+    let (_directory, mut policy, main, checkout) = fixture();
+    policy.projects.push(ProjectSelection {
+        project_path: checkout.to_str().unwrap().into(),
+        ..policy.projects[0].clone()
+    });
+    let root = Path::new(&policy.roots[0].path);
+    write_session(root, "main", &main, &checkout.join("file"));
+    write_session(root, "worktree", &checkout, &main.join("file"));
+    let sources = discover_policy(&policy, &|| true).unwrap();
+    assert_eq!(sources.len(), 2);
+    let folders = saved_folders(&policy);
+    assert_eq!(folders.len(), 2);
+    assert_ne!(folders[0].group_id, folders[1].group_id);
+    for source in sources {
+        let folder = folders
+            .iter()
+            .find(|folder| folder.path == source.project)
+            .unwrap();
+        assert_eq!(source.folder_group_id.as_ref(), Some(&folder.group_id));
+    }
+}
+
+#[test]
+fn repository_approval_captures_a_matching_clone_and_rechecks_its_origin() {
+    use crate::store::cloud_capture::sync::RepositoryRule;
+    let (_directory, mut policy, anchor, checkout) = fixture();
+    let git = |path: &Path, args: &[&str]| {
+        let status = tauri::async_runtime::block_on(async {
+            tokio::process::Command::new("git")
+                .current_dir(path)
+                .args(args)
+                .status()
+                .await
+        })
+        .expect("run Git in the synthetic checkout");
+        assert!(status.success());
+    };
+    git(&checkout, &["init", "--quiet"]);
+    git(
+        &checkout,
+        &[
+            "config",
+            "--local",
+            "remote.origin.url",
+            "git@github.com:Example/Project.git",
+        ],
+    );
+    policy.projects.clear();
+    policy.repository_rules.push(RepositoryRule {
+        origin: "github.com/Example/Project".into(),
+        anchor_path: anchor.to_str().unwrap().into(),
+        scopes: BTreeSet::from(["scope".into()]),
+    });
+    let folders = saved_folders(&policy);
+    assert_eq!(folders.len(), 1);
+    assert_eq!(
+        policy.repository_rule_for_group(&folders[0].group_id),
+        policy.repository_rules.first()
+    );
+    let root = Path::new(&policy.roots[0].path);
+    write_session(root, "matching", &checkout, &anchor.join("file"));
+    write_session(root, "plain", &anchor, &checkout.join("file"));
+    let matches = discover_policy(&policy, &|| true).unwrap();
+    assert_eq!(matches.len(), 1);
+    let selection = &matches[0];
+    assert_eq!(selection.candidate.native_session_id(), "matching");
+    assert_eq!(
+        selection.folder_group_id.as_ref(),
+        Some(&folders[0].group_id)
+    );
+    let origin = selection.repository_origin.as_ref().unwrap();
+    assert!(repository_capture::recheck_repository_project(
+        &policy,
+        &selection.scope,
+        origin,
+        &selection.project,
+        std::slice::from_ref(&checkout)
+    ));
+    git(
+        &checkout,
+        &[
+            "config",
+            "--local",
+            "remote.origin.url",
+            "https://github.com/Example/Other.git",
+        ],
+    );
+    assert!(!repository_capture::recheck_repository_project(
+        &policy,
+        &selection.scope,
+        origin,
+        &selection.project,
+        std::slice::from_ref(&checkout)
+    ));
+    let mut cache = crate::cloud::projects::Cache::default();
+    let (matches, next, coverage) =
+        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    assert!(matches.is_empty());
+    assert!(next.is_none());
+    assert!(!coverage.partial);
+    assert!(!coverage.blocked);
+
+    let damaged = anchor.join("damaged");
+    fs::create_dir(&damaged).unwrap();
+    fs::write(damaged.join(".git"), "invalid pointer\n").unwrap();
+    fs::remove_file(root.join("matching.jsonl")).unwrap();
+    write_session(root, "mixed", &damaged, &anchor.join("file"));
+    assert!(damaged < checkout);
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(root.join("mixed.jsonl"))
+            .unwrap(),
+        "{}",
+        serde_json::json!({
+            "sessionId": "mixed", "cwd": checkout, "version": "2.1.55", "type": "user",
+            "message": {"role": "user", "content": "changed directory"},
+        })
+    )
+    .unwrap();
+
+    for (fetch_url, expected_partial) in [
+        ("https://github.com/Example/Other.git", true),
+        ("https://github.com/Example/Project.git", false),
+    ] {
+        git(
+            &checkout,
+            &["config", "--local", "remote.origin.url", fetch_url],
+        );
+        let mut cursor = DiscoveryCursor::default();
+        let mut selected = Vec::new();
+        let mut partial = false;
+        loop {
+            let (matches, next, coverage) =
+                discover_policy_page(&policy, &|| true, &mut cache, &cursor).unwrap();
+            assert!(!coverage.blocked);
+            partial |= coverage.partial;
+            selected.extend(matches);
+            let Some(next) = next else {
+                break;
+            };
+            assert_ne!(next, cursor);
+            cursor = next;
+        }
+        assert_eq!(partial, expected_partial);
+        if expected_partial {
+            assert!(selected.is_empty());
+        } else {
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].candidate.native_session_id(), "mixed");
+            assert_eq!(
+                selected[0].repository_origin.as_deref(),
+                Some(origin.as_str())
+            );
+        }
+    }
 }
 
 #[test]

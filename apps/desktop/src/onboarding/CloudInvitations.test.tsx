@@ -35,9 +35,17 @@ async function click(name: string) {
   })
 }
 
-async function open(port: CloudInvitationPort, onJoined = vi.fn()) {
+async function open(port: CloudInvitationPort, showConfirmedOnly = false) {
+  const onJoined = vi.fn()
   const component = await act(async () =>
-    render(<CloudInvitations accountId="account-1" port={port} onJoined={onJoined} />),
+    render(
+      <CloudInvitations
+        accountId="account-1"
+        port={port}
+        onJoined={onJoined}
+        showConfirmedOnly={showConfirmedOnly}
+      />,
+    ),
   )
   return { ...component, onJoined }
 }
@@ -68,6 +76,242 @@ describe("Cloud workspace invitations", () => {
       )
     })
     expect(screen.getByRole("button", { name: "Check in browser" })).toBeVisible()
+  })
+
+  it.each<[string, InvitationReply]>([
+    ["a browser check is required", { kind: "list", listing: { state: "check_required" } }],
+    ["the list is unavailable", { kind: "list", listing: { state: "unavailable" } }],
+    ["the list is empty", { kind: "list", listing: { state: "checked", invitations: [] } }],
+    ["there is a list-only attempt", attempt("ready", false)],
+  ])("hides Settings invitations when %s", async (_description, reply) => {
+    const port = vi.fn<CloudInvitationPort>().mockResolvedValueOnce(reply)
+    await open(port, true)
+    expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(port.mock.calls).toEqual([["account-1", { action: "list" }]])
+  })
+
+  it.each<[string, InvitationReply, boolean]>([
+    ["a confirmed invitation list", checked, true],
+    ["another required check", { kind: "list", listing: { state: "check_required" } }, false],
+  ])("dismisses a completed list check in Settings and gets %s", async (_, reply, visible) => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(attempt("checked", false))
+      .mockResolvedValueOnce(reply)
+    const { onJoined } = await open(port, true)
+    if (visible) {
+      expect(screen.getByRole("button", { name: "Join Example Team (example)" })).toBeVisible()
+    } else {
+      expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    }
+    expect(screen.queryByRole("button", { name: "Check in browser" })).toBeNull()
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(port.mock.calls).toEqual([
+      ["account-1", { action: "list" }],
+      ["account-1", { action: "dismiss", id: "attempt-1" }],
+    ])
+    expect(onJoined).not.toHaveBeenCalled()
+  })
+
+  it("hides an old join failure in Settings but keeps a new failure available for recovery", async () => {
+    let resolveList: (reply: InvitationReply) => void = () => {}
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(attempt("no_seat"))
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveList = resolve)))
+      .mockResolvedValueOnce(attempt("waiting"))
+      .mockResolvedValueOnce(attempt("wrong_account"))
+    const { onJoined } = await open(port, true)
+    expect(port.mock.calls.map(([, request]) => request)).toEqual([
+      { action: "list" },
+      { action: "dismiss", id: "attempt-1" },
+    ])
+    expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    await act(async () => resolveList(checked))
+    await click("Join Example Team (example)")
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Your browser used a different account.",
+    )
+    expect(screen.getByRole("button", { name: "Refresh invitations" })).toBeEnabled()
+    expect(port.mock.calls.map(([, request]) => request.action)).toEqual([
+      "list",
+      "dismiss",
+      "start",
+      "status",
+    ])
+    expect(onJoined).not.toHaveBeenCalled()
+  })
+
+  it("retries clearing an old failed invitation without showing it", async () => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(attempt("no_seat"))
+      .mockRejectedValueOnce(new Error("dismiss failed"))
+      .mockResolvedValueOnce(checked)
+    await open(port, true)
+    expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(port.mock.calls.map(([, request]) => request)).toEqual([
+      { action: "list" },
+      { action: "dismiss", id: "attempt-1" },
+      { action: "dismiss", id: "attempt-1" },
+    ])
+    expect(screen.getByRole("button", { name: "Join Example Team (example)" })).toBeVisible()
+  })
+
+  it.each([false, true])(
+    "retries the initial Settings list only once, with retry success: %s",
+    async (success) => {
+      const port = vi.fn<CloudInvitationPort>().mockRejectedValue(new Error("list failed"))
+      if (success) {
+        port.mockRejectedValueOnce(new Error("list failed")).mockResolvedValueOnce(checked)
+      }
+      await open(port, true)
+      expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+      expect(port).toHaveBeenCalledOnce()
+      await act(() => vi.advanceTimersByTimeAsync(8_000))
+      expect(port.mock.calls).toEqual([
+        ["account-1", { action: "list" }],
+        ["account-1", { action: "list" }],
+      ])
+      if (success) {
+        expect(
+          screen.getByRole("button", { name: "Join Example Team (example)" }),
+        ).toBeVisible()
+      } else {
+        expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+      }
+    },
+  )
+
+  it("cancels the initial Settings list retry when the view closes", async () => {
+    const port = vi.fn<CloudInvitationPort>().mockRejectedValueOnce(new Error("list failed"))
+    const { unmount } = await open(port, true)
+    unmount()
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(port).toHaveBeenCalledOnce()
+  })
+
+  it("shows only Join actions when Settings confirms pending invitations", async () => {
+    let resolveList: (reply: InvitationReply) => void = () => {}
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveList = resolve)))
+    await open(port, true)
+    expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    await act(async () => resolveList(checked))
+    expect(
+      screen.getByRole("button", { name: "Join Example Team (example)" }),
+    ).toHaveTextContent(/^Join$/)
+    expect(
+      screen.getByRole("button", { name: "Join Example Team (example-other)" }),
+    ).toBeVisible()
+    expect(screen.getAllByRole("button")).toHaveLength(2)
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(port).toHaveBeenCalledOnce()
+  })
+
+  it("keeps refresh available after a Settings join fails to start", async () => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(checked)
+      .mockRejectedValueOnce(new Error("start failed"))
+      .mockRejectedValueOnce(new Error("list failed"))
+      .mockResolvedValueOnce(checked)
+    await open(port, true)
+    await click("Join Example Team (example)")
+    expect(screen.getByRole("status")).toHaveTextContent("Could not check Cloud invitations.")
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(port).toHaveBeenCalledTimes(2)
+    await click("Refresh invitations")
+    expect(screen.getByRole("button", { name: "Refresh invitations" })).toBeEnabled()
+    await click("Refresh invitations")
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(screen.getAllByRole("button")).toHaveLength(2)
+    expect(port.mock.calls.map(([, request]) => request.action)).toEqual([
+      "list",
+      "start",
+      "list",
+      "list",
+    ])
+  })
+
+  it("verifies a Settings join in the browser and checks an uncertain result without joining again", async () => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(checked)
+      .mockResolvedValueOnce(attempt("waiting"))
+      .mockResolvedValueOnce(attempt("ready"))
+      .mockResolvedValueOnce({ kind: "uncertain", id: "attempt-1", join: true })
+      .mockResolvedValueOnce(attempt("joined"))
+      .mockResolvedValueOnce({ kind: "list", listing: { state: "checked", invitations: [] } })
+    const { onJoined } = await open(port, true)
+    await click("Join Example Team (example-other)")
+    expect(screen.getByRole("status")).toHaveTextContent("Verify your account in your browser")
+    expect(screen.queryByRole("button", { name: /^Join workspace/ })).toBeNull()
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(port).toHaveBeenCalledTimes(3)
+    expect(onJoined).not.toHaveBeenCalled()
+    await click("Join workspace")
+    expect(screen.queryByRole("button", { name: /^Join workspace/ })).toBeNull()
+    expect(onJoined).not.toHaveBeenCalled()
+    await click("Check result")
+    expect(onJoined).toHaveBeenCalledOnce()
+    expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    expect(port.mock.calls.map(([, request]) => request)).toEqual([
+      { action: "list" },
+      {
+        action: "start",
+        invitation_id: "invite-2",
+        workspace_name: "Example Team",
+        workspace_slug: "example-other",
+      },
+      { action: "status", id: "attempt-1" },
+      { action: "finish", id: "attempt-1" },
+      { action: "status", id: "attempt-1" },
+      { action: "dismiss", id: "attempt-1" },
+    ])
+  })
+
+  it.each([false, true])(
+    "refreshes the list after a lost Settings dismiss reply, with attempt retained: %s",
+    async (retained) => {
+      const port = vi
+        .fn<CloudInvitationPort>()
+        .mockResolvedValueOnce(attempt("joined"))
+        .mockRejectedValueOnce(new Error("dismiss reply lost"))
+        .mockResolvedValueOnce(retained ? attempt("joined") : checked)
+        .mockResolvedValueOnce(checked)
+      const { onJoined } = await open(port, true)
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "You joined the workspace. Could not refresh invitations.",
+      )
+      expect(onJoined).toHaveBeenCalledOnce()
+      await click("Refresh invitations")
+      expect(screen.queryByRole("status")).toBeNull()
+      expect(screen.getAllByRole("button")).toHaveLength(2)
+      expect(onJoined).toHaveBeenCalledOnce()
+      expect(port.mock.calls.map(([, request]) => request)).toEqual([
+        { action: "list" },
+        { action: "dismiss", id: "attempt-1" },
+        { action: "list" },
+        ...(retained ? [{ action: "dismiss", id: "attempt-1" }] : []),
+      ])
+    },
+  )
+
+  it("shows recovery when Settings reopens with an uncertain join", async () => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce({ kind: "uncertain", id: "attempt-1", join: true })
+      .mockResolvedValueOnce({ kind: "expired", uncertain: true })
+    await open(port, true)
+    await click("Check result")
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Verification timed out before Cloud confirmed the result.",
+    )
   })
 
   it("distinguishes teams with the same name and joins only after an explicit click", async () => {

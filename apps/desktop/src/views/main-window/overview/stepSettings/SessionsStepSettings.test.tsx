@@ -435,7 +435,7 @@ describe("SessionsStepSettings Cloud preference", () => {
     )
   })
 
-  it("disables unavailable uploads without changing saved intent and opens Learn more", async () => {
+  it("shows unavailable uploads without a switch and opens Learn more", async () => {
     mockCommands({
       app_info: { ...INFO, cloudEnabled: true },
       get_settings: { ...DEFAULT_SETTINGS, cloudUploadEnabled: true },
@@ -444,9 +444,11 @@ describe("SessionsStepSettings Cloud preference", () => {
     render(<SessionsStepSettings />)
     const learnMore = await screen.findByRole("button", { name: "Learn more" })
     await waitFor(() => expect(learnMore).toBeEnabled())
-    const toggle = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
-    expect(toggle).toHaveAttribute("aria-disabled", "true")
-    expect(toggle).not.toBeChecked()
+    expect(await screen.findByText("Uploads are unavailable on this device.")).toBeVisible()
+    expect(
+      screen.queryByRole("switch", { name: "Upload sessions to Antiburn Cloud" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Choose folders" })).not.toBeInTheDocument()
     expect(
       screen.queryByText("Your sessions stay on this device. No sessions are uploaded."),
     ).not.toBeInTheDocument()
@@ -454,17 +456,10 @@ describe("SessionsStepSettings Cloud preference", () => {
       screen.queryByText("Available when Antiburn Cloud launches."),
     ).not.toBeInTheDocument()
     expect(screen.queryByText(/Saved preference only/)).not.toBeInTheDocument()
-    fireEvent.focus(toggle)
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available.",
-    )
-    fireEvent.click(toggle)
-    fireEvent.keyDown(toggle, { key: " " })
-    fireEvent.keyDown(toggle, { key: "Enter" })
-    expect(invoke.mock.calls.some(([command]) => command === "set_settings")).toBe(false)
     fireEvent.click(learnMore)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_begin"))
     expect(invoke.mock.calls.some(([command]) => command === "cloud_start_sync")).toBe(false)
+    expect(invoke.mock.calls.some(([command]) => command === "set_settings")).toBe(false)
   })
 
   it("preserves configured account controls", async () => {

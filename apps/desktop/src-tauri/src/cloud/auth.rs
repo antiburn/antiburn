@@ -654,8 +654,11 @@ impl Transport for HttpTransport {
             .bearer_auth(access)
             .send()
             .map_err(|_| Failure::Offline)?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(Failure::Unavailable);
+        match response.status() {
+            reqwest::StatusCode::UNAUTHORIZED => return Err(Failure::ReauthRequired),
+            reqwest::StatusCode::BAD_REQUEST => return Err(Failure::InvalidResponse),
+            reqwest::StatusCode::NOT_FOUND => return Err(Failure::Unavailable),
+            _ => {}
         }
         decode::<WorkspaceResponse>(response)?.try_into()
     }

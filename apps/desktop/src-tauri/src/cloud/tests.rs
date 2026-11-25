@@ -377,6 +377,24 @@ fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTranspor
 }
 
 #[test]
+fn folder_listing_authority_ends_with_the_access_token() {
+    let mut fixture = Fixture::new();
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(100));
+    let engine_clock = clock.clone();
+    fixture.engine = engine(
+        fixture.directory.path(),
+        fixture.vault.clone(),
+        fixture.transport.clone(),
+    )
+    .with_clock(move || engine_clock.load(Ordering::Acquire));
+    fixture.sign_in();
+    let expires_at = fixture.engine.listing_expiry().unwrap();
+    assert!(expires_at < fixture.engine.session().unwrap().expires_at);
+    clock.store(expires_at, Ordering::Release);
+    assert!(fixture.engine.listing_expiry().is_none());
+}
+
+#[test]
 fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
     let mut fixture = Fixture::new();
     let clock = Arc::new(std::sync::atomic::AtomicI64::new(100));

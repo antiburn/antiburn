@@ -189,6 +189,12 @@ impl Engine {
             .map(|access| &access.session)
     }
 
+    /// Return the expiry of the cached access proof used for local folder reads.
+    pub(super) fn listing_expiry(&self) -> Option<i64> {
+        self.session()?;
+        self.access.as_ref().map(|access| access.expires_at)
+    }
+
     /// Return the configured canonical API origin, not access authority.
     pub(super) fn resource_origin(&self) -> Option<&str> {
         self.config.as_ref().map(|config| config.resource.as_str())

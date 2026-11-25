@@ -13,6 +13,7 @@ import {
 import { type SettingsPane } from "../../lib/settingsPanes"
 
 import { parseSettingsSearchRequest } from "../../lib/settingsSearchTargets"
+import { CloudSession } from "../../onboarding/CloudSession"
 
 export type SettingsWindowSnapshot = {
   info: AppInfo | null
@@ -32,6 +33,7 @@ export type SettingsWindowSnapshot = {
  * `PopoverSession` for the same shape applied to a different window.
  */
 export class SettingsWindowSession {
+  readonly cloudFolders: CloudSession
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
@@ -43,8 +45,14 @@ export class SettingsWindowSession {
   private stopInvalidationListening: (() => void) | null = null
   private stopPaneListening: (() => void) | null = null
   private stopShownListening: (() => void) | null = null
+  private stopCloudPreload: (() => void) | undefined
 
   private snapshot: SettingsWindowSnapshot = { info: null, pane: "general", visible: false }
+
+  /** Keep verified Cloud folders ready before the user opens Sessions. */
+  constructor(cloudFolders = new CloudSession(undefined, false, true, "automatic")) {
+    this.cloudFolders = cloudFolders
+  }
 
   getSnapshot = (): SettingsWindowSnapshot => this.snapshot
 
@@ -109,6 +117,7 @@ export class SettingsWindowSession {
           if (generation !== this.generation || visibilityRevision !== this.visibilityRevision)
             return
           if (visible) this.markVisible()
+          else this.markHidden()
         })
         .catch(() => {})
     }
@@ -158,6 +167,8 @@ export class SettingsWindowSession {
     this.stopPaneListening = null
     this.stopShownListening?.()
     this.stopShownListening = null
+    this.paneResolved = false
+    this.update({ visible: false })
   }
 
   private refreshInfo(generation: number): void {
@@ -175,6 +186,14 @@ export class SettingsWindowSession {
 
   private update(change: Partial<SettingsWindowSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...change }
+    const preloadCloud = this.snapshot.visible && this.snapshot.info?.cloudEnabled === true
+    this.cloudFolders.setVisible(preloadCloud)
+    if (preloadCloud) {
+      this.stopCloudPreload ??= this.cloudFolders.subscribe(() => {})
+    } else {
+      this.stopCloudPreload?.()
+      this.stopCloudPreload = undefined
+    }
     for (const listener of this.listeners) listener()
   }
 
@@ -188,14 +207,18 @@ export class SettingsWindowSession {
 
   private markVisible(): void {
     if (this.snapshot.visible) return
-    this.exposedPane = null
     this.update({ visible: true })
     if (this.paneResolved) this.selectVisiblePane(this.snapshot.pane)
   }
 
+  private markHidden(): void {
+    this.exposedPane = null
+    if (this.snapshot.visible) this.update({ visible: false })
+  }
+
   private handleDocumentVisibility = (): void => {
-    if (document.visibilityState !== "hidden" || !this.snapshot.visible) return
     this.visibilityRevision += 1
-    this.update({ visible: false })
+    if (document.visibilityState === "visible") this.markVisible()
+    else this.markHidden()
   }
 }

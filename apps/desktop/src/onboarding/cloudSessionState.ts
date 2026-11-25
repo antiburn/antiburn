@@ -39,6 +39,8 @@ export interface CloudViewSnapshot {
   /** Pause is the only Cloud change allowed while the backfill request waits. */
   canPauseBackfill?: boolean
   error: string | null
+  /** The current error came from an account read or watch, not a user action. */
+  accountReadFailed?: boolean
   /** Settings upload changes report errors with the folder controls, not sign-in. */
   uploadActionError?: string | null
   loaded: boolean
@@ -52,11 +54,19 @@ export interface CloudViewSnapshot {
     /** Explicit destination choices that have not been saved. */
     targets?: Readonly<Record<string, string>> | undefined
     loading: boolean
+    /** Discovery is still running after the initial quick attempts. */
+    retrying?: boolean
+    /** Extra pages do not invalidate the verified choices already shown. */
+    paging?: "loading" | "retrying" | "pending" | undefined
+    retryStage?: "setup" | "workspaces" | "folders" | undefined
+    scopeInvalid?: boolean
     loaded: boolean
     partial: boolean
     hasMore: boolean
     needsChoiceReview: boolean
     error: string | null
+    /** The current list remains usable after a folder-only refresh failure. */
+    refreshError?: string | undefined
     selectionKey: string
   } | null
   /** Desktop-owned ongoing policy and transfer counters, separate from local agents. */
@@ -92,26 +102,180 @@ export function confirmationContextKey(value: CloudViewSnapshot) {
   ])
 }
 
-/** Confirm the exact provider sources and project paths for one saved route. */
+function exactProjectKey(project: CloudProjectSelection) {
+  return JSON.stringify([project.sourceKind, project.sourcePath, project.projectPath])
+}
+
+type FolderRouteBinding = CloudProjectSelection & { repositoryGroupId?: string }
+
+/** Associate requested anchors with repository IDs for receipt checks only. */
+export function expectedFolderRoute(
+  groups: DesktopCloudProjectGroup[],
+  projects: CloudProjectSelection[],
+  selectedGroups?: readonly CloudProjectGroup[],
+): FolderRouteBinding[] {
+  const selectedIds = selectedGroups && new Set(selectedGroups.map(({ id }) => id))
+  const groupsByProject = new Map<string, Set<string | undefined>>()
+  for (const group of groups) {
+    if (selectedIds && !selectedIds.has(group.id)) continue
+    for (const project of group.projects) {
+      const key = exactProjectKey(project)
+      const ids = groupsByProject.get(key) ?? new Set<string | undefined>()
+      ids.add(group.repositoryWide ? group.id : undefined)
+      groupsByProject.set(key, ids)
+    }
+  }
+  return projects.flatMap((project) => {
+    const ids = groupsByProject.get(exactProjectKey(project)) ?? [undefined]
+    return Array.from(ids, (repositoryGroupId) =>
+      repositoryGroupId ? { ...project, repositoryGroupId } : project,
+    )
+  })
+}
+
+/** Read only the provider bindings native saved for this repository ID. */
+export function savedRepositoryProjects(policy: CloudOngoingStatus, id: string) {
+  if (!policy.repositoryGroupIds?.includes(id)) return []
+  return policy.repositoryFolders?.find(({ groupId }) => groupId === id)?.projects ?? []
+}
+
+type SavedProjectBindings = Pick<
+  CloudOngoingStatus,
+  "projects" | "exactProjects" | "repositoryGroupIds"
+>
+
+/** Without repository rules, old replies contain only exact projects. */
+export function savedExactProjects(policy: SavedProjectBindings) {
+  return policy.exactProjects ?? policy.projects
+}
+
+/** Keep all exact and repository source bindings when renewing the saved Team policy. */
+export function savedFolderRoute(policy: CloudOngoingStatus | undefined): FolderRouteBinding[] {
+  if (!policy) return []
+  return [
+    ...savedExactProjects(policy),
+    ...(policy.repositoryFolders ?? []).flatMap(({ groupId, projects }) =>
+      projects.map((project) => ({ ...project, repositoryGroupId: groupId })),
+    ),
+  ]
+}
+
+/** Confirm the saved source bindings and any repository scopes for one route. */
 export function folderRouteConfirmed(
   status: CloudOngoingStatus | null | undefined,
   binding: CloudDestinationBinding,
-  selected: CloudProjectSelection[],
+  selected: FolderRouteBinding[],
+) {
+  if (
+    status?.accountId !== binding.accountId ||
+    status.destinationId !== binding.destinationId ||
+    !status.storageKnown ||
+    status.consentVersion !== "desktop-project-sync-v1" ||
+    !selected.length
+  )
+    return false
+  return selected.every(savedFolderBindingMatcher(status))
+}
+
+/** Match one exact source binding or the source anchor of a saved repository rule. */
+function savedFolderBindingMatcher(status: CloudOngoingStatus) {
+  const saved = new Set(savedExactProjects(status).map(exactProjectKey))
+  return ({ repositoryGroupId, ...project }: FolderRouteBinding) =>
+    repositoryGroupId
+      ? savedRepositoryProjects(status, repositoryGroupId).some(
+          (anchor) =>
+            anchor.sourceKind === project.sourceKind &&
+            anchor.sourcePath === project.sourcePath,
+        )
+      : saved.has(exactProjectKey(project))
+}
+
+/** Verify that the observed policy still matches the completed native write. */
+export function confirmsSavedWrite(
+  current: CloudOngoingStatus | null | undefined,
+  reply: CloudOngoingStatus,
+  binding: CloudDestinationBinding,
+  projects: FolderRouteBinding[],
 ) {
   return (
-    status?.accountId === binding.accountId &&
-    status.destinationId === binding.destinationId &&
-    status.storageKnown &&
-    status.consentVersion === "desktop-project-sync-v1" &&
-    selected.length > 0 &&
-    selected.every((project) =>
-      status.projects.some(
-        (saved) =>
-          saved.sourceKind === project.sourceKind &&
-          saved.sourcePath === project.sourcePath &&
-          saved.projectPath === project.projectPath,
-      ),
+    !!reply.policyRevision &&
+    matchesUploadPolicy(current, binding, reply.policyRevision) &&
+    !current?.folderConfirmationRequired &&
+    !current?.sourceConfirmationRequired &&
+    folderRouteConfirmed(reply, binding, projects) &&
+    (current === reply || folderRouteConfirmed(current, binding, projects))
+  )
+}
+
+/** Save the exact route evidence for the final onboarding check. */
+export interface RequestedFolderRoute {
+  target: CloudDestinationBinding
+  name: string
+  expected: FolderRouteBinding[]
+}
+
+/** Recheck saved routes on later attempts. Drop grants Desktop confirms are gone. */
+export function checkOnboardingFolderRoutes(
+  routes: readonly RequestedFolderRoute[],
+  priorSavedRoutes: readonly RequestedFolderRoute[],
+  policyFor: (id: string) => CloudOngoingStatus | null | undefined,
+) {
+  const savedRoutes = new Map<string, RequestedFolderRoute>()
+  const pending = new Map<string, string>()
+  let needsReview = false
+  const remember = (route: RequestedFolderRoute) =>
+    savedRoutes.set(JSON.stringify([route.target, route.expected]), route)
+  for (const route of priorSavedRoutes) {
+    const policy = policyFor(route.target.destinationId)
+    const known = hasFolderRuleEvidence(policy, route.target)
+    if (known && !hasRequestedFolderRule(route, policy)) continue
+    remember(route)
+    if (
+      known &&
+      policy.storageKnown &&
+      !policy.folderConfirmationRequired &&
+      !policy.sourceConfirmationRequired
     )
+      continue
+    pending.set(route.target.destinationId, route.name)
+    needsReview = true
+  }
+  for (const route of routes) {
+    const { target, name, expected } = route
+    const policy = policyFor(target.destinationId)
+    if (hasFolderRuleEvidence(policy, target) && hasRequestedFolderRule(route, policy))
+      remember(route)
+    if (policy?.folderConfirmationRequired || policy?.sourceConfirmationRequired)
+      needsReview = true
+    else if (folderRouteConfirmed(policy, target, expected)) continue
+    pending.set(target.destinationId, name)
+  }
+  const nextStep = needsReview
+    ? "Review saved folders in Settings before trying again."
+    : "Review the remaining choices and try again."
+  const error = pending.size
+    ? `Could not confirm folder sync for ${[...pending.values()].join(", ")}. ${nextStep}`
+    : null
+  return { error, savedRoutes: [...savedRoutes.values()] }
+}
+
+/** Team policy metadata can prove saved rules even when upload counters are unavailable. */
+function hasFolderRuleEvidence(
+  policy: CloudOngoingStatus | null | undefined,
+  target: CloudDestinationBinding,
+): policy is CloudOngoingStatus {
+  return (
+    policy?.accountId === target.accountId &&
+    policy.destinationId === target.destinationId &&
+    (policy.storageKnown || policy.status === "consent_required" || !!policy.savedFolders)
+  )
+}
+
+/** Check whether the latest policy still grants any binding in this onboarding route. */
+function hasRequestedFolderRule(route: RequestedFolderRoute, policy: CloudOngoingStatus) {
+  return (
+    policy.consentVersion === "desktop-project-sync-v1" &&
+    route.expected.some(savedFolderBindingMatcher(policy))
   )
 }
 
@@ -181,7 +345,7 @@ export const canRetryPersonalUploads = (value: CloudViewSnapshot) =>
   !value.ongoing.paused &&
   !value.ongoing.sourceConfirmationRequired
 
-/** Backfill uses only the current, saved folder rules for one verified workspace. */
+/** Start a full scan only for an idle, verified workspace with saved folders. */
 export function canBackfillUploads(value: CloudViewSnapshot, teamId?: string) {
   const destination = value.cloud.destination
   const policy = teamId ? value.teamStatuses?.[teamId] : value.ongoing
@@ -198,6 +362,9 @@ export function canBackfillUploads(value: CloudViewSnapshot, teamId?: string) {
     !policy.paused &&
     !policy.folderConfirmationRequired &&
     !policy.sourceConfirmationRequired &&
+    !policy.backfillInProgress &&
+    !policy.fullSyncInProgress &&
+    !policy.backgroundSyncInProgress &&
     policy.status !== "reauth_required" &&
     policy.status !== "storage_unavailable" &&
     (teamId
@@ -267,8 +434,7 @@ export function backfillTarget(
     !binding.destinationId ||
     !matchesUploadPolicy(policy, binding, revision) ||
     !canBackfillUploads(displayed, teamId) ||
-    !canBackfillUploads(current, teamId) ||
-    policy?.backfillInProgress
+    !canBackfillUploads(current, teamId)
   )
     return null
   return { binding, revision, team: teamId ? (policy ?? undefined) : undefined }
@@ -300,15 +466,89 @@ export function isCloudBusy(error: unknown) {
   )
 }
 
+const folderSaveFailures = {
+  changed: {
+    message: "The folders or session files changed. Review the folder choices.",
+    recovery: "refresh",
+  },
+  incomplete: {
+    message: "Could not verify every selected folder.",
+    recovery: "refresh",
+  },
+  connection: {
+    message: "Could not reach Cloud to save your folders.",
+    recovery: "retry",
+  },
+  unexpected: {
+    message: "Could not save the folder choices.",
+    recovery: "retry",
+  },
+  team: {
+    message: "Review saved folders before saving new Team choices.",
+    recovery: "refresh",
+  },
+} as const
+
+/** Explain known Desktop save failures without exposing provider errors or paths. */
+export function folderSaveError(message: unknown) {
+  switch (message) {
+    case CLOUD_BUSY_MESSAGE:
+      return CLOUD_BUSY_MESSAGE
+    case "Turn off all folders under the old Team policy before approving new uploads.":
+      return folderSaveFailures.team.message
+    case "A session source changed. Reload projects and confirm again.":
+    case "The project folders changed. Reload projects and confirm again.":
+    case "Cloud sources changed. Confirm sync again.":
+    case "The saved workspace or folder changed.":
+      return folderSaveFailures.changed.message
+    case "Project discovery is incomplete. Restore access or choose fewer sources and retry.":
+    case "Could not confirm a supported session for this project. Reload projects and try again.":
+      return folderSaveFailures.incomplete.message
+    case "Connect to Cloud before confirming sync.":
+    case "Cloud upload is unavailable. No source content was uploaded.":
+      return folderSaveFailures.connection.message
+    default:
+      return folderSaveFailures.unexpected.message
+  }
+}
+
+/** Match an action to a known folder save error, not an unrelated upload error. */
+export function folderSaveRecovery(message: string | null | undefined) {
+  switch (message) {
+    case CLOUD_BUSY_MESSAGE:
+      return "check"
+    case "Could not start sync.":
+    case "Could not save folders. Try again.":
+      return "retry"
+    case "Restore saved sources or turn off their folders.":
+    case "The saved folder choices changed.":
+    case "The saved folder or workspace changed. Review the folder choices and try again.":
+    case "A selected team is unavailable. Check the folder choices.":
+    case "Sync stopped in the old workspace. Check the saved folder before choosing a workspace.":
+    case "Could not confirm where this folder syncs. Check the saved folder before choosing a workspace.":
+    case "Could not confirm that the old folder rule is off. Check the saved folder before trying again.":
+    case "Could not verify the Team folder rules. Check the workspace and try again.":
+      return "refresh"
+    case "Could not update the folder. Try again.":
+    case "Enable folders for one workspace at a time. No folder choices were saved.":
+    case "Confirm the saved Team folders before moving this folder.":
+    case "Sync stopped for this folder. Choose a workspace to sync it again.":
+      return "review"
+    default:
+      return Object.values(folderSaveFailures).find((failure) => failure.message === message)
+        ?.recovery
+  }
+}
+
 /** Map upload errors to safe copy for the action that failed. */
 export function uploadActionError(error: unknown, backfill: boolean, team: boolean) {
   const message = error instanceof Error ? error.message : error
   if (isCloudBusy(error)) return CLOUD_BUSY_MESSAGE
   if (message === "Cloud folder choices changed. Reload before retrying saved work.")
     return backfill
-      ? "Cloud folder choices changed. Reopen Settings and try again."
+      ? "The saved folder choices changed."
       : "Cloud folder choices changed. Reopen Settings before retrying."
-  if (backfill) return "Could not start backfill. Try again."
+  if (backfill) return "Could not start sync."
   return team
     ? "Could not retry saved Team uploads. Saved work is kept."
     : "Could not change Cloud uploads. Try again."
@@ -322,13 +562,19 @@ export function cloudContextChange(previous: CloudSnapshot, next: CloudSnapshot)
     next.destination?.kind !== previous.destination?.kind ||
     !next.identity ||
     next.status !== "signed_in"
+  const sourcesChanged = cloudProjectSourceKey(previous) !== cloudProjectSourceKey(next)
   return {
     resetProjects,
-    contextChanged:
-      resetProjects ||
-      selectedFoldersKey(next) !== selectedFoldersKey(previous) ||
-      !!next.setupError,
+    sourcesChanged,
+    contextChanged: resetProjects || sourcesChanged || !!next.setupError,
   }
+}
+
+/** Include provider opt-outs, not just the paths selected for upload. */
+export function cloudProjectSourceKey(cloud: CloudSnapshot) {
+  return JSON.stringify(
+    cloud.draft.folders.map((folder) => [cloudSourceKey(folder), folder.selected]).sort(),
+  )
 }
 
 /** Build the view update for a desktop account event. The session owns request IDs and timers. */
@@ -339,11 +585,11 @@ export function accountViewPatch(
     resetProjects: boolean
     contextChanged: boolean
     ongoing: boolean
-    projectSyncStarted: boolean
+    projectSyncState: "pending" | "started" | undefined
     preparedRequestId: string | null
   },
 ): Partial<CloudViewSnapshot> {
-  const { resetProjects, contextChanged, ongoing, projectSyncStarted, preparedRequestId } =
+  const { resetProjects, contextChanged, ongoing, projectSyncState, preparedRequestId } =
     options
   const retryInvalidated =
     contextChanged ||
@@ -355,6 +601,9 @@ export function accountViewPatch(
       ? "identity"
       : value.draft.screen
     : "handoff"
+  const complete = ongoing
+    ? projectSyncState === "started" || (projectSyncState !== "pending" && value.syncEnabled)
+    : !!value.pendingSync
   return {
     cloud: value,
     ...(resetProjects
@@ -366,15 +615,20 @@ export function accountViewPatch(
           workspaceConnections: {},
           uploadActionError: null,
         }
-      : value.setupError && previous.projects
+      : value.setupError && !previous.cloud.setupError && previous.projects
         ? { projects: { ...previous.projects, loading: false } }
         : {}),
     screen:
-      value.identity && (ongoing ? projectSyncStarted || value.syncEnabled : value.pendingSync)
+      value.identity && complete
         ? "complete"
-        : screen,
+        : projectSyncState === "pending" && screen === "complete"
+          ? previous.screen
+          : screen,
     loaded: true,
-    ...(previous.error === CLOUD_BUSY_MESSAGE ? { error: null } : {}),
+    accountReadFailed: false,
+    ...(previous.accountReadFailed || previous.error === CLOUD_BUSY_MESSAGE
+      ? { error: null }
+      : {}),
     ...(retryInvalidated ? { sourceListingNeedsRetry: false } : {}),
     ...(!ongoing && value.identity && value.pendingSync
       ? { sync: value.pendingSync.result }
@@ -460,7 +714,7 @@ export function supportedProjectSelections(
   group: DesktopCloudProjectGroup,
   sources: CloudSourceSelection[],
 ): CloudProjectSelection[] {
-  return group.captureSupported
+  return group.captureSupported && group.groupingComplete
     ? group.projects.filter(
         (project) =>
           group.folderPaths.includes(project.projectPath) &&
@@ -501,10 +755,16 @@ export function projectSelectionKey(
 ) {
   return JSON.stringify([
     cloudProjectSelectionKey(groups, choices),
+    repositoryGroupIds(groups.filter((group) => choices[group.id] ?? true)).sort(),
     selections,
     Object.entries(targets).sort(),
     (workspaces ?? []).map((workspace) => [workspace.id, workspace.kind]).sort(),
   ])
+}
+
+/** Get the repository IDs in the displayed selection. */
+function repositoryGroupIds(groups: readonly CloudProjectGroup[]) {
+  return groups.filter((group) => group.repositoryWide).map(({ id }) => id)
 }
 
 /** Fence one Settings confirmation even while its group is excluded from Start. */
@@ -517,47 +777,48 @@ export function projectConfirmationKey(
     group.environment,
     group.path,
     group.groupingComplete,
+    group.repositoryWide === true,
     [...group.folderPaths].sort(),
-    selections
-      .map((project) =>
-        JSON.stringify([project.sourceKind, project.sourcePath, project.projectPath]),
-      )
-      .sort(),
+    selections.map(exactProjectKey).sort(),
   ])
 }
 
-/** Keep exact saved Personal bindings eligible for source recovery. */
+/** Keep only saved Personal bindings eligible for source recovery. */
 export function reviewableProjectSelections(
   selections: CloudProjectSelection[],
   policy: CloudOngoingStatus | null | undefined,
+  repositoryGroupId?: string,
 ) {
+  if (!policy) return []
+  const saved = repositoryGroupId
+    ? savedRepositoryProjects(policy, repositoryGroupId)
+    : savedExactProjects(policy)
   return selections.filter((project) =>
-    policy?.projects.some(
-      (saved) =>
-        saved.sourceKind === project.sourceKind &&
-        saved.sourcePath === project.sourcePath &&
-        saved.projectPath === project.projectPath,
+    saved.some(
+      (binding) =>
+        binding.sourceKind === project.sourceKind &&
+        binding.sourcePath === project.sourcePath &&
+        (repositoryGroupId || binding.projectPath === project.projectPath),
     ),
   )
 }
 
-/** Match saved grants by directory boundary, never by partial folder name. */
+/** Match repository grants by ID and exact folder grants by directory boundary. */
 export function hasSavedProjectPermission(
   group: DesktopCloudProjectGroup | undefined,
-  policy: Pick<CloudOngoingStatus, "projects"> | null | undefined,
+  policy: SavedProjectBindings | null | undefined,
   exact: boolean,
 ) {
-  return (
-    group?.environment === "native" &&
-    !!policy?.projects.some((project) =>
-      [group.path, ...group.folderPaths].some(
-        (path) =>
-          path === project.projectPath ||
-          (!exact &&
-            (path.startsWith(`${project.projectPath.replace(/\/+$/, "")}/`) ||
-              project.projectPath.startsWith(`${path.replace(/\/+$/, "")}/`))),
-      ),
-    )
+  if (group?.environment !== "native" || !policy) return false
+  if (group.repositoryWide) return policy.repositoryGroupIds?.includes(group.id) === true
+  return savedExactProjects(policy).some((project) =>
+    [group.path, ...group.folderPaths].some(
+      (path) =>
+        path === project.projectPath ||
+        (!exact &&
+          (path.startsWith(`${project.projectPath.replace(/\/+$/, "")}/`) ||
+            project.projectPath.startsWith(`${path.replace(/\/+$/, "")}/`))),
+    ),
   )
 }
 
@@ -576,7 +837,7 @@ export function mergeProjectSources(
   ]
 }
 
-/** Project display groups from the same selection used for confirmation. */
+/** Use indexed counts for display and current provider evidence for confirmation. */
 export function projectViewGroups(
   groups: DesktopCloudProjectGroup[],
   sources: CloudSourceSelection[],
@@ -589,7 +850,11 @@ export function projectViewGroups(
       path: group.path,
       memberPaths: group.folderPaths,
       worktreeCount: group.worktreeCount,
-      sessionCount: Math.max(group.sessionCount, group.captureSessionCount),
+      groupingComplete: group.groupingComplete,
+      ...(group.repositoryWide && { repositoryWide: true }),
+      ...(group.legacyOptOutId && { legacyOptOutId: group.legacyOptOutId }),
+      discoveryStale: group.discoveryStale ?? false,
+      sessionCount: group.discoveryStale ? null : group.sessionCount,
       captureSupported: selections.length > 0,
       confirmationKey: projectConfirmationKey(group, selections),
     }
@@ -609,7 +874,8 @@ export function projectSyncChoices(
     Object.keys(snapshot.teamStatuses ?? {}).length > 0
   const choicesForStart = { ...snapshot.projects?.choices }
   for (const group of snapshot.projects?.groups ?? []) {
-    if (hasSavedProject(group.id) || (explicitOnly && !targets[group.id]))
+    if (group.discoveryStale) delete choicesForStart[group.id]
+    else if (hasSavedProject(group.id) || (explicitOnly && !targets[group.id]))
       choicesForStart[group.id] = false
   }
   return { choicesForStart, explicitOnly }

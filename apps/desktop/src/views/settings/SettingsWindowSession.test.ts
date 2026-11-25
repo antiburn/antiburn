@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { CloudSession } from "../../onboarding/CloudSession"
+import { cloudProjectFixture } from "../../onboarding/__tests__/cloudProjectFixtures"
 import { SettingsWindowSession } from "./SettingsWindowSession"
 
 const appInfo = vi.hoisted(() => vi.fn())
@@ -121,6 +123,87 @@ describe("SettingsWindowSession", () => {
       pane: "privacy",
     })
     unsubscribe()
+  })
+
+  it("preloads Cloud folders once the settings window is visible", async () => {
+    appInfo.mockResolvedValue({ cloudEnabled: true })
+    isVisible.mockResolvedValue(false)
+    takeSettingsPane.mockResolvedValue("sessions")
+    const { port, ongoing } = cloudProjectFixture()
+    const folders = new CloudSession(
+      { ...port, watchWorkspace: async () => () => {} },
+      false,
+      true,
+      "automatic",
+    )
+    const session = new SettingsWindowSession(folders)
+    const unsubscribe = session.subscribe(() => {})
+    const stopPane = folders.subscribeSnapshot(() => {})
+
+    try {
+      await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("sessions"))
+      expect(port.read).not.toHaveBeenCalled()
+      session.setPane("general")
+      const setVisibility = (value: DocumentVisibilityState) => {
+        Object.defineProperty(document, "visibilityState", { value, configurable: true })
+        document.dispatchEvent(new Event("visibilitychange"))
+      }
+      setVisibility("visible")
+      await vi.waitFor(() => expect(folders.getSnapshot().projects?.loaded).toBe(true))
+      expect(session.getSnapshot().pane).toBe("general")
+      expect(ongoing.groups).toHaveBeenCalledOnce()
+      session.setPane("sessions")
+
+      setVisibility("hidden")
+      expect(session.getSnapshot().visible).toBe(false)
+      setVisibility("visible")
+      await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
+      expect(ongoing.enable).not.toHaveBeenCalled()
+    } finally {
+      stopPane()
+      unsubscribe()
+    }
+  })
+
+  it("does not resume Cloud preload before checking visibility after resubscribe", async () => {
+    appInfo.mockResolvedValue({ cloudEnabled: true })
+    takeSettingsPane.mockResolvedValue(null)
+    const shown: { current: (() => void) | null } = { current: null }
+    onSettingsShown.mockImplementation(async (handler: () => void) => {
+      shown.current = handler
+      return () => {}
+    })
+    const { port } = cloudProjectFixture()
+    const folders = new CloudSession(
+      { ...port, watchWorkspace: async () => () => {} },
+      false,
+      true,
+      "automatic",
+    )
+    const session = new SettingsWindowSession(folders)
+    const unsubscribeFirst = session.subscribe(() => {})
+    try {
+      await vi.waitFor(() => expect(port.read).toHaveBeenCalledOnce())
+      expect(session.getSnapshot().visible).toBe(true)
+    } finally {
+      unsubscribeFirst()
+    }
+    expect(session.getSnapshot().visible).toBe(false)
+
+    isVisible.mockResolvedValue(false)
+    const unsubscribeSecond = session.subscribe(() => {})
+    try {
+      await vi.waitFor(() => expect(takeSettingsPane).toHaveBeenCalledTimes(2))
+      expect(session.getSnapshot().visible).toBe(false)
+      expect(port.read).toHaveBeenCalledOnce()
+      expect(noteInteraction).toHaveBeenCalledOnce()
+
+      shown.current?.()
+      await vi.waitFor(() => expect(port.read).toHaveBeenCalledTimes(2))
+      expect(noteInteraction).toHaveBeenCalledTimes(2)
+    } finally {
+      unsubscribeSecond()
+    }
   })
 
   it("reports the current pane again after a hidden window is shown", async () => {

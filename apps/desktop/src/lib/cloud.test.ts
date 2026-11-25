@@ -225,6 +225,13 @@ it("keeps a confirmed group exclusion ahead of defaults until it is explicitly s
   expect(cloudProjectChoices(projects, saved, { studio: true }).studio).toBe(true)
 })
 
+it("carries an old group opt-out without carrying an old opt-in", () => {
+  const updated = projects.map((project) => ({ ...project, legacyOptOutId: "old-id" }))
+  expect(cloudProjectChoices(updated, { "old-id": false }, {}).studio).toBe(false)
+  expect(cloudProjectChoices(updated, { "old-id": true }, {}, false).studio).toBe(false)
+  expect(cloudProjectChoices(updated, { "old-id": false, studio: true }, {}).studio).toBe(true)
+})
+
 it("freezes only current member paths and requires a new key for an external worktree", () => {
   const selected = selectedCloudProjectPaths(projects, {})
   const key = cloudProjectSelectionKey(projects, {})

@@ -70,7 +70,7 @@ export function isCurrentProjectFolderRoute(
   )
 }
 
-/** Consent covers exact source kind and path pairs. It excludes attachments. */
+/** Send source bindings and folder choices for native validation. Exclude attachments. */
 export function projectSyncConsent(
   target: CloudDestinationBinding,
   sources: CloudSourceSelection[],

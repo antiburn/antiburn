@@ -1,5 +1,5 @@
 import { ToggleSwitch } from "../components/ui/ToggleSwitch"
-import { useState, useSyncExternalStore, type CSSProperties } from "react"
+import { useId, useState, useSyncExternalStore, type CSSProperties } from "react"
 import {
   ArrowUp,
   ArrowUpRight,
@@ -27,6 +27,8 @@ import {
   cloudUploadStatusUnknown,
 } from "./CloudSession"
 import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
+import { changeFolderWithFocus } from "./cloudFolderFocus"
+import { cloudCaptureUnsupported, cloudDiscoveryRetryMessage } from "./cloudProjectScope"
 import { CloudInvitations } from "./CloudInvitations"
 import {
   cloudAccountCleanupPending,
@@ -70,6 +72,7 @@ export function CloudOnboarding({
     () => true,
   )
   const [session] = useState(() => new CloudSession(port, analytics, holdIdentity))
+  const foldersId = useId()
   const value = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
@@ -176,24 +179,29 @@ export function CloudOnboarding({
       : hasWorkspaceChoice
         ? "Each folder uploads only to its selected workspace."
         : null
-  const showWorkspaceNote = grouped && projects?.loaded && !projects.loading && !projects.error
+  const showWorkspaceNote = grouped && projects?.loaded && !projects.error
   const folderMessage =
     error ??
     value.error ??
     (grouped
-      ? (projects?.error ??
-        value.cloud.setupError ??
-        (!value.cloud.captureEnabled
-          ? "Uploads are unavailable on this device."
-          : projects?.needsChoiceReview
-            ? "Review your folders before starting sync."
-            : projects?.loaded &&
-                !projects.loading &&
-                !projects.hasMore &&
-                !projects.partial &&
-                projects.groups.some((group) => group.captureSupported === false)
-              ? "Could not check uploads for some folders."
-              : ""))
+      ? projects?.loading
+        ? ""
+        : projects?.scopeInvalid
+          ? (projects.error ?? "")
+          : projects?.error ||
+              (value.cloud.setupError && value.cloud.setupError !== cloudCaptureUnsupported)
+            ? "Antiburn could not check your session folders. You can continue locally."
+            : !value.cloud.captureEnabled
+              ? "Uploads are unavailable on this device."
+              : projects?.needsChoiceReview
+                ? "Review your folders before starting sync."
+                : projects?.loaded &&
+                    !projects.loading &&
+                    !projects.hasMore &&
+                    !projects.partial &&
+                    projects.groups.some((group) => group.captureSupported === false)
+                  ? "Could not check uploads for some folders."
+                  : ""
       : captureEnabled
         ? "Upload unavailable. You can save a capture request on this device."
         : value.cloud.syncEnabled
@@ -210,9 +218,11 @@ export function CloudOnboarding({
     !error
   const emptyProjectMessage = folderMessage
     ? "No folders loaded."
-    : !projects?.loaded || projects.loading
-      ? "Loading project folders…"
-      : "Folder discovery is incomplete."
+    : projects?.retrying && projects.retryStage === "folders"
+      ? "Still checking session folders."
+      : !projects?.loaded || projects.loading
+        ? "Loading project folders…"
+        : "Folder discovery is incomplete."
   const toolsPhase = value.localTools?.phase ?? "pending"
   const toolsReady = !value.localToolsError && toolsPhase === "ready"
   const toolsTitle = value.localToolsError
@@ -398,7 +408,7 @@ export function CloudOnboarding({
           </h1>
           <p id="cloud-sync-description" className="type-onboarding-body text-onboarding-muted">
             {grouped
-              ? "Sync full sessions from selected folders and their worktrees."
+              ? `Sync full sessions from approved folders.${selectedProjects?.some((group) => group.repositoryWide) ? " Matching Git checkouts are included." : ""}`
               : captureEnabled
                 ? "Choose the folders where Claude saves sessions, or choose an OpenCode V2 database."
                 : "Choose folders to sync their existing and future coding sessions across your devices."}
@@ -430,10 +440,12 @@ export function CloudOnboarding({
           {grouped ? (
             projects && (projects.groups.length > 0 || projectListComplete) ? (
               <CloudProjectFolders
+                id={foldersId}
                 groups={projects.groups}
                 choices={folderChoices ?? {}}
                 disabled={
                   disabled ||
+                  !projects.loaded ||
                   projects.loading ||
                   !!projects.error ||
                   !!value.cloud.setupError ||
@@ -453,7 +465,11 @@ export function CloudOnboarding({
                 }
               />
             ) : (
-              <div className="cloud-folder-list min-h-0! max-h-none! flex-1">
+              <div
+                id={foldersId}
+                tabIndex={-1}
+                className="cloud-folder-list min-h-0! max-h-none! flex-1"
+              >
                 <p className="cloud-empty type-body text-onboarding-muted">
                   {emptyProjectMessage}
                 </p>
@@ -510,8 +526,23 @@ export function CloudOnboarding({
           {grouped && projects?.hasMore && (
             <button
               className="onboarding-secondary cloud-add"
-              disabled={disabled || projects.loading}
-              onClick={() => void session.loadMoreProjects()}
+              aria-disabled={
+                disabled ||
+                projects.loading ||
+                !!projects.paging ||
+                projects.scopeInvalid ||
+                undefined
+              }
+              onClick={(event) => {
+                if (disabled || projects.loading || projects.paging || projects.scopeInvalid)
+                  return
+                void changeFolderWithFocus(
+                  event.currentTarget,
+                  foldersId,
+                  undefined,
+                  session.loadMoreProjects,
+                )
+              }}
             >
               Load more folders
             </button>
@@ -545,18 +576,22 @@ export function CloudOnboarding({
             >
               <Info size={12} className="shrink-0" aria-hidden />
               <span>{folderMessage}</span>
-              {grouped && value.cloud.captureEnabled && (
-                <button
-                  className="min-h-0! border-0! bg-transparent p-0! underline underline-offset-4"
-                  disabled={disabled || projects?.loading}
-                  onClick={() =>
-                    void (value.cloud.setupError ? session.load() : session.loadProjects())
-                  }
-                >
-                  Refresh folders
-                </button>
-              )}
             </div>
+          )}
+          {projects?.retrying &&
+            projects.loading &&
+            !folderMessage &&
+            (projects.groups.length > 0 || projects.retryStage !== "folders") && (
+              <p className="type-callout text-onboarding-muted" role="status">
+                {cloudDiscoveryRetryMessage(projects.retryStage)}
+              </p>
+            )}
+          {projects?.paging && projects.paging !== "pending" && (
+            <p className="type-callout text-onboarding-muted" role="status">
+              {projects.paging === "retrying"
+                ? "Still checking for more folders."
+                : "Loading more folders…"}
+            </p>
           )}
           {grouped && value.sync.status === "starting" && (
             <p className="type-callout text-onboarding-muted" role="status">

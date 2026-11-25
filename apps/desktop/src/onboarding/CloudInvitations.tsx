@@ -13,12 +13,20 @@ const POLL_WINDOW_MS = 5 * 60_000
 type View = {
   reply: InvitationReply | null
   busy: boolean
-  error: string | null
+  failed: boolean
+  hasJoinAttempt: boolean
+}
+
+const initialView: View = {
+  reply: null,
+  busy: false,
+  failed: false,
+  hasJoinAttempt: false,
 }
 
 /** Observe only while mounted. Cancel and finish are explicit actions, not poll side effects. */
 class InvitationView {
-  private view: View = { reply: null, busy: false, error: null }
+  private view = initialView
   private listeners = new Set<() => void>()
   private timer: ReturnType<typeof setTimeout> | undefined
   private deadline = 0
@@ -26,24 +34,31 @@ class InvitationView {
   private readonly accountId: string
   private readonly port: CloudInvitationPort
   private readonly onJoined: () => void
+  private readonly showConfirmedOnly: boolean
 
-  constructor(accountId: string, port: CloudInvitationPort, onJoined: () => void) {
+  constructor(
+    accountId: string,
+    port: CloudInvitationPort,
+    onJoined: () => void,
+    showConfirmedOnly: boolean,
+  ) {
     this.accountId = accountId
     this.port = port
     this.onJoined = onJoined
+    this.showConfirmedOnly = showConfirmedOnly
   }
 
   getSnapshot = () => this.view
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
-    if (this.listeners.size === 1) void this.send({ action: "list" })
+    if (this.listeners.size === 1) void this.send({ action: "list" }, this.showConfirmedOnly)
     return () => {
       this.listeners.delete(listener)
       if (this.listeners.size === 0) {
         clearTimeout(this.timer)
         this.revision++
-        this.view = { reply: null, busy: false, error: null }
+        this.view = initialView
       }
     }
   }
@@ -53,7 +68,7 @@ class InvitationView {
     for (const listener of this.listeners) listener()
   }
 
-  send = async (request: Parameters<CloudInvitationPort>[1]) => {
+  send = async (request: Parameters<CloudInvitationPort>[1], retryOnce = false) => {
     if (this.view.busy) return
     clearTimeout(this.timer)
     const revision = ++this.revision
@@ -62,10 +77,11 @@ class InvitationView {
     }
     const polling = request.action === "status" && isWaiting(this.view.reply)
     if (polling && performance.now() >= this.deadline) {
-      this.publish({ reply: { kind: "expired" }, error: null })
+      this.publish({ reply: { kind: "expired" }, failed: false })
       return
     }
-    if (!polling) this.publish({ busy: true, error: null })
+    if (!polling)
+      this.publish({ busy: true, failed: this.showConfirmedOnly && this.view.failed })
     let reply: InvitationReply
     try {
       reply = await this.port(this.accountId, request)
@@ -82,18 +98,54 @@ class InvitationView {
           reply = { kind: "uncertain", id: request.id, join: attempt.join }
         }
       } else {
-        this.publish({
-          busy: false,
-          error: "Could not check Cloud invitations. Try again or continue without joining.",
-        })
+        const hiddenDismiss = this.showConfirmedOnly && request.action === "dismiss" && !attempt
+        this.publish({ busy: false, failed: !hiddenDismiss })
         if (isWaiting(attempt)) this.schedule(attempt.id)
+        if (
+          revision === this.revision &&
+          retryOnce &&
+          (request.action === "list" || hiddenDismiss)
+        ) {
+          this.timer = setTimeout(() => void this.send(request), POLL_INTERVAL_MS)
+        }
         return
       }
     }
     if (revision !== this.revision) return
-    this.publish({ reply, busy: false, error: null })
+    const previous = this.view.reply
+    if (
+      this.showConfirmedOnly &&
+      !previous &&
+      request.action === "list" &&
+      reply.kind === "attempt" &&
+      ["canceled", "no_seat", "closed", "wrong_account", "unavailable"].includes(reply.state)
+    ) {
+      // Retire an old failure without showing it as a pending invitation.
+      this.publish({ busy: false, failed: false })
+      if (revision === this.revision) void this.send({ action: "dismiss", id: reply.id }, true)
+      return
+    }
+    // Expiry and sign-in replies do not say whether the current attempt is a join.
+    const hasJoinAttempt =
+      reply.kind === "attempt" || reply.kind === "uncertain"
+        ? reply.join
+        : reply.kind !== "list" && this.view.hasJoinAttempt
+    this.publish({ reply, busy: false, failed: false, hasJoinAttempt })
     if (isWaiting(reply)) this.schedule(reply.id)
-    if (reply.kind === "attempt" && reply.state === "joined") this.onJoined()
+    if (reply.kind !== "attempt" || request.action === "dismiss") return
+    const joined = reply.state === "joined"
+    // Dismiss retires a completed Desktop attempt and reads the list. It cannot join a workspace.
+    if (
+      this.showConfirmedOnly &&
+      (reply.join ? joined : reply.state === "checked") &&
+      revision === this.revision
+    )
+      void this.send({ action: "dismiss", id: reply.id })
+    if (
+      joined &&
+      (previous?.kind !== "attempt" || previous.state !== "joined" || previous.id !== reply.id)
+    )
+      this.onJoined()
   }
 
   private schedule(id: string) {
@@ -131,20 +183,24 @@ export function CloudInvitations({
   onJoined,
   port = desktopInvitationPort,
   hideEmpty = false,
+  showConfirmedOnly = false,
 }: {
   accountId: string
   onJoined: () => void
   port?: CloudInvitationPort
   /** Hide a confirmed empty list in onboarding, not verification or retry. */
   hideEmpty?: boolean
+  /** Show only confirmed invitations and recovery for a join attempt in Settings. */
+  showConfirmedOnly?: boolean
 }) {
   return (
     <AccountInvitations
-      key={accountId}
+      key={`${accountId}:${showConfirmedOnly}`}
       accountId={accountId}
       port={port}
       onJoined={onJoined}
       hideEmpty={hideEmpty}
+      showConfirmedOnly={showConfirmedOnly}
     />
   )
 }
@@ -154,14 +210,18 @@ function AccountInvitations({
   port,
   onJoined,
   hideEmpty,
+  showConfirmedOnly,
 }: {
   accountId: string
   port: CloudInvitationPort
   onJoined: () => void
   hideEmpty: boolean
+  showConfirmedOnly: boolean
 }) {
-  const [controller] = useState(() => new InvitationView(accountId, port, onJoined))
-  const { reply, busy, error } = useSyncExternalStore(
+  const [controller] = useState(
+    () => new InvitationView(accountId, port, onJoined, showConfirmedOnly),
+  )
+  const { reply, busy, failed, hasJoinAttempt } = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
     controller.getSnapshot,
@@ -169,9 +229,10 @@ function AccountInvitations({
   const send = (request: Parameters<CloudInvitationPort>[1]) => void controller.send(request)
   const ready = reply?.kind === "attempt" && reply.state === "ready"
   const waiting = isWaiting(reply)
+  const joined = reply?.kind === "attempt" && reply.state === "joined"
   const refresh = () =>
     send(
-      reply?.kind === "attempt" && !ready && !waiting
+      reply?.kind === "attempt" && !ready && !waiting && !(showConfirmedOnly && joined)
         ? { action: "dismiss", id: reply.id }
         : { action: "list" },
     )
@@ -181,10 +242,22 @@ function AccountInvitations({
       : null
   const finishLabel = ready && reply.join ? "Join workspace" : "Finish check"
   const listing = reply?.kind === "list" ? reply.listing : null
-  if (hideEmpty && !error && listing?.state === "checked" && !listing.invitations.length)
+  const hasInvitations = listing?.state === "checked" && listing.invitations.length > 0
+  if (showConfirmedOnly && !hasJoinAttempt && !hasInvitations) return null
+  if (hideEmpty && !failed && listing?.state === "checked" && !listing.invitations.length)
     return null
-  const message = error
-    ? error
+  const showBrowserCheck = listing?.state === "check_required"
+  const showRefresh =
+    !ready &&
+    !waiting &&
+    reply?.kind !== "reauth_required" &&
+    reply?.kind !== "uncertain" &&
+    !!(reply || failed) &&
+    (!showConfirmedOnly || failed || (!hasInvitations && !joined))
+  const message = failed
+    ? showConfirmedOnly && joined
+      ? "You joined the workspace. Could not refresh invitations. Try again."
+      : "Could not check Cloud invitations. Try again or continue without joining."
     : reply?.kind === "attempt"
       ? reply.state === "ready"
         ? reply.join
@@ -215,78 +288,92 @@ function AccountInvitations({
   return (
     <section aria-label="Workspace invitations" className="flex min-w-0 flex-col gap-2">
       <h2 className="type-callout font-medium">Workspace invitations</h2>
-      <p className="min-w-0 break-words type-footnote text-label-secondary" role="status">
-        {message}
-      </p>
-      {listing?.state === "checked" && listing.invitations.length > 0 && (
+      {(!showConfirmedOnly || message) && (
+        <p className="min-w-0 break-words type-footnote text-label-secondary" role="status">
+          {message}
+        </p>
+      )}
+      {hasInvitations && (
         <ul className="flex max-h-40 min-w-0 flex-col gap-2 overflow-y-auto">
-          {listing.invitations.map((invitation) => (
-            <li
-              className="flex min-w-0 flex-wrap items-center justify-between gap-2"
-              key={invitation.id}
-            >
-              <span className="min-w-0 break-all type-callout">
-                {workspaceLabel(invitation.workspace_name, invitation.workspace_slug)}
-              </span>
-              <PushButton
-                ariaLabel={`Verify invitation to ${workspaceLabel(invitation.workspace_name, invitation.workspace_slug)}`}
-                disabled={busy}
-                onClick={() =>
-                  send({
-                    action: "start",
-                    invitation_id: invitation.id,
-                    workspace_name: invitation.workspace_name,
-                    workspace_slug: invitation.workspace_slug,
-                  })
-                }
+          {listing.invitations.map((invitation) => {
+            const label = workspaceLabel(invitation.workspace_name, invitation.workspace_slug)
+            return (
+              <li
+                className="flex min-w-0 flex-wrap items-center justify-between gap-2"
+                key={invitation.id}
               >
-                Verify invitation
-              </PushButton>
-            </li>
-          ))}
+                <span className="min-w-0 break-all type-callout">{label}</span>
+                <PushButton
+                  ariaLabel={
+                    showConfirmedOnly ? `Join ${label}` : `Verify invitation to ${label}`
+                  }
+                  disabled={busy}
+                  onClick={() =>
+                    send({
+                      action: "start",
+                      invitation_id: invitation.id,
+                      workspace_name: invitation.workspace_name,
+                      workspace_slug: invitation.workspace_slug,
+                    })
+                  }
+                >
+                  {showConfirmedOnly ? "Join" : "Verify invitation"}
+                </PushButton>
+              </li>
+            )
+          })}
         </ul>
       )}
-      <div className="flex flex-wrap gap-2">
-        {listing?.state === "check_required" && (
-          <PushButton
-            disabled={busy}
-            onClick={() => send({ action: "start", invitation_id: null })}
-          >
-            Check in browser
-          </PushButton>
-        )}
-        {ready && (
-          <PushButton
-            variant="primary"
-            ariaLabel={reply.join && workspace ? `${finishLabel} ${workspace}` : finishLabel}
-            disabled={busy}
-            onClick={() => send({ action: "finish", id: reply.id })}
-          >
-            {finishLabel}
-          </PushButton>
-        )}
-        {(ready || waiting) && (
-          <PushButton disabled={busy} onClick={() => send({ action: "cancel", id: reply.id })}>
-            Cancel verification
-          </PushButton>
-        )}
-        {reply?.kind === "uncertain" ? (
-          <PushButton disabled={busy} onClick={() => send({ action: "status", id: reply.id })}>
-            Check result
-          </PushButton>
-        ) : (
-          !waiting &&
-          !ready &&
-          reply?.kind !== "reauth_required" &&
-          (reply || error) && (
+      {(!showConfirmedOnly ||
+        showBrowserCheck ||
+        ready ||
+        waiting ||
+        reply?.kind === "uncertain" ||
+        showRefresh) && (
+        <div className="flex flex-wrap gap-2">
+          {showBrowserCheck && (
+            <PushButton
+              disabled={busy}
+              onClick={() => send({ action: "start", invitation_id: null })}
+            >
+              Check in browser
+            </PushButton>
+          )}
+          {ready && (
+            <PushButton
+              variant="primary"
+              ariaLabel={reply.join && workspace ? `${finishLabel} ${workspace}` : finishLabel}
+              disabled={busy}
+              onClick={() => send({ action: "finish", id: reply.id })}
+            >
+              {finishLabel}
+            </PushButton>
+          )}
+          {(ready || waiting) && (
+            <PushButton
+              disabled={busy}
+              onClick={() => send({ action: "cancel", id: reply.id })}
+            >
+              Cancel verification
+            </PushButton>
+          )}
+          {reply?.kind === "uncertain" && (
+            <PushButton
+              disabled={busy}
+              onClick={() => send({ action: "status", id: reply.id })}
+            >
+              Check result
+            </PushButton>
+          )}
+          {showRefresh && (
             <PushButton disabled={busy} onClick={refresh}>
               {reply?.kind === "attempt" && reply.state === "checked"
                 ? "Review invitations"
                 : "Refresh invitations"}
             </PushButton>
-          )
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </section>
   )
 }
