@@ -153,7 +153,8 @@ Standard builds use only local sessions. A Cloud-enabled CLI on macOS or Linux
 can reuse the Cloud connection in a running Antiburn Desktop app. Sign in
 there and approve session reads. If your existing connection allows only
 uploads, reconnect in Desktop to approve reads. The CLI does not ask for a
-separate key or store a credential. If Cloud is disabled, the app is closed,
+separate key or store a credential. Use a matching Desktop build that
+provides a read-only token. If Cloud is disabled, the app is closed,
 or the device is not connected, search uses only the local index. Pass
 `--source local` to keep any search query on the device.
 `get` still reads local metadata unless you pass `--source cloud`.
