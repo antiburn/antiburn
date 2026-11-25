@@ -69,6 +69,13 @@ debug assertions defaults both origins to `https://api.antiburn.com` when
 neither variable is set. Set both variables to override that default with
 canonical HTTPS origins. The resource origin owns the device API routes.
 
+For the optional **Open Cloud dashboard** action, set the build-time
+`ANTIBURN_CLOUD_DASHBOARD` to the dashboard's canonical origin without a trailing
+slash. It must use HTTPS, or loopback HTTP in a build with debug assertions.
+Desktop opens the root of that origin in the system browser. It does not pass
+device proof or use the dashboard origin for API requests. An invalid or missing
+dashboard origin hides the action without changing device approval.
+
 The explicit feature command also works for a debug build:
 
 ```sh
@@ -154,6 +161,9 @@ for each folder. With only Personal available, Desktop shows a folder switch.
 If workspace discovery is temporarily unavailable, Desktop retries while the
 folder pane is open. In Settings, choose **Check again** if Desktop could not
 read the account or verify its Personal workspace. This does not enable upload.
+A signed-in user can select **Refresh workspaces** in **Settings > Sessions**
+after joining a Team in the browser. This uses the same workspace list request
+and does not issue a new grant or change folder consent.
 A workspace list response of `401` asks the user to sign in again. A `403` tells
 the user that access is denied. Neither response starts folder discovery or
 grants upload permission.
@@ -464,8 +474,7 @@ saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
 Settings → Sessions shows the account, verified workspace count, device upload
-switch, folder choices, and a short sync status. The invitation section appears
-only when Desktop has a confirmed invitation or a join action is in progress.
+switch, folder choices, and a short sync status.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
 uploads run or the policy is paused.

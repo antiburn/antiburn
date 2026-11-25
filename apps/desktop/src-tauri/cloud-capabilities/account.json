@@ -6,9 +6,9 @@
   "permissions": [
     "allow-cloud-status",
     "allow-cloud-workspaces",
+    "allow-cloud-open-dashboard",
     "allow-cloud-reset-workspace",
     "allow-cloud-begin",
-    "allow-cloud-invitations",
     "allow-cloud-cancel",
     "allow-cloud-sign-out",
     "allow-cloud-reset-local",

@@ -138,32 +138,94 @@ it("requires an explicit local reset without warning about an earlier Cloud conn
   expect(screen.queryByText(/Cloud has not confirmed an earlier sign-out/)).toBeNull()
 })
 
-it("shows only the current sign-in blocker after an unconfirmed invitation", async () => {
+it("requires cleanup before signing in again when the connection requires it", async () => {
   const { session, emit } = fixture({
     ...emptyCloudSnapshot,
     authEnabled: true,
-    invitationEnabled: true,
     status: "signed_in",
     identity: { id: "synthetic-account", login: "Example" },
   })
   render(<Account session={session} />)
   await screen.findByText("Signed in as Example")
-  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
-  const warning = /Check your Cloud workspaces before trying again/
-  expect(screen.queryByText(warning)).toBeNull()
   act(() =>
     emit({
       ...emptyCloudSnapshot,
       authEnabled: true,
       status: "reauth_required",
       revocationPending: true,
-      invitationResultUnconfirmed: true,
     }),
   )
-  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
-  expect(screen.queryByText(warning)).toBeNull()
   expect(screen.getByText("Sign out on this device before you sign in again.")).toBeVisible()
   expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+})
+
+it("refreshes eligible workspaces without signing in again or changing a saved Team policy", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const personal = { id: "synthetic-personal", name: "Personal", kind: "personal" } as const
+  const saved = { id: "saved-team", name: "Saved Team", kind: "team" } as const
+  const joined = { id: "joined-team", name: "Joined Team", kind: "team" } as const
+  const policy = ongoingStatus({
+    destinationId: saved.id,
+    workspaceName: saved.name,
+    status: "ready",
+    policyRevision: "saved-team-policy",
+    consentVersion: "desktop-project-sync-v1",
+    projectChoices: { studio: true },
+  })
+  ongoing.status.mockResolvedValue(ongoingStatus({ teamStatuses: [policy] }))
+  const workspaces = vi
+    .fn<NonNullable<typeof port.workspaces>>()
+    .mockResolvedValue([personal, saved])
+  port.workspaces = workspaces
+  const signIn = vi.spyOn(port, "begin")
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  await screen.findByText("2 workspaces")
+  expect(screen.queryByRole("button", { name: "Open Cloud dashboard" })).toBeNull()
+
+  workspaces.mockResolvedValue([personal, saved, joined])
+  const refresh = screen.getByRole("button", { name: "Refresh workspaces" })
+  refresh.focus()
+  fireEvent.click(refresh)
+
+  expect(await screen.findByText("3 workspaces")).toBeVisible()
+  expect(refresh).toHaveFocus()
+  expect(workspaces).toHaveBeenLastCalledWith({
+    accountId: "synthetic-account",
+    destinationId: personal.id,
+  })
+  expect(session.getSnapshot().teamStatuses?.[saved.id]).toEqual(policy)
+  expect(session.getSnapshot().teamStatuses?.[joined.id]).toBeUndefined()
+  expect(signIn).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+  expect(ongoing.setEnabled).not.toHaveBeenCalled()
+})
+
+it("opens the configured dashboard without changing the desktop account", async () => {
+  const { port, emit } = cloudProjectFixture()
+  emit({ dashboardAvailable: true })
+  const openDashboard = vi.fn<NonNullable<typeof port.openDashboard>>()
+  openDashboard.mockRejectedValueOnce(new Error("Synthetic browser failure"))
+  openDashboard.mockResolvedValueOnce(undefined)
+  port.openDashboard = openDashboard
+  const signIn = vi.spyOn(port, "begin")
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+
+  const open = await screen.findByRole("button", { name: "Open Cloud dashboard" })
+  fireEvent.click(open)
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not open the Cloud dashboard.",
+  )
+  await waitFor(() => expect(open).not.toHaveAttribute("aria-disabled"))
+  fireEvent.click(open)
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull())
+  expect(openDashboard).toHaveBeenCalledTimes(2)
+  expect(openDashboard).toHaveBeenLastCalledWith()
+  expect(signIn).not.toHaveBeenCalled()
+  expect(screen.getByText("Signed in as Example")).toBeVisible()
 })
 
 it("canceling the reset confirmation does not call a native cleanup action", async () => {

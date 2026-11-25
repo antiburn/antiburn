@@ -13,7 +13,6 @@ mod file_sources;
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod http_tests;
-pub(crate) mod invitations;
 mod loopback;
 pub(crate) mod projects;
 mod repository_checkout;
@@ -143,8 +142,7 @@ fn existing_folder_choices() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     auth_enabled: bool,
-    invitation_enabled: bool,
-    invitation_result_unconfirmed: bool,
+    dashboard_available: bool,
     capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
@@ -176,7 +174,6 @@ pub(crate) struct Controller {
     project_listing_authority: Mutex<Option<projects::ListingAuthority>>,
     attempt_generation: AtomicU64,
     account_generation: AtomicU64,
-    invitations: Mutex<Option<invitations::Pending>>,
     recorded_status: Mutex<AuthStatus>,
 }
 
@@ -322,8 +319,10 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
     Snapshot {
         auth_enabled: engine.config.is_some(),
-        invitation_enabled: session.is_some() && engine.invitations_enabled(),
-        invitation_result_unconfirmed: engine.invitation_result_unconfirmed,
+        dashboard_available: engine
+            .config
+            .as_ref()
+            .is_some_and(|config| config.dashboard.is_some()),
         capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
         sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
@@ -435,7 +434,6 @@ pub fn initialize(
         workspace_cleanup_failed: AtomicBool::new(false),
         attempt_generation: AtomicU64::new(0),
         account_generation: AtomicU64::new(0),
-        invitations: Mutex::new(None),
         recorded_status: Mutex::new(AuthStatus::Idle),
     });
     #[cfg(unix)]
@@ -481,7 +479,6 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
         }) {
             engine.status = error.into();
         }
-        engine.check_invitation_support();
         Ok(emit_snapshot(&app, snapshot(&app, &engine)))
     })
     .await
@@ -520,6 +517,28 @@ pub async fn cloud_workspaces(
                 }
                 .into()
             })
+    })
+    .await
+}
+
+/// Open the configured browser dashboard without starting device approval.
+/// No renderer URL, credential, or browser result crosses this command.
+#[tauri::command]
+pub async fn cloud_open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, move || {
+        let dashboard = app
+            .state::<Controller>()
+            .engine
+            .lock()
+            .map_err(|_| "Cloud is unavailable.")?
+            .config
+            .as_ref()
+            .and_then(|config| config.dashboard.clone())
+            .ok_or("The Cloud dashboard is not configured.")?;
+        app.opener()
+            .open_url(dashboard.as_str(), None::<&str>)
+            .map_err(|_| "Could not open the Cloud dashboard.".into())
     })
     .await
 }
@@ -576,8 +595,8 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 return Ok(publish(&app, &engine));
             }
         };
-        // A replacement sign-in cannot inherit a pending invitation or queued
-        // account work from the previous connection, even for the same user.
+        // A replacement sign-in cannot inherit queued account work from the
+        // previous connection, even for the same user.
         let next_account_generation = account_generation + 1;
         if controller
             .account_generation

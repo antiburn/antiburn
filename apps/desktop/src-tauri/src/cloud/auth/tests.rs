@@ -1,6 +1,7 @@
 use super::{
     AccountSession, Config, Credential, EligibleWorkspace, Failure, HttpTransport, TokenRequest,
-    Tokens, Transport, Vault, Workspace, WorkspaceKind, WorkspaceResponse, short_hostname,
+    Tokens, Transport, Vault, Workspace, WorkspaceKind, WorkspaceResponse, canonical_origin,
+    short_hostname,
 };
 use crate::cloud::{engine::Engine, state::StateStore};
 use std::{
@@ -57,6 +58,7 @@ fn cloud_auth_build_origins_default_only_when_both_are_absent() {
     };
     assert_eq!(config.issuer, origin);
     assert_eq!(config.resource, origin);
+    assert!(config.dashboard.is_none());
     for (url, path) in [
         (config.authorization, "/devices/authorize/account"),
         (config.token, "/v1/devices/token"),
@@ -90,6 +92,29 @@ fn cloud_auth_build_origins_default_only_when_both_are_absent() {
         explicit.token.as_str(),
         "https://resource.example/v1/devices/token"
     );
+}
+
+#[test]
+fn cloud_auth_dashboard_uses_only_a_canonical_browser_origin() {
+    assert_eq!(
+        canonical_origin("https://dashboard.example")
+            .unwrap()
+            .as_str(),
+        "https://dashboard.example/"
+    );
+    assert_eq!(
+        canonical_origin("http://127.0.0.1:4174").is_some(),
+        cfg!(debug_assertions)
+    );
+    for value in [
+        "http://dashboard.example",
+        "https://user:proof@dashboard.example",
+        "https://dashboard.example/join",
+        "https://dashboard.example?code=proof",
+        "https://dashboard.example#invite",
+    ] {
+        assert!(canonical_origin(value).is_none(), "{value}");
+    }
 }
 
 #[test]

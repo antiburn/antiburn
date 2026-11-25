@@ -171,6 +171,10 @@ export class CloudSession {
   get projectSyncSupported() {
     return this.port.ongoing !== undefined
   }
+  /** Open the browser dashboard without updating the desktop session. */
+  openDashboard = () =>
+    this.port.openDashboard?.() ??
+    Promise.reject(new Error("The Cloud dashboard is unavailable."))
   /** Observe snapshots without starting reads. The host owns the active subscription. */
   subscribeSnapshot = (listener: () => void) => {
     this.snapshotListeners.add(listener)
@@ -324,7 +328,6 @@ export class CloudSession {
       !this.snapshot.busy &&
       this.snapshot.screen === "identity" &&
       !this.holdIdentity &&
-      !this.snapshot.cloud.invitationEnabled &&
       !this.snapshot.cloud.setupError &&
       !this.snapshot.error
     if (handoff && this.identityTimer) return

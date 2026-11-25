@@ -36,7 +36,6 @@ import {
   CloudProjectFolderSummary,
   folderSessionsFoundLabel,
 } from "../../onboarding/CloudOnboardingFolders"
-import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import {
   cloudAccountCleanupPending,
   cloudSignOutBeforeSignIn,
@@ -280,6 +279,9 @@ export function CloudAccount({
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
   const [retryingSignInRead, setRetryingSignInRead] = useState(false)
+  const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false)
+  const [openingDashboard, setOpeningDashboard] = useState(false)
+  const [dashboardOpenFailed, setDashboardOpenFailed] = useState(false)
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed =
@@ -297,6 +299,11 @@ export function CloudAccount({
     value.cloud.status === "signed_in" && !value.projects?.error
       ? value.projects?.workspaces?.length
       : undefined
+  const canRefreshWorkspaces =
+    value.cloud.status === "signed_in" &&
+    !!value.cloud.identity &&
+    personalCloudDestination(value.cloud.destination ?? null) &&
+    session.projectSyncSupported
   const accountMessage = readFailed
     ? "Could not check Cloud sign-in."
     : value.error
@@ -340,9 +347,53 @@ export function CloudAccount({
                     ? "Not signed in"
                     : "Antiburn Cloud is coming soon"}
           </p>
-          {value.cloud.identity && workspaceCount !== undefined && (
-            <p className="mt-1 type-footnote text-label-secondary">
-              {workspaceCount} {workspaceCount === 1 ? "workspace" : "workspaces"}
+          {value.cloud.identity && (workspaceCount !== undefined || canRefreshWorkspaces) && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 type-footnote text-label-secondary">
+              {workspaceCount !== undefined && (
+                <p aria-live="polite">
+                  {workspaceCount} {workspaceCount === 1 ? "workspace" : "workspaces"}
+                </p>
+              )}
+              {canRefreshWorkspaces && (
+                <button
+                  type="button"
+                  className="rounded-control border-0 bg-transparent p-0 underline underline-offset-2 hover:text-label aria-disabled:opacity-50"
+                  aria-disabled={value.busy || refreshingWorkspaces || undefined}
+                  aria-busy={refreshingWorkspaces || undefined}
+                  onClick={() => {
+                    if (value.busy || refreshingWorkspaces) return
+                    setRefreshingWorkspaces(true)
+                    void session
+                      .retryFolderScope()
+                      .finally(() => setRefreshingWorkspaces(false))
+                  }}
+                >
+                  Refresh workspaces
+                </button>
+              )}
+              {canRefreshWorkspaces && value.cloud.dashboardAvailable && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-control border-0 bg-transparent p-0 underline underline-offset-2 hover:text-label aria-disabled:opacity-50"
+                  aria-disabled={openingDashboard || undefined}
+                  onClick={() => {
+                    if (openingDashboard) return
+                    setOpeningDashboard(true)
+                    setDashboardOpenFailed(false)
+                    void session
+                      .openDashboard()
+                      .catch(() => setDashboardOpenFailed(true))
+                      .finally(() => setOpeningDashboard(false))
+                  }}
+                >
+                  Open Cloud dashboard <ArrowUpRight size={13} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          )}
+          {canRefreshWorkspaces && value.cloud.dashboardAvailable && dashboardOpenFailed && (
+            <p className="type-footnote text-system-red-text" role="alert">
+              Could not open the Cloud dashboard. Try again.
             </p>
           )}
           {accountMessage && (
@@ -461,15 +512,6 @@ export function CloudAccount({
             reset={session.resetWorkspace}
           />
         ))}
-      {value.cloud.invitationEnabled && value.cloud.identity && (
-        <div className="px-4 py-3 empty:hidden">
-          <CloudInvitations
-            accountId={value.cloud.identity.id}
-            onJoined={session.load}
-            showConfirmedOnly
-          />
-        </div>
-      )}
       {!loadingSyncStatus && children && (
         <div className="border-t border-separator">{children}</div>
       )}

@@ -60,16 +60,20 @@ pub struct Config {
     pub session: Url,
     pub workspaces: Url,
     pub revocation: Url,
+    /// Browser-only entry point. Never use it for device requests or proofs.
+    pub dashboard: Option<Url>,
 }
 
 impl Config {
     /// Default both origins to localhost in debug and to Antiburn Cloud in release.
     /// Partial or invalid overrides disable authentication.
     pub fn from_build() -> Option<Self> {
-        Self::from_origins(
+        let mut config = Self::from_origins(
             option_env!("ANTIBURN_CLOUD_ISSUER"),
             option_env!("ANTIBURN_CLOUD_RESOURCE"),
-        )
+        )?;
+        config.dashboard = option_env!("ANTIBURN_CLOUD_DASHBOARD").and_then(canonical_origin);
+        Some(config)
     }
 
     /// Keep explicit origins as one complete pair; never fill a missing override.
@@ -90,21 +94,8 @@ impl Config {
 
     /// Reject aliases, credentials, paths, and remote HTTP rather than normalizing authority.
     pub fn parse(issuer: &str, resource: &str) -> Option<Self> {
-        /// Require the exact public origin string used by callback and response proofs.
-        fn canonical(value: &str) -> Option<Url> {
-            let url = Url::parse(value).ok()?;
-            ((url.scheme() == "https" || debug_loopback_http(&url))
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none()
-                && url.path() == "/"
-                && url.origin().ascii_serialization() == value)
-                .then_some(url)
-        }
-        canonical(issuer)?;
-        let resource_url = canonical(resource)?;
+        canonical_origin(issuer)?;
+        let resource_url = canonical_origin(resource)?;
         Some(Self {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
@@ -113,8 +104,23 @@ impl Config {
             revocation: resource_url.join("v1/devices/logout").ok()?,
             session: resource_url.join("v1/devices/session").ok()?,
             workspaces: resource_url.join("v1/captures/destinations").ok()?,
+            dashboard: None,
         })
     }
+}
+
+/// Accept an exact origin, not a route, a credential, or a redirect target.
+fn canonical_origin(value: &str) -> Option<Url> {
+    let url = Url::parse(value).ok()?;
+    ((url.scheme() == "https" || debug_loopback_http(&url))
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path() == "/"
+        && url.origin().ascii_serialization() == value)
+        .then_some(url)
 }
 
 /// Admit plaintext only for exact loopback hosts when debug assertions are enabled.
@@ -527,12 +533,6 @@ pub enum TokenRequest<'a> {
 /// serializes credential operations; transport success does not grant access.
 /// Implementors can block only inside admitted Cloud blocking work.
 pub trait Transport: Send + Sync {
-    /// Read public support without device proof. A failed probe must leave
-    /// normal account sign-in available.
-    fn supports_invitations(&self, _config: &Config) -> bool {
-        false
-    }
-
     /// Return decoded tokens with a bounded refresh proof, even when other fields
     /// are invalid. The engine validates authority and saves rejected proof for
     /// logout. Return `OfflineBeforeSend` only when no HTTP proof was sent.
@@ -618,10 +618,6 @@ fn exchange_failure(error: reqwest::Error) -> Failure {
 }
 
 impl Transport for HttpTransport {
-    fn supports_invitations(&self, config: &Config) -> bool {
-        super::invitations::supported(config)
-    }
-
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
             client(&config.token)?

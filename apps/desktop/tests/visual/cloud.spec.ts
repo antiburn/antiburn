@@ -497,6 +497,27 @@ test("folder discovery retries and saved verification stay automatic in Sessions
   await expect(page.getByRole("progressbar")).toHaveCount(0)
 })
 
+test("Settings refresh makes a newly eligible team available without selecting it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 780 })
+  await page.goto("/tests/visual/?surface=cloud&cloud=settings-folders&joinedTeam=1")
+  await expect(page.getByText("1 workspace", { exact: true })).toBeVisible({ timeout: 15_000 })
+  const refresh = page.getByRole("button", { name: "Refresh workspaces", exact: true })
+  await refresh.focus()
+  await page.evaluate(() => {
+    document.body.dataset.joinedTeam = "true"
+  })
+  await page.keyboard.press("Enter")
+  await expect(page.getByText("2 workspaces", { exact: true })).toBeVisible()
+  await expect(refresh).toBeFocused()
+  await expect(page.locator('option[value="joined-team"]').first()).toHaveJSProperty(
+    "selected",
+    false,
+  )
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
+})
+
 test("reopened Settings keeps exclusions and does not confirm newly shown groups", async ({
   page,
 }) => {

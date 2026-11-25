@@ -121,8 +121,13 @@ it("passes exact request bindings to desktop capture commands and returns their 
   expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_cancel_sync", { requestId: "request" })
 })
 
+it("opens the dashboard without passing a URL or account proof", async () => {
+  await desktopCloudPort.openDashboard?.()
+  expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("cloud_open_dashboard")
+})
+
 it.each(["browser", "ordinary build"])(
-  "does not invoke capture commands in %s",
+  "does not invoke capture or dashboard commands in %s",
   async (build) => {
     if (build === "browser") mocks.hasShell.mockReturnValue(false)
     else mocks.appInfo.mockResolvedValue({ cloudEnabled: false })
@@ -133,6 +138,7 @@ it.each(["browser", "ordinary build"])(
     expect(await desktopCloudPort.reconcile("request")).toEqual({ status: "unavailable" })
     expect(await desktopCloudPort.cancelSync("request")).toEqual({ status: "unavailable" })
     expect(await desktopCloudPort.pick("opencode_sqlite_v2")).toEqual([])
+    await expect(desktopCloudPort.openDashboard?.()).rejects.toThrow("Cloud is unavailable.")
     expect(mocks.invoke).not.toHaveBeenCalled()
     expect(mocks.open).not.toHaveBeenCalled()
   },

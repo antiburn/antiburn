@@ -416,11 +416,9 @@ export type CaptureConsent = CloudDestinationBinding & {
  * syncEnabled reports a saved, unpaused ongoing policy, not upload acceptance.
  */
 export interface CloudSnapshot {
-  /** The current signed-in device can use account invitation routes. */
-  invitationEnabled?: boolean
-  /** Display-only warning for this launch. A new grant cannot read the old attempt. */
-  invitationResultUnconfirmed?: boolean
   authEnabled: boolean
+  /** A configured system-browser dashboard can open without device approval. */
+  dashboardAvailable?: boolean
   syncEnabled: boolean
   captureEnabled?: boolean
   status: CloudStatus
@@ -471,6 +469,8 @@ export type SyncResult =
 export interface CloudPort {
   /** Current desktop home for display only. Missing proof keeps raw paths visible. */
   displayHome?(): Promise<string | null>
+  /** Open the configured browser dashboard without connecting the device. */
+  openDashboard?(): Promise<void>
   /** List verified destinations for this account. Listing does not grant folder consent. */
   workspaces?(binding: CloudDestinationBinding): Promise<CloudWorkspace[] | null>
   /** Clear an old Team connection locally. This does not close its remote grant. */
@@ -566,6 +566,10 @@ export const desktopCloudPort: CloudPort = {
     if (!hasShell()) return null
     const info = await appInfo()
     return info?.homeDirectory ?? null
+  },
+  openDashboard: async () => {
+    if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable.")
+    await invoke("cloud_open_dashboard")
   },
   workspaces: async (binding) =>
     (await cloudBuildEnabled())

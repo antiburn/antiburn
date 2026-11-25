@@ -127,16 +127,12 @@ fn assert_team_reservation(scope: &'static str) {
     let personal_id = "00000000-0000-0000-0000-000000000001";
     let generation = "opaque-membership";
     let worker = std::thread::spawn(move || {
+        let personal = serde_json::json!({"workspace_id":personal_id,"name":"Personal","type":"personal","membership_generation":null});
         let workspaces = serde_json::json!({"workspaces":[
-            {"workspace_id":personal_id,"name":"Personal","type":"personal","membership_generation":null},
+            personal.clone(),
             {"workspace_id":team_id,"name":"Example Team","type":"team","membership_generation":generation}
         ]});
         let responses = [
-            (
-                "GET",
-                "/v1/devices/invitation-capabilities",
-                serde_json::json!({"version": 0}),
-            ),
             (
                 "POST",
                 "/v1/devices/token",
@@ -156,6 +152,11 @@ fn assert_team_reservation(scope: &'static str) {
                     "scope":scope, "resource":service_origin, "iss":service_origin,
                     "grant_expires_at":"1970-01-01T02:46:40Z", "access_expires_at":"1970-01-01T00:05:00Z",
                 }),
+            ),
+            (
+                "GET",
+                "/v1/captures/destinations",
+                serde_json::json!({"workspaces":[personal]}),
             ),
             ("GET", "/v1/captures/destinations", workspaces.clone()),
             ("GET", "/v1/captures/destinations", workspaces.clone()),
@@ -187,11 +188,7 @@ fn assert_team_reservation(scope: &'static str) {
             assert!(!request.headers.contains_key("origin"));
             assert_eq!(
                 request.headers.get("authorization").map(String::as_str),
-                (!matches!(
-                    path,
-                    "/v1/devices/invitation-capabilities" | "/v1/devices/token"
-                ))
-                .then_some("Bearer account-bearer")
+                (path != "/v1/devices/token").then_some("Bearer account-bearer")
             );
             if path == "/v1/captures/reserve" {
                 let body = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap();
@@ -213,8 +210,18 @@ fn assert_team_reservation(scope: &'static str) {
     )
     .with_clock(|| 100);
     let (url, _listener, attempt) = engine.begin(100, 1).unwrap();
-    assert!(!url.contains("workspace_id"));
-    assert!(!url.contains("native_invitations"));
+    let url = url::Url::parse(&url).unwrap();
+    assert_eq!(url.path(), "/devices/authorize/account");
+    assert_eq!(
+        url.query_pairs().map(|(key, _)| key).collect::<Vec<_>>(),
+        [
+            "redirect_uri",
+            "state",
+            "code_challenge",
+            "code_challenge_method",
+            "device_name",
+        ]
+    );
     engine
         .callback(
             &attempt,
@@ -228,6 +235,13 @@ fn assert_team_reservation(scope: &'static str) {
         vault.read().unwrap().unwrap().refresh_token,
         "account-refresh"
     );
+    let binding = super::super::DestinationBinding {
+        account_id: "synthetic-user".into(),
+        destination_id: personal_id.into(),
+    };
+    let refreshed = engine.eligible_workspaces(&binding, &|| true).unwrap();
+    assert!(refreshed.iter().any(|item| item.workspace.id == team_id));
+    assert_eq!(engine.session().unwrap().workspace.id, personal_id);
     let target = CaptureIdentity {
         destination_id: team_id.into(),
         ..identity()

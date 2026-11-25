@@ -29,12 +29,7 @@ import {
 import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
 import { changeFolderWithFocus } from "./cloudFolderFocus"
 import { cloudCaptureUnsupported, cloudDiscoveryRetryMessage } from "./cloudProjectScope"
-import { CloudInvitations } from "./CloudInvitations"
-import {
-  cloudAccountCleanupPending,
-  cloudInvitationResultWarning,
-  cloudSignOutBeforeSignIn,
-} from "./cloudSessionState"
+import { cloudAccountCleanupPending, cloudSignOutBeforeSignIn } from "./cloudSessionState"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -84,11 +79,6 @@ export function CloudOnboarding({
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.authEnabled && value.cloud.status === "returned"
   const cleanupPending = cloudAccountCleanupPending(value.cloud)
-  const invitationWarning = value.cloud.invitationResultUnconfirmed && (
-    <p className="type-footnote text-onboarding-muted" role="status">
-      {cloudInvitationResultWarning}
-    </p>
-  )
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -334,7 +324,6 @@ export function CloudOnboarding({
                     : ""
                 : "Checking Cloud availability…"}
             </p>
-            {invitationWarning}
           </div>
         </section>
       ) : value.screen === "identity" ? (
@@ -353,19 +342,6 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
-            {invitationWarning}
-            {value.cloud.invitationEnabled && !value.cloud.setupError && (
-              <p className="type-onboarding-body text-onboarding-muted">
-                Set up folder sync now or continue locally. Signing in does not start uploads.
-              </p>
-            )}
-            {visible && value.cloud.invitationEnabled && value.cloud.identity && (
-              <CloudInvitations
-                accountId={value.cloud.identity.id}
-                onJoined={session.load}
-                hideEmpty
-              />
-            )}
             {value.cloud.setupError && (
               <>
                 <p className="type-callout text-onboarding-muted" role="status">
@@ -675,9 +651,7 @@ export function CloudOnboarding({
           </section>
         </>
       )}
-      <footer
-        className={`onboarding-footer cloud-footer${value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
-      >
+      <footer className="onboarding-footer cloud-footer">
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
             <div className="cloud-outcomes" role="group" aria-label="Setup status">
@@ -787,17 +761,6 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
-            {value.screen === "identity" &&
-              value.cloud.invitationEnabled &&
-              !value.cloud.setupError && (
-                <button
-                  className="onboarding-primary"
-                  disabled={disabled}
-                  onClick={() => void session.go("folders")}
-                >
-                  Continue Cloud setup
-                </button>
-              )}
             {value.screen === "folders" && (
               <>
                 <button

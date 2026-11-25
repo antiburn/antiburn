@@ -27,6 +27,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
   const backgroundProgress = params.has("backgroundProgress")
   const partialSettingsFolders = params.has("partialSettingsFolders")
   const pagedSettingsFolders = params.has("pagedSettingsFolders")
+  const joinedTeam = name === "settings-folders" && params.has("joinedTeam")
   const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
   const firstPersonalSaveFailure =
     name === "settings-folders" && params.has("personalSaveFailure")
@@ -359,6 +360,16 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
           workspaces: async () => [
             { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
             { id: "synthetic-team", name: teamName, kind: "team" as const },
+          ],
+        }
+      : {}),
+    ...(joinedTeam
+      ? {
+          workspaces: async () => [
+            { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+            ...(document.body.dataset.joinedTeam === "true"
+              ? [{ id: "joined-team", name: "Joined Team", kind: "team" as const }]
+              : []),
           ],
         }
       : {}),
