@@ -151,9 +151,11 @@ Local session commands do not write logs or check state or make network requests
 
 Standard builds use only local sessions. A Cloud-enabled CLI on macOS or Linux
 can reuse the Cloud connection in a running Antiburn Desktop app. Sign in
-there; the CLI does not ask for a separate key or store a credential. If Cloud
-is disabled, the app is closed, or the device is not connected, search uses only
-the local index. Pass `--source local` to keep any search query on the device.
+there and approve session reads. If your existing connection allows only
+uploads, reconnect in Desktop to approve reads. The CLI does not ask for a
+separate key or store a credential. If Cloud is disabled, the app is closed,
+or the device is not connected, search uses only the local index. Pass
+`--source local` to keep any search query on the device.
 `get` still reads local metadata unless you pass `--source cloud`.
 
 The local connection trusts the current OS user. It is not an isolation
