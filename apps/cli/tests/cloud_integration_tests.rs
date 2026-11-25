@@ -25,6 +25,7 @@ const REVISION: &str = "e352e672-d152-4e97-a063-428bdeefb26a";
 const KEY: &str = "synthetic-device-read-token";
 const CURSOR: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ROUTE_PREFIX: &str = "/v1/workspaces";
+const DOCUMENT_PAGE_BYTES: usize = 1024 * 1024;
 
 struct Fixture {
     root: TempDir,
@@ -602,6 +603,23 @@ fn document(session: &str, revision: &str, cursor: Option<&str>) -> String {
     )
 }
 
+fn large_document_body(size: usize) -> (String, String) {
+    let mut content = String::from("private-synthetic-body \"quoted\"\n");
+    let mut page = json!({
+        "workspace_id": WORKSPACE,
+        "session_id": SESSION,
+        "revision": REVISION,
+        "stale": false,
+        "messages": [{"role": "assistant", "content": content}],
+        "page": {"next_cursor": CURSOR},
+    });
+    content.push_str(&"x".repeat(size - page.to_string().len()));
+    page["messages"][0]["content"] = json!(content);
+    let body = page.to_string();
+    assert_eq!(body.len(), size);
+    (body, content)
+}
+
 #[test]
 fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -647,6 +665,26 @@ fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
     assert_private_error(
         other_connection.run(&["get", SESSION, "--source", "cloud", "--after", cursor]),
         "invalid document cursor",
+    );
+}
+
+#[test]
+fn reads_a_complete_document_page_at_the_size_limit() {
+    let (body, content) = large_document_body(DOCUMENT_PAGE_BYTES);
+    let (origin, server) = serve(http("200 OK", &body));
+    let fixture = Fixture::new(&origin);
+    let output = read_success(fixture.run(&["get", SESSION, "--source", "cloud"]));
+    let document = &output["document"];
+    assert_eq!(document["messages"][0]["content"], content);
+    assert_eq!(document["messages"].as_array().unwrap().len(), 1);
+    let origin_key = URL_SAFE_NO_PAD.encode(Sha256::digest(&origin));
+    assert_eq!(
+        document["next_cursor"],
+        format!("{origin_key}.{WORKSPACE}.{SESSION}.{REVISION}.{CURSOR}")
+    );
+    assert_cloud_request(
+        server,
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
@@ -741,8 +779,26 @@ fn rejects_overlong_cloud_requests_before_network_io() {
 }
 
 #[test]
-fn rejects_an_oversized_success_body_without_showing_it() {
-    let body = "private-synthetic-body".repeat(10_000);
+fn rejects_an_oversized_declared_document_body_before_reading_it() {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        DOCUMENT_PAGE_BYTES + 1
+    );
+    let (origin, server) = serve(response);
+    let fixture = Fixture::new(&origin);
+    assert_private_error(
+        fixture.run(&["get", SESSION, "--source", "cloud"]),
+        "response exceeds the size limit",
+    );
+    assert_cloud_request(
+        server,
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+    );
+}
+
+#[test]
+fn rejects_an_oversized_chunked_document_body_without_showing_it() {
+    let (body, _) = large_document_body(DOCUMENT_PAGE_BYTES + 1);
     let response = format!(
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
         body.len()

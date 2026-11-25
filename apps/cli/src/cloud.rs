@@ -14,9 +14,8 @@ use crate::{
     sessions::{GetResponse, SessionMatch, safe_text},
 };
 
-const MAX_PAGE_BYTES: usize = 128 * 1024;
+const MAX_DOCUMENT_PAGE_BYTES: usize = 1024 * 1024;
 const MAX_MESSAGES: usize = 8;
-const MAX_MESSAGE_BYTES: usize = 8 * 1024;
 
 mod device;
 mod search;
@@ -149,7 +148,7 @@ pub(crate) async fn get(
     if let Some(continuation) = &continuation {
         request = request.query(&[("page[after]", continuation.token)]);
     }
-    let page: DocumentPage = read_json(request, MAX_PAGE_BYTES).await?;
+    let page: DocumentPage = read_json(request, MAX_DOCUMENT_PAGE_BYTES).await?;
     if page
         .workspace_id
         .is_some_and(|workspace| workspace != client.workspace_id)
@@ -159,9 +158,10 @@ pub(crate) async fn get(
             .as_ref()
             .is_some_and(|cursor| cursor.revision != page.revision)
         || page.messages.len() > MAX_MESSAGES
-        || page.messages.iter().any(|message| {
-            message.get().len() > MAX_MESSAGE_BYTES || !message.get().starts_with('{')
-        })
+        || page
+            .messages
+            .iter()
+            .any(|message| !message.get().starts_with('{'))
         || page.page.next_cursor.as_ref().is_some_and(|after| {
             !valid_server_cursor(after)
                 || continuation
