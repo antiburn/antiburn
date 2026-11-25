@@ -101,7 +101,7 @@ pub struct GetArgs {
     pub(crate) environment: Option<String>,
     /// Continue with the next cursor from the previous page.
     #[cfg(feature = "cloud")]
-    #[arg(long, hide = !cfg!(unix))]
+    #[arg(long, hide = !cfg!(unix), allow_hyphen_values = true)]
     pub(crate) after: Option<String>,
     /// Print structured JSON instead of a text summary.
     #[arg(long)]
@@ -132,6 +132,19 @@ fn parse_search_query(value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn accepts_a_cloud_cursor_that_starts_with_a_hyphen() {
+        let cli = Cli::try_parse_from([
+            "antiburn", "get", "session", "--source", "cloud", "--after", "-cursor",
+        ])
+        .unwrap();
+        let Command::Get(args) = cli.command else {
+            panic!("expected get");
+        };
+        assert_eq!(args.after.as_deref(), Some("-cursor"));
+    }
 
     #[test]
     fn help_uses_the_public_name_for_platform_and_runtime_executable_names() {
