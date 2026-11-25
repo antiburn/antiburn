@@ -62,12 +62,12 @@ async fn load_session(app: tauri::AppHandle) -> Option<(u64, DeviceSession)> {
         }
         Ok(result
             .ok()
-            .map(|(origin, access_token, personal_workspace_id)| {
+            .map(|(origin, read_token, personal_workspace_id)| {
                 (
                     generation,
                     DeviceSession {
                         origin,
-                        access_token,
+                        read_token,
                         personal_workspace_id,
                     },
                 )
