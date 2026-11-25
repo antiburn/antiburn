@@ -291,6 +291,8 @@ impl Candidate {
             }
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => source.project_evidence(limits),
+            #[cfg(unix)]
+            CandidateSource::Cursor(source) => source.project_evidence(limits),
         }
     }
 }

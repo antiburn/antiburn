@@ -7,11 +7,11 @@ use tokio::sync::Semaphore;
 /// Safe renderer error for work that has not started and can be retried.
 pub(super) const BUSY: &str = "Cloud is busy. Try again.";
 
-/// Normal work fails fast. Reads that follow an event can wait briefly.
+/// Normal work fails fast. Selected reads and saves can wait briefly.
 /// Cleanup and one explicit backfill request can wait for admission.
 pub(super) enum Priority {
     Normal,
-    Read(Duration),
+    Wait(Duration),
     Backfill,
     Cleanup,
 }
@@ -48,7 +48,7 @@ impl BlockingWork {
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| BUSY.to_owned())?,
-            Priority::Read(wait) => {
+            Priority::Wait(wait) => {
                 let deadline = tokio::time::Instant::now() + wait;
                 let permit =
                     tokio::time::timeout_at(deadline, self.admission.clone().acquire_owned())
@@ -103,14 +103,28 @@ mod tests {
     };
     use tokio::sync::oneshot;
 
+    #[tokio::test]
+    async fn cloud_bounded_admission_runs_after_the_slot_is_released() {
+        let work = BlockingWork::default();
+        let permit = work.admission.clone().acquire_owned().await.unwrap();
+        let queued = tokio::spawn(async move {
+            work.run(Priority::Wait(Duration::from_secs(5)), || Ok("saved"))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!queued.is_finished());
+        drop(permit);
+        assert_eq!(queued.await.unwrap().unwrap(), "saved");
+    }
+
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn cloud_read_admission_times_out_without_starting_work() {
+    async fn cloud_bounded_admission_times_out_without_starting_work() {
         let work = BlockingWork::default();
         let held = work.admission.try_acquire().unwrap();
         let limit = Duration::from_millis(750);
         let started = tokio::time::Instant::now();
         let result = work
-            .run::<(), _>(Priority::Read(limit), || {
+            .run::<(), _>(Priority::Wait(limit), || {
                 panic!("a timed-out read must not start")
             })
             .await;

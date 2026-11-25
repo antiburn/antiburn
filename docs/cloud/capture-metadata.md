@@ -2,8 +2,9 @@
 
 Every [native capture](capture.md) has one separate `capture-metadata` stream.
 Its compact UTF-8 JSON uses the same `CaptureMetadata` structure for Claude JSONL,
-Codex JSONL, Pi JSONL, and OpenCode SQLite sources. Native file bytes and typed
-SQLite cells stay in their own streams. Metadata does not rewrite the source.
+Codex JSONL, Pi JSONL, OpenCode SQLite, and Cursor sources. Native file
+bytes and typed SQLite cells stay in their own streams. Metadata does not rewrite
+the source.
 
 The [JSON Schema](capture-metadata.schema.json) uses Draft 2020-12 and integer
 `version: 1`. It describes the full metadata object, not the capture manifest or
@@ -38,6 +39,9 @@ rollout header supplies the session ID, and `native_agent_id` is null.
 Pi uses `agent: "pi"` and `source_format: "PiJsonl"`. Its first owned session
 header supplies the session ID, and `native_agent_id` is null.
 OpenCode uses its native session ID; a persona is not `native_agent_id`.
+Cursor uses `agent: "cursor"` and `source_format: "CursorIdeComposer"` or
+`"CursorCliAgentJsonl"`. The native composer or CLI session supplies the session ID.
+Cursor leaves `native_agent_id` null.
 Capture IDs, account IDs, destination IDs, queue state, and automatic capture
 timestamps do not belong in this object.
 
@@ -54,6 +58,8 @@ It leaves the source version null and both flags false. See the
 Pi leaves the source version null, the observations empty, and both flags false.
 Its header version identifies the format, not a runtime. See
 [Pi session capture](pi.md) for the file and header rules.
+Cursor leaves the source version null, the observations empty, and both flags
+false. See the [Cursor source contract](cursor.md) for ownership rules.
 
 `relationship` is `unknown`, or a directly proved `child` or `fork` with
 `parent_source_id` and `proof`. An edge grants no access and does not mean that

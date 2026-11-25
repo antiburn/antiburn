@@ -32,6 +32,9 @@ pub(crate) enum SourceKind {
     OpenCodeSqliteV2,
     CodexJsonl,
     PiJsonl,
+    CursorIdeComposer,
+    #[serde(rename = "cursor_cli_agent_jsonl")]
+    CursorCliAgentJsonl,
 }
 
 impl SourceKind {
@@ -52,12 +55,19 @@ impl SourceKind {
             Self::OpenCodeSqliteV2 => ("opencode", "OpenCodeSqliteV2"),
             Self::CodexJsonl => ("codex", "CodexJsonl"),
             Self::PiJsonl => ("pi", "PiJsonl"),
+            Self::CursorIdeComposer => ("cursor", "CursorIdeComposer"),
+            Self::CursorCliAgentJsonl => ("cursor", "CursorCliAgentJsonl"),
         }
     }
 
     /// New file exporters require an explicit service capability.
     pub(crate) fn is_codex_or_pi(self) -> bool {
         matches!(self, Self::CodexJsonl | Self::PiJsonl)
+    }
+
+    /// Project-only sources come from provider folder discovery, not legacy requests.
+    pub(crate) fn is_project_only(self) -> bool {
+        self.is_codex_or_pi() || matches!(self, Self::CursorIdeComposer | Self::CursorCliAgentJsonl)
     }
 }
 
@@ -68,6 +78,8 @@ impl From<CaptureSourceKind> for SourceKind {
             CaptureSourceKind::OpenCodeSqliteV2 => Self::OpenCodeSqliteV2,
             CaptureSourceKind::CodexJsonl => Self::CodexJsonl,
             CaptureSourceKind::PiJsonl => Self::PiJsonl,
+            CaptureSourceKind::CursorIdeComposer => Self::CursorIdeComposer,
+            CaptureSourceKind::CursorCliAgentJsonl => Self::CursorCliAgentJsonl,
         }
     }
 }
@@ -141,7 +153,10 @@ impl SourceLocator {
                 URL_SAFE_NO_PAD.encode(&self.relative_path),
                 URL_SAFE_NO_PAD.encode(&self.native_session_id)
             ),
-            SourceKind::CodexJsonl | SourceKind::PiJsonl => {
+            SourceKind::CodexJsonl
+            | SourceKind::PiJsonl
+            | SourceKind::CursorIdeComposer
+            | SourceKind::CursorCliAgentJsonl => {
                 anyhow::bail!("This format is not supported in legacy capture requests.")
             }
         };

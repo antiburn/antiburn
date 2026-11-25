@@ -17,13 +17,15 @@ use crate::store::{
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::atomic::Ordering,
 };
 use tauri::Manager;
 
 const CACHE_BYTES: usize = 4 * 1024 * 1024;
+const PROJECT_SCAN_ENTRIES: usize = 512;
 
 struct CachedEvidence {
     observation: String,
@@ -56,6 +58,18 @@ impl Cache {
         candidate: &antiburn_cloud_capture::Candidate,
         limits: &antiburn_cloud_capture::Limits,
     ) -> Result<Option<antiburn_cloud_capture::ProjectEvidence>, String> {
+        use antiburn_cloud_capture::CaptureSourceKind::{CursorCliAgentJsonl, CursorIdeComposer};
+        if matches!(
+            candidate.source_kind(),
+            CursorCliAgentJsonl | CursorIdeComposer
+        ) {
+            // Cursor binds proof across files. One file's generation cannot
+            // prove that its companion or workspace metadata is unchanged.
+            return candidate
+                .project_evidence_with_limits(limits)
+                .map(Some)
+                .map_err(|_| "Could not read recorded project metadata.".into());
+        }
         let key = group_id(
             account,
             &serde_json::json!([destination, root, candidate.source_id()]).to_string(),
@@ -136,7 +150,7 @@ impl Cache {
     fn context(&mut self, environment: &str, cwd: &str) -> Context {
         let key = (environment.to_owned(), cwd.to_owned());
         if let Some((observed, context)) = self.contexts.get(&key)
-            && observed.elapsed() < Duration::from_secs(60)
+            && observed.elapsed() < Duration::from_secs(if context.complete { 60 } else { 1 })
         {
             return context.clone();
         }
@@ -196,6 +210,60 @@ struct Context {
     complete: bool,
 }
 
+/// Legacy worktree output can contain raw newlines in paths. Confirm the exact
+/// checkout root and its Git registration before trusting any parsed path.
+async fn legacy_worktree_common_dir(
+    environment: &antiburn_local::platform::environment::DiscoveryEnvironment,
+    checkout: &Path,
+) -> Option<PathBuf> {
+    let output = antiburn_local::platform::git::run_git_output_in_environment(
+        environment,
+        Some(checkout),
+        &[
+            "rev-parse",
+            "--show-toplevel",
+            "--git-common-dir",
+            "--git-dir",
+        ],
+        &[],
+    )
+    .await
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut lines = std::str::from_utf8(&output.stdout).ok()?.lines();
+    let (root, common, git_dir) = (lines.next()?, lines.next()?, lines.next()?);
+    if lines.next().is_some()
+        || Path::new(root) != checkout
+        || [common, git_dir]
+            .iter()
+            .any(|path| path.is_empty() || path.chars().any(char::is_control))
+    {
+        return None;
+    }
+    let common = checkout.join(common).canonicalize().ok()?;
+    let git_dir = checkout.join(git_dir).canonicalize().ok()?;
+    let dot_git = checkout.join(".git");
+    if git_dir == common {
+        return (dot_git == git_dir && dot_git.symlink_metadata().ok()?.is_dir()).then_some(common);
+    }
+    if git_dir.parent()? != common.join("worktrees") {
+        return None;
+    }
+    use tokio::io::AsyncReadExt;
+    let mut registration = String::new();
+    tokio::fs::File::open(git_dir.join("gitdir"))
+        .await
+        .ok()?
+        .take(4097)
+        .read_to_string(&mut registration)
+        .await
+        .ok()?;
+    let path = registration.strip_suffix('\n')?;
+    (!path.chars().any(char::is_control) && Path::new(path) == dot_git).then_some(common)
+}
+
 /// Use current local Git context only. Foreign environment paths are never
 /// probed through the local filesystem, even when their strings match.
 fn context(environment: &str, cwd: &str) -> Context {
@@ -220,30 +288,90 @@ fn context(environment: &str, cwd: &str) -> Context {
     tauri::async_runtime::block_on(async {
         match git::repo_root_if_any_at(path).await {
             Ok(Some(repo)) => {
-                let Some(main) = git::canonical_main_repo_root_with_access(&repo, &|_| true).await
+                let environment =
+                    antiburn_local::platform::environment::DiscoveryEnvironment::Native;
+                let Ok(mut output) = git::run_git_output_in_environment(
+                    &environment,
+                    Some(&repo),
+                    &["worktree", "list", "--porcelain", "-z"],
+                    &[],
+                )
+                .await
                 else {
                     return ungrouped();
                 };
-                let Some(main) = main.to_str().map(str::to_owned) else {
+                let mut separator = '\0';
+                if output.status.code() == Some(129) {
+                    // Older Git versions do not accept `-z` for this command.
+                    let Ok(legacy) = git::run_git_output_in_environment(
+                        &environment,
+                        Some(&repo),
+                        &["worktree", "list", "--porcelain"],
+                        &[],
+                    )
+                    .await
+                    else {
+                        return ungrouped();
+                    };
+                    output = legacy;
+                    separator = '\n';
+                }
+                if !output.status.success() {
+                    return ungrouped();
+                }
+                let Ok(list) = std::str::from_utf8(&output.stdout) else {
                     return ungrouped();
                 };
-                let roots = git::repo_and_worktree_roots_at(Path::new(&main)).await;
-                let complete = roots.len() <= 100;
-                let mut folders: Vec<String> = roots
-                    .into_iter()
+                // Git lists its main checkout first, even when run in a linked checkout.
+                let mut roots = list
+                    .split(separator)
+                    .filter_map(|record| record.strip_prefix("worktree "));
+                let Some(main) = roots.next() else {
+                    return ungrouped();
+                };
+                let roots: Vec<_> = std::iter::once(main).chain(roots).take(101).collect();
+                let mut folders: Vec<_> = roots
+                    .iter()
                     .take(100)
+                    .copied()
                     .filter(|root| {
                         let path = Path::new(root);
-                        path.is_dir() && path.canonicalize().ok().as_deref() == Some(path)
+                        crate::store::cloud_capture::sync::valid_project_path(root)
+                            && path.is_dir()
+                            && path.canonicalize().ok().as_deref() == Some(path)
                     })
+                    .map(str::to_owned)
                     .collect();
-                let mut complete = complete;
+                if separator == '\n' {
+                    let Some(common) = legacy_worktree_common_dir(&environment, &repo).await else {
+                        return ungrouped();
+                    };
+                    for folder in &folders {
+                        if legacy_worktree_common_dir(&environment, Path::new(folder))
+                            .await
+                            .as_ref()
+                            != Some(&common)
+                        {
+                            return ungrouped();
+                        }
+                    }
+                }
+                if folders.first().is_none_or(|path| path != main)
+                    || !folders
+                        .iter()
+                        .any(|folder| Path::new(folder) == repo.as_path())
+                {
+                    return ungrouped();
+                }
+                folders.sort();
+                folders.dedup();
+                let mut complete = roots.len() <= 100;
                 if folders.iter().map(String::len).sum::<usize>() > 64 * 1024 {
                     folders.clear();
                     complete = false;
                 }
                 Context {
-                    main,
+                    main: main.into(),
                     folders,
                     complete,
                 }
@@ -415,7 +543,7 @@ pub(super) fn confirm_project_choices(
         store,
         antiburn_local::discovery::agents::opencode::native_database_paths(),
     )?;
-    known.extend(super::file_sources::roots());
+    known.extend(super::file_sources::roots().0);
     let (roots, _) = merge_sources(known, &saved.folders)?;
     let mut by_source = BTreeMap::<&SourceSelection, (BTreeSet<String>, BTreeSet<String>)>::new();
     let mut contexts = BTreeMap::new();
@@ -440,43 +568,59 @@ pub(super) fn confirm_project_choices(
         paths.insert(project.project_path.clone());
         groups.insert(group);
     }
-    let mut remaining = 512;
     cache.begin_scan();
-    for (root, (folders, mut groups)) in by_source {
-        let ids = if root.source_kind == SourceKind::OpenCodeSqliteV2 {
-            let paths = folders.iter().cloned().collect::<Vec<_>>();
+    let (selected_roots, mut targets): (Vec<_>, Vec<_>) = by_source.into_iter().unzip();
+    let mut scans = ProjectScans::new(selected_roots.clone());
+    let mut partial = vec![false; selected_roots.len()];
+    while let Some((index, listing)) = scans.next(
+        current,
+        |index| !targets[index].1.is_empty(),
+        |index| {
+            let paths = targets[index].0.iter().cloned().collect::<Vec<_>>();
             store
-                .cloud_opencode_session_ids(&paths, 512)
-                .map_err(|_| "Could not read cached session identities.")?
-        } else {
-            Vec::new()
-        };
-        let candidates = project_candidates(root, &ids, &mut remaining, current)?;
-        for candidate in candidates {
+                .cloud_opencode_session_ids(&paths, PROJECT_SCAN_ENTRIES)
+                .map(Cow::Owned)
+                .map_err(|_| "Could not read cached session identities.".into())
+        },
+    ) {
+        let root = selected_roots[index];
+        let groups = &mut targets[index].1;
+        let listing = listing?;
+        partial[index] |= listing.partial;
+        for candidate in listing.candidates {
             if !current() {
                 return Err("Cloud account or upload controls changed.".into());
             }
-            if let Some(evidence) = cache.evidence(
+            let evidence = match cache.evidence(
                 &binding.account_id,
                 &binding.destination_id,
                 root,
                 &candidate,
                 &sync::metadata_limits(),
-            )? && evidence.scan_complete()
+            ) {
+                Ok(Some(evidence)) if evidence.scan_complete() => evidence,
+                _ => {
+                    partial[index] = true;
+                    continue;
+                }
+            };
+            for path in evidence
+                .project_paths()
+                .iter()
+                .filter_map(|path| path.to_str())
             {
-                for path in evidence
-                    .project_paths()
-                    .iter()
-                    .filter_map(|path| path.to_str())
-                {
-                    groups.remove(&group_id("native", &cache.context("native", path).main));
-                }
-                if groups.is_empty() {
-                    break;
-                }
+                groups.remove(&group_id("native", &cache.context("native", path).main));
+            }
+            if groups.is_empty() {
+                break;
             }
         }
+    }
+    for (index, (_, groups)) in targets.into_iter().enumerate() {
         if !groups.is_empty() {
+            if partial[index] || scans.cursor_incomplete(index) {
+                return Err("Project discovery is incomplete. Restore access or choose fewer sources and retry.".into());
+            }
             return Err("Could not confirm a supported session for this project. Reload projects and try again.".into());
         }
     }
@@ -562,17 +706,122 @@ fn add_suggestion(
     group.agents.dedup();
 }
 
-/// Spend one shared discovery budget on cached ID hints and one provider page.
-/// Reopening proves the source independently of the cached project association.
-/// A failed source proof does not select a fallback reader.
-fn project_candidates(
-    root: &SourceSelection,
-    cached_opencode_ids: &[String],
-    remaining: &mut usize,
-    current: &dyn Fn() -> bool,
-) -> Result<Vec<antiburn_cloud_capture::Candidate>, String> {
-    let mut candidates = Vec::new();
-    if root.source_kind == SourceKind::OpenCodeSqliteV2 {
+/// Keep provider continuations only for this call. Give each root a first turn
+/// before spending the rest of the same budget on continuations.
+struct ProjectScans<'a> {
+    roots: Vec<&'a SourceSelection>,
+    first: usize,
+    pending: VecDeque<(usize, ProjectRootScan)>,
+    remaining: usize,
+}
+
+impl<'a> ProjectScans<'a> {
+    fn new(roots: Vec<&'a SourceSelection>) -> Self {
+        Self {
+            roots,
+            first: 0,
+            pending: VecDeque::new(),
+            remaining: PROJECT_SCAN_ENTRIES,
+        }
+    }
+
+    /// Charge a failed read its full share. Only the first read uses cached IDs.
+    fn next<'h>(
+        &mut self,
+        current: &dyn Fn() -> bool,
+        needs_more: impl Fn(usize) -> bool,
+        hints: impl FnOnce(usize) -> Result<Cow<'h, [String]>, String>,
+    ) -> Option<(usize, Result<super::file_sources::Page, String>)> {
+        let (index, mut scan, mut share, first) = if self.first < self.roots.len() {
+            let index = self.first;
+            let share = self.remaining / (self.roots.len() - index);
+            self.first += 1;
+            (index, ProjectRootScan::new(self.roots[index]), share, true)
+        } else {
+            if self.remaining == 0 {
+                return None;
+            }
+            let (index, scan) = loop {
+                let (index, scan) = self.pending.pop_front()?;
+                if needs_more(index) {
+                    break (index, scan);
+                }
+            };
+            (index, scan, self.remaining, false)
+        };
+        self.remaining -= share;
+        let result = (|| {
+            if !current() {
+                return Err("Cloud account changed.".into());
+            }
+            let ids: Cow<'_, [String]> =
+                if first && self.roots[index].source_kind == SourceKind::OpenCodeSqliteV2 {
+                    hints(index)?
+                } else {
+                    Cow::Borrowed(&[])
+                };
+            scan.read(self.roots[index], &ids, &mut share, current)
+        })();
+        if let Ok(page) = &result {
+            self.remaining += share;
+            if page.next_cursor.is_some() {
+                self.pending.push_back((index, scan));
+            }
+        }
+        Some((index, result))
+    }
+
+    fn cursor_incomplete(&self, index: usize) -> bool {
+        self.pending
+            .iter()
+            .any(|(pending, scan)| *pending == index && scan.cursor.is_some())
+    }
+}
+
+struct ProjectRootScan {
+    after: Option<String>,
+    cursor: Option<super::file_sources::CursorScan>,
+    seen: BTreeSet<String>,
+}
+
+impl ProjectRootScan {
+    fn new(root: &SourceSelection) -> Self {
+        Self {
+            after: None,
+            cursor: matches!(
+                root.source_kind,
+                SourceKind::CursorCliAgentJsonl | SourceKind::CursorIdeComposer
+            )
+            .then(super::file_sources::CursorScan::new),
+            seen: BTreeSet::new(),
+        }
+    }
+
+    /// Reopen cached IDs to prove source membership. A failed source proof does
+    /// not select a fallback reader. Provider pages can repeat successful hints.
+    fn read(
+        &mut self,
+        root: &SourceSelection,
+        cached_opencode_ids: &[String],
+        remaining: &mut usize,
+        current: &dyn Fn() -> bool,
+    ) -> Result<super::file_sources::Page, String> {
+        if let Some(cursor) = &mut self.cursor {
+            let page = cursor
+                .read(
+                    root.source_kind,
+                    Path::new(&root.path),
+                    &antiburn_cloud_capture::Limits {
+                        discovery_sessions: *remaining,
+                        ..sync::metadata_limits()
+                    },
+                    current,
+                )
+                .map_err(|_| "Could not qualify the selected Cursor source.")?;
+            *remaining -= page.visited;
+            return Ok(page);
+        }
+        let mut candidates = Vec::new();
         for id in cached_opencode_ids {
             if !current() {
                 return Err("Cloud account changed.".into());
@@ -587,7 +836,11 @@ fn project_candidates(
                 id,
                 &sync::metadata_limits(),
             ) {
-                Ok(candidate) => candidates.push(candidate),
+                Ok(candidate) => {
+                    if self.seen.insert(candidate.source_id().to_owned()) {
+                        candidates.push(candidate);
+                    }
+                }
                 Err(antiburn_cloud_capture::Error::SourceChanged) => {
                     // A missing cached ID can belong to another database.
                     // Fresh source-page admission below must still succeed.
@@ -595,18 +848,22 @@ fn project_candidates(
                 Err(_) => return Err("Could not qualify the selected session source.".into()),
             }
         }
+        let mut page = sync::discover_root_page(
+            root.source_kind,
+            &root.path,
+            self.after.as_deref(),
+            *remaining,
+        )?;
+        *remaining -= page.visited;
+        self.after.clone_from(&page.next_cursor);
+        candidates.extend(
+            std::mem::take(&mut page.candidates)
+                .into_iter()
+                .filter(|candidate| self.seen.insert(candidate.source_id().to_owned())),
+        );
+        page.candidates = candidates;
+        Ok(page)
     }
-    let page = sync::discover_root_page(root.source_kind, &root.path, None, *remaining)?.candidates;
-    *remaining -= page.len();
-    let mut seen: BTreeSet<String> = candidates
-        .iter()
-        .map(|candidate| candidate.source_id().to_owned())
-        .collect();
-    candidates.extend(
-        page.into_iter()
-            .filter(|candidate| seen.insert(candidate.source_id().to_owned())),
-    );
-    Ok(candidates)
 }
 
 /// Build one discovery page using only the current account's saved provider
@@ -650,7 +907,7 @@ fn discover_projects(
                 .filter(|suggestion| suggestion.environment == "native")
                 .map(|suggestion| suggestion.cwd.clone())
                 .collect::<Vec<_>>(),
-            512,
+            PROJECT_SCAN_ENTRIES,
         )
         .map_err(|_| "Could not read cached session identities.")?;
     let mut groups = BTreeMap::new();
@@ -661,33 +918,31 @@ fn discover_projects(
         }
         add_suggestion(cache, &mut groups, suggestion);
     }
-    let mut qualified = Vec::new();
-    let mut remaining = 512usize;
+    let mut qualified = vec![false; roots.len()];
     let mut project_choices = 0usize;
-    for root in roots {
-        if !current() {
-            return Err("Cloud account changed.".into());
-        }
-        if remaining == 0 {
-            partial = true;
-            break;
-        }
-        let candidates =
-            match project_candidates(&root, &cached_opencode_ids, &mut remaining, current) {
-                Ok(candidates) => candidates,
-                Err(_) => {
-                    partial = true;
-                    continue;
-                }
-            };
-        for candidate in candidates {
+    let mut scans = ProjectScans::new(roots.iter().collect());
+    while let Some((index, listing)) = scans.next(
+        current,
+        |_| true,
+        |_| Ok(Cow::Borrowed(&cached_opencode_ids)),
+    ) {
+        let root = &roots[index];
+        let listing = match listing {
+            Ok(candidates) => candidates,
+            Err(_) => {
+                partial = true;
+                continue;
+            }
+        };
+        partial |= listing.partial;
+        for candidate in listing.candidates {
             if !current() {
                 return Err("Cloud account changed.".into());
             }
             let evidence = match cache.evidence(
                 &binding.account_id,
                 &binding.destination_id,
-                &root,
+                root,
                 &candidate,
                 &sync::metadata_limits(),
             ) {
@@ -736,8 +991,9 @@ fn discover_projects(
                     if matched.insert(group.id.clone()) {
                         group.capture_session_count += 1;
                     }
-                    group.capture_supported |=
-                        evidence.scan_complete() && !group.folder_paths.is_empty();
+                    group.capture_supported |= evidence.scan_complete()
+                        && group.grouping_complete
+                        && !group.folder_paths.is_empty();
                     for folder in &group.folder_paths {
                         if group.projects.iter().any(|project| {
                             project.source_kind == root.source_kind
@@ -763,14 +1019,19 @@ fn discover_projects(
                 }
             }
         }
-        qualified.push(root);
+        qualified[index] = true;
     }
     if !current() || engine.session().is_none() {
         return Err("Cloud account changed.".into());
     }
+    partial |= (0..roots.len()).any(|index| scans.cursor_incomplete(index));
     Ok(Discovery {
         groups: groups.into_values().collect(),
-        source_roots: qualified,
+        source_roots: roots
+            .into_iter()
+            .zip(qualified)
+            .filter_map(|(root, qualified)| qualified.then_some(root))
+            .collect(),
         next_cursor,
         partial,
     })
@@ -818,14 +1079,15 @@ pub(crate) async fn cloud_project_groups(
             &store,
             antiburn_local::discovery::agents::opencode::native_database_paths(),
         )?;
-        known.extend(super::file_sources::roots());
+        let (file_roots, file_partial) = super::file_sources::roots();
+        known.extend(file_roots);
         discover_projects(
             &store,
             &mut cache,
             &engine,
             &binding,
             after.as_ref(),
-            (known, partial),
+            (known, partial || file_partial),
             &current,
         )
     })

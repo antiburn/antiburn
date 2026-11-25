@@ -23,8 +23,15 @@ OpenCode V2 capture exports session-owned SQLite rows and proved native
 dependencies from one read-only snapshot, including ordinary additive columns
 and known optional tables. It does not copy a database, follow external paths or
 URLs, or treat a creation/import version as the runtime for the whole history.
-Each child and fork remains independent. See the [OpenCode capture guide](cloud/opencode.md)
-for structural source support and limits; this is separate from local parsing.
+Each child and fork remains independent. The verified OpenCode `automation`
+table holds scheduler state and does not contribute capture rows or project
+evidence. Other unknown session-linked tables remain unsupported. See the
+[OpenCode capture guide](cloud/opencode.md) for the public source pin and limits.
+This contract is separate from local parsing.
+
+Cursor CLI Cloud discovery requires the transcript's matching native sidecar.
+An entry with no conversation does not qualify as a session and does not make
+discovery incomplete. See the [Cursor capture guide](cloud/cursor.md).
 
 This library has no network client and does not enable desktop uploads. Capture
 does not expand local parsing, normalized evidence, or Burn Check support below.

@@ -22,6 +22,10 @@ pub enum CaptureSourceKind {
     PiJsonl,
     /// Session-owned OpenCode V2 SQLite cells in the typed native stream.
     OpenCodeSqliteV2,
+    /// Selected native Cursor IDE composer and bubble rows.
+    CursorIdeComposer,
+    /// Exact Cursor CLI JSONL with a separately proved project sidecar.
+    CursorCliAgentJsonl,
 }
 
 #[derive(Clone, Debug)]
@@ -32,6 +36,8 @@ pub(crate) enum CandidateSource {
     Pi(HeaderFileSource),
     #[cfg(unix)]
     OpenCode(crate::opencode::OpenCodeSource),
+    #[cfg(unix)]
+    Cursor(crate::cursor::CursorSource),
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +85,8 @@ impl Candidate {
             CandidateSource::Pi(_) => CaptureSourceKind::PiJsonl,
             #[cfg(unix)]
             CandidateSource::OpenCode(_) => CaptureSourceKind::OpenCodeSqliteV2,
+            #[cfg(unix)]
+            CandidateSource::Cursor(source) => source.kind(),
         }
     }
 
@@ -91,6 +99,8 @@ impl Candidate {
             CandidateSource::Codex(source) | CandidateSource::Pi(source) => &source.path,
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => source.source_path(),
+            #[cfg(unix)]
+            CandidateSource::Cursor(source) => source.path(),
         }
     }
 
@@ -103,6 +113,8 @@ impl Candidate {
             }
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => source.native_session_id(),
+            #[cfg(unix)]
+            CandidateSource::Cursor(source) => source.id(),
         }
     }
 
@@ -112,7 +124,7 @@ impl Candidate {
             CandidateSource::Claude(source) => source.native_agent_id.as_deref(),
             CandidateSource::Codex(_) | CandidateSource::Pi(_) => None,
             #[cfg(unix)]
-            CandidateSource::OpenCode(_) => None,
+            CandidateSource::OpenCode(_) | CandidateSource::Cursor(_) => None,
         }
     }
 
@@ -148,6 +160,31 @@ impl Candidate {
         Err(Error::UnsupportedSource)
     }
 
+    /// Hash the same bounded Cursor native stream capture would save under current folder consent.
+    ///
+    /// The caller checks current account, source and full-content authority.
+    /// The export rechecks folder evidence. This local read creates no capture,
+    /// reservation or upload and ignores unrelated database writes. Run it on a
+    /// bounded blocking worker. Never log or publish the digest.
+    #[cfg(unix)]
+    pub fn cursor_content_digest(
+        &self,
+        limits: &Limits,
+        selection: &crate::ProjectSelection,
+    ) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let CandidateSource::Cursor(source) = &self.source else {
+            return Err(Error::UnsupportedSource);
+        };
+        limits.validate()?;
+        let mut digest = Sha256::new();
+        source.export(limits, selection, source.pin(limits)?, |bytes| {
+            digest.update(bytes);
+            Ok(())
+        })?;
+        Ok(crate::contract::hex(&digest.finalize()))
+    }
+
     /// Bind native keys to one stable account and device-local source root.
     /// Keep this source_scope_id when a directory access grant is replaced.
     ///
@@ -172,7 +209,7 @@ impl Candidate {
             }
             CandidateSource::Codex(_) | CandidateSource::Pi(_) => {}
             #[cfg(unix)]
-            CandidateSource::OpenCode(_) => {}
+            CandidateSource::OpenCode(_) | CandidateSource::Cursor(_) => {}
         }
         Ok(candidate)
     }

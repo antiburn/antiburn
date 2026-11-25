@@ -434,6 +434,8 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     assert_eq!(caps.limits.capture_bytes, 256 * 1024 * 1024);
     assert!(!caps.supports(SourceKind::CodexJsonl));
     assert!(!caps.supports(SourceKind::PiJsonl));
+    assert!(!caps.supports(SourceKind::CursorCliAgentJsonl));
+    assert!(!caps.supports(SourceKind::CursorIdeComposer));
     let request = worker.join().unwrap();
     assert_eq!(request.line, "GET /v1/captures/capabilities HTTP/1.1");
     assert_eq!(
@@ -442,7 +444,13 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     );
     assert!(request.body.is_empty());
     let mut extended = valid.clone();
-    extended["source_formats"] = serde_json::json!(["CodexJsonl", "future-format", "PiJsonl"]);
+    extended["source_formats"] = serde_json::json!([
+        "CodexJsonl",
+        "future-format",
+        "PiJsonl",
+        "CursorCliAgentJsonl",
+        "CursorIdeComposer"
+    ]);
     let caps = serde_json::from_value::<upload::Capabilities>(extended)
         .unwrap()
         .validate()
@@ -450,6 +458,8 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     assert_eq!(caps.limits.capture_bytes, 256 * 1024 * 1024);
     assert!(caps.supports(SourceKind::CodexJsonl));
     assert!(caps.supports(SourceKind::PiJsonl));
+    assert!(caps.supports(SourceKind::CursorCliAgentJsonl));
+    assert!(caps.supports(SourceKind::CursorIdeComposer));
     assert!(!caps.supports(SourceKind::ClaudeJsonl));
 
     for body in [

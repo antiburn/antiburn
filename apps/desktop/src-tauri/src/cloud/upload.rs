@@ -186,6 +186,8 @@ impl Capabilities {
                 SourceKind::OpenCodeSqliteV2,
                 SourceKind::CodexJsonl,
                 SourceKind::PiJsonl,
+                SourceKind::CursorIdeComposer,
+                SourceKind::CursorCliAgentJsonl,
             ]
             .iter()
             .any(|kind| formats.contains(kind.upload_names().1))
@@ -277,6 +279,7 @@ pub(super) struct HttpTransport<'a> {
     source: Option<Source>,
     resource_origin: String,
     membership_generation: Option<String>,
+    expected_file_generation: Option<&'a str>,
     pub failure: Option<Failure>,
     pub retry_after: Option<Duration>,
     /// Status and renewal both refused the exact frozen binding with a conflict.
@@ -301,6 +304,7 @@ impl<'a> HttpTransport<'a> {
             source,
             resource_origin: resource_origin.into(),
             membership_generation: None,
+            expected_file_generation: None,
             failure: None,
             retry_after: None,
             status_renewal_conflict: false,
@@ -310,6 +314,14 @@ impl<'a> HttpTransport<'a> {
     /// Pin the Team membership from the saved job or explicit folder approval.
     pub(super) fn with_membership_generation(mut self, generation: Option<&str>) -> Self {
         self.membership_generation = generation.map(str::to_owned);
+        self
+    }
+
+    /// Bind the local job observation to the file handles the spool pins.
+    pub(super) fn with_expected_file_generation(mut self, observation: &'a str) -> Self {
+        self.expected_file_generation = observation
+            .starts_with(antiburn_cloud_capture::FILE_GENERATION_PREFIX)
+            .then_some(observation);
         self
     }
 
@@ -596,6 +608,10 @@ fn signed_request(
 }
 
 impl Transport for HttpTransport<'_> {
+    fn expected_file_generation(&self) -> Option<&str> {
+        self.expected_file_generation
+    }
+
     fn reserve(
         &mut self,
         identity: &CaptureIdentity,

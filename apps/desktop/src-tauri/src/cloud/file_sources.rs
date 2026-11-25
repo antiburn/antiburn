@@ -1,8 +1,14 @@
-//! Find Codex and Pi session files in the provider roots used by local discovery.
-//! Filenames supply identity hints; the exporters prove the first owned header.
+//! Find project-only session sources in the provider roots used by local discovery.
+//! The capture library validates native ownership before reading payload.
 
 use crate::store::cloud_capture::{SourceKind, SourceSelection};
 use antiburn_cloud_capture::{Candidate, Error, Limits, reopen_codex, reopen_pi};
+#[cfg(unix)]
+use antiburn_cloud_capture::{
+    discover_cursor_cli_page, discover_cursor_ide_page, reopen_cursor_cli, reopen_cursor_ide,
+};
+#[cfg(unix)]
+use antiburn_local::discovery::agents::cursor::DISK_CURSOR;
 use antiburn_local::discovery::{
     AgentExplorer,
     agents::{codex::CodexExplorer, omp::OmpExplorer, pi::PiExplorer},
@@ -15,16 +21,16 @@ use std::{
 
 /// Reuse local provider root selection, including supported environment overrides.
 /// An OMP root cannot be selected as Pi even if both adapters name it.
-pub(super) fn roots() -> Vec<SourceSelection> {
+pub(super) fn roots() -> (Vec<SourceSelection>, bool) {
     let Some(home) = home_dir() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let omp = OmpExplorer
         .watch_roots(&home)
         .into_iter()
         .filter_map(|root| root.path.canonicalize().ok())
         .collect::<Vec<_>>();
-    [
+    let roots: Vec<_> = [
         (SourceKind::CodexJsonl, CodexExplorer.watch_roots(&home)),
         (SourceKind::PiJsonl, PiExplorer.watch_roots(&home)),
     ]
@@ -50,7 +56,80 @@ pub(super) fn roots() -> Vec<SourceSelection> {
             }
         })
     })
-    .collect()
+    .collect();
+    #[cfg(unix)]
+    {
+        let (cursor, partial) = cursor_roots(&home);
+        (roots.into_iter().chain(cursor).collect(), partial)
+    }
+    #[cfg(not(unix))]
+    (roots, false)
+}
+
+/// List exact Cursor storage roots without probing session bodies or decoding project paths.
+#[cfg(unix)]
+fn cursor_roots(home: &Path) -> (Vec<SourceSelection>, bool) {
+    let paths = DISK_CURSOR.surface_paths(home);
+    let limit = Limits::default().discovery_entries;
+    let mut roots = Vec::new();
+    let mut partial = false;
+    for (source_kind, roots_for_kind) in [
+        (SourceKind::CursorIdeComposer, paths.ide_desktop),
+        (SourceKind::CursorCliAgentJsonl, paths.cli),
+    ] {
+        for parent in roots_for_kind {
+            if source_kind == SourceKind::CursorCliAgentJsonl
+                && parent.file_name().is_none_or(|name| name != "projects")
+            {
+                continue;
+            }
+            let children = match std::fs::read_dir(&parent) {
+                Ok(children) => children,
+                Err(error) => {
+                    partial |= error.kind() != std::io::ErrorKind::NotFound;
+                    continue;
+                }
+            };
+            for (index, entry) in children.take(limit + 1).enumerate() {
+                if index == limit {
+                    partial = true;
+                    break;
+                }
+                let Ok(entry) = entry else {
+                    partial = true;
+                    continue;
+                };
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => {}
+                    Ok(_) => continue,
+                    Err(_) => {
+                        partial = true;
+                        continue;
+                    }
+                }
+                let path = if source_kind == SourceKind::CursorCliAgentJsonl {
+                    entry.path().join("agent-transcripts")
+                } else {
+                    let path = entry.path();
+                    if !path.join("workspace.json").is_file() || !path.join("state.vscdb").is_file()
+                    {
+                        continue;
+                    }
+                    path
+                };
+                if path.is_dir()
+                    && path.canonicalize().ok().as_deref() == Some(&path)
+                    && let Some(path) = path.to_str()
+                {
+                    roots.push(SourceSelection {
+                        source_kind,
+                        path: path.into(),
+                    });
+                }
+            }
+        }
+    }
+    (roots, partial)
 }
 
 /// Return one native candidate per unambiguous filename ID, within the directory
@@ -109,6 +188,8 @@ pub(super) struct Page {
     pub(super) candidates: Vec<Candidate>,
     pub(super) next_cursor: Option<String>,
     pub(super) partial: bool,
+    /// Budget used, including entries that did not produce candidates.
+    pub(super) visited: usize,
 }
 
 /// Keep healthy candidates when another file cannot be opened or has a bad header.
@@ -119,34 +200,137 @@ pub(super) fn discover_page(
     after: Option<&str>,
     limits: &Limits,
 ) -> Result<Page, Error> {
+    #[cfg(unix)]
+    match kind {
+        SourceKind::CursorIdeComposer => {
+            let page = discover_cursor_ide_page(root, after, limits)?;
+            return Ok(Page {
+                // The provider does not report how many IDs it checked.
+                visited: limits.discovery_sessions,
+                candidates: page.candidates,
+                next_cursor: page.next_cursor,
+                partial: page.partial,
+            });
+        }
+        SourceKind::CursorCliAgentJsonl => {
+            let page = discover_cursor_cli_page(root, after, limits)?;
+            return Ok(Page {
+                candidates: page.candidates,
+                next_cursor: page.next_cursor,
+                partial: page.partial,
+                visited: page.visited,
+            });
+        }
+        _ => {}
+    }
     let mut candidates = Vec::new();
     let mut cursor = None;
     let mut partial = false;
+    let mut visited = 0;
     for (id, path) in paths(kind, root, limits)?.into_iter().rev() {
         if after.is_some_and(|after| id.as_str() >= after) {
             continue;
         }
+        if visited == limits.discovery_sessions {
+            return Ok(Page {
+                visited,
+                candidates,
+                next_cursor: cursor,
+                partial,
+            });
+        }
+        visited += 1;
         if let Some(path) = path
             && let Ok(candidate) = open(kind, &path, &id, limits)
         {
-            if candidates.len() == limits.discovery_sessions {
-                return Ok(Page {
-                    candidates,
-                    next_cursor: cursor,
-                    partial,
-                });
-            }
             candidates.push(candidate);
-            cursor = Some(id);
         } else {
             partial = true;
         }
+        cursor = Some(id);
     }
     Ok(Page {
+        visited,
         candidates,
         next_cursor: None,
         partial,
     })
+}
+
+/// Follow Cursor continuations within setup limits. Keep candidates when the
+/// listing is incomplete, but never use a partial listing as absence evidence.
+pub(super) fn discover_cursor_sources(
+    kind: SourceKind,
+    root: &Path,
+    limits: &Limits,
+    current: &dyn Fn() -> bool,
+) -> Result<Page, Error> {
+    let mut scan = CursorScan::new();
+    let mut page = scan.read(kind, root, limits, current)?;
+    page.partial |= page.next_cursor.is_some();
+    Ok(page)
+}
+
+/// Keep the Cursor page and time limits when a folder scan splits its budget.
+pub(super) struct CursorScan {
+    deadline: std::time::Instant,
+    pages_left: usize,
+    after: Option<String>,
+}
+
+impl CursorScan {
+    pub(super) fn new() -> Self {
+        Self {
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+            pages_left: 64,
+            after: None,
+        }
+    }
+
+    /// Return the continuation when only this read's entry budget runs out.
+    pub(super) fn read(
+        &mut self,
+        kind: SourceKind,
+        root: &Path,
+        limits: &Limits,
+        current: &dyn Fn() -> bool,
+    ) -> Result<Page, Error> {
+        let mut result = Page {
+            candidates: Vec::new(),
+            next_cursor: self.after.take(),
+            partial: false,
+            visited: 0,
+        };
+        while result.visited < limits.discovery_sessions {
+            if !current() {
+                return Err(Error::SourceChanged);
+            }
+            if self.pages_left == 0 || std::time::Instant::now() >= self.deadline {
+                result.next_cursor = None;
+                result.partial = true;
+                break;
+            }
+            self.pages_left -= 1;
+            let page = discover_page(
+                kind,
+                root,
+                result.next_cursor.as_deref(),
+                &Limits {
+                    discovery_sessions: limits.discovery_sessions - result.visited,
+                    ..limits.clone()
+                },
+            )?;
+            result.partial |= page.partial;
+            result.visited += page.visited;
+            result.candidates.extend(page.candidates);
+            result.next_cursor = page.next_cursor;
+            if result.next_cursor.is_none() {
+                return Ok(result);
+            }
+        }
+        self.after.clone_from(&result.next_cursor);
+        Ok(result)
+    }
 }
 
 /// Reopen the exact native ID after a proved pre-capture capacity refusal.
@@ -157,6 +341,22 @@ pub(super) fn reopen(
     key: &str,
     limits: &Limits,
 ) -> Result<Candidate, Error> {
+    #[cfg(unix)]
+    match kind {
+        SourceKind::CursorIdeComposer => {
+            let id = key
+                .strip_prefix("cursor/ide/")
+                .ok_or(Error::InvalidIdentity)?;
+            return reopen_cursor_ide(root, id, limits);
+        }
+        SourceKind::CursorCliAgentJsonl => {
+            let id = key
+                .strip_prefix("cursor/cli/")
+                .ok_or(Error::InvalidIdentity)?;
+            return reopen_cursor_cli(root, id, limits);
+        }
+        _ => {}
+    }
     let id = key
         .strip_prefix(kind.upload_names().0)
         .and_then(|key| key.strip_prefix('/'))

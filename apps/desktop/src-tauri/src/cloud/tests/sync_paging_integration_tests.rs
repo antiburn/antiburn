@@ -114,6 +114,81 @@ fn cloud_scheduler_pages_wait_for_queue_drain_and_use_current_recorded_cwds() {
     assert_eq!(last.source_id(), source_id);
 }
 
+#[cfg(unix)]
+#[test]
+fn cloud_scheduler_routes_cursor_composer_pages_and_tracks_only_owned_rows() {
+    let (temporary, mut policy, project, _) = fixture();
+    let user = temporary.path().canonicalize().unwrap().join("Cursor/User");
+    let workspace = user.join("workspaceStorage/synthetic-workspace");
+    let global_path = user.join("globalStorage/state.vscdb");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(global_path.parent().unwrap()).unwrap();
+    fs::write(
+        workspace.join("workspace.json"),
+        serde_json::json!({ "folder": format!("file://{}", project.display()) }).to_string(),
+    )
+    .unwrap();
+    let local = rusqlite::Connection::open(workspace.join("state.vscdb")).unwrap();
+    local
+        .execute_batch(
+            r#"CREATE TABLE ItemTable(key TEXT PRIMARY KEY, value BLOB);
+           INSERT INTO ItemTable VALUES (
+             'composer.composerData','{"allComposers":[{"composerId":"synthetic-main"}]}'
+           );"#,
+        )
+        .unwrap();
+    let global = rusqlite::Connection::open(&global_path).unwrap();
+    global.execute_batch(
+        r#"CREATE TABLE cursorDiskKV(key TEXT PRIMARY KEY, value BLOB);
+           INSERT INTO cursorDiskKV VALUES (
+             'composerData:synthetic-main','{"fullConversationHeadersOnly":[{"bubbleId":"main"}]}'
+           );
+           INSERT INTO cursorDiskKV VALUES ('bubbleId:synthetic-main:main','{"type":1,"text":"before"}');
+           INSERT INTO cursorDiskKV VALUES ('bubbleId:synthetic-other:main','{"type":1,"text":"before"}');"#,
+    )
+    .unwrap();
+    let root = workspace.to_str().unwrap();
+    let kind = SourceKind::CursorIdeComposer;
+    policy.roots[0].source_kind = kind;
+    policy.roots[0].path = root.into();
+    policy.projects[0].source_kind = kind;
+    policy.projects[0].source_path = root.into();
+    let complete = discover_root(kind, root, 2).unwrap();
+    assert_eq!(complete[0].native_session_id(), "synthetic-main");
+    let native = file_sources::reopen(
+        kind,
+        &workspace,
+        "cursor/ide/synthetic-main",
+        &metadata_limits(),
+    )
+    .unwrap();
+    assert_eq!(native.source_id(), complete[0].source_id());
+
+    let observed = || {
+        let selected = discover_policy(&policy, &|| true).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].candidate.source_id(),
+            "scope/cursor/ide/synthetic-main"
+        );
+        selected[0].observation.clone()
+    };
+    let first = observed();
+    assert!(first.starts_with("cursor-ide-native-v1:"));
+    global.execute(
+        "UPDATE cursorDiskKV SET value='unrelated change' WHERE key='bubbleId:synthetic-other:main'",
+        [],
+    ).unwrap();
+    assert_eq!(observed(), first);
+    global
+        .execute(
+            "UPDATE cursorDiskKV SET value='owned change' WHERE key='bubbleId:synthetic-main:main'",
+            [],
+        )
+        .unwrap();
+    assert_ne!(observed(), first);
+}
+
 #[test]
 fn cloud_scheduler_backfill_starts_over_and_retains_its_own_page_position() {
     let (_directory, policy, _, _) = fixture();
@@ -205,6 +280,72 @@ fn cloud_scheduler_pages_multiple_claude_roots_without_discarding_earlier_select
         .map(|selection| selection.candidate.source_id())
         .collect();
     assert_eq!(ids.len(), 600);
+}
+
+#[test]
+fn cloud_scheduler_continues_at_the_first_unread_claude_source_after_its_read_budget() {
+    let (directory, mut policy, project, _) = fixture();
+    let root = directory.path().canonicalize().unwrap().join("claude");
+    fs::create_dir(&root).unwrap();
+    let oversized = fs::File::create(root.join("a.jsonl")).unwrap();
+    oversized.set_len(65 * 1024 * 1024).unwrap();
+    fs::write(
+        root.join("b.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({ "sessionId": "b", "cwd": project, "type": "user" })
+        ),
+    )
+    .unwrap();
+    policy.roots = vec![RootScope {
+        path: root.to_str().unwrap().into(),
+        source_scope_id: "scope".into(),
+        source_kind: SourceKind::ClaudeJsonl,
+    }];
+    policy.projects = vec![ProjectSelection {
+        source_kind: SourceKind::ClaudeJsonl,
+        source_path: root.to_str().unwrap().into(),
+        project_path: project.to_str().unwrap().into(),
+    }];
+
+    let mut cache = super::super::projects::Cache::default();
+    let (first, cursor, _) =
+        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    assert!(first.is_empty());
+    let cursor = cursor.expect("the unread candidate needs a new page");
+    assert_eq!(cursor.after.as_deref(), Some("a"));
+    let (second, next, coverage) =
+        discover_policy_page(&policy, &|| true, &mut cache, &cursor).unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].candidate.native_session_id(), "b");
+    assert!(next.is_none());
+    assert!(!coverage.partial && !coverage.blocked);
+}
+
+#[test]
+fn cloud_scheduler_unavailable_root_does_not_skip_healthy_roots() {
+    let (directory, mut policy, _, _) = fixture();
+    policy.roots.insert(
+        0,
+        RootScope {
+            path: directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("unavailable")
+                .to_str()
+                .unwrap()
+                .into(),
+            source_scope_id: "unavailable-scope".into(),
+            source_kind: SourceKind::ClaudeJsonl,
+        },
+    );
+    let mut cache = super::super::projects::Cache::default();
+    let (first, next, coverage) =
+        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    assert!(coverage.blocked);
+    assert!(next.is_some());
+    assert_eq!(first.len(), 512);
 }
 
 #[test]

@@ -34,6 +34,12 @@ pub(crate) fn stream_spec(
             CaptureSourceKind::OpenCodeSqliteV2 => {
                 ("native-rows", "native_rows", "antiburn-sqlite-native")
             }
+            CaptureSourceKind::CursorIdeComposer => {
+                ("cursor-ide-rows", "native_rows", "antiburn-sqlite-native")
+            }
+            CaptureSourceKind::CursorCliAgentJsonl => {
+                ("transcript", "native_transcript", "cursor-cli-jsonl")
+            }
         }
     }
 }
@@ -68,6 +74,8 @@ pub(crate) fn validate_manifest(manifest: &CaptureManifest, limits: &Limits) -> 
         ("transcript", "codex-jsonl", 2) => CaptureSourceKind::CodexJsonl,
         ("transcript", "pi-jsonl", 2) => CaptureSourceKind::PiJsonl,
         ("native-rows", "antiburn-sqlite-native", 2) => CaptureSourceKind::OpenCodeSqliteV2,
+        ("cursor-ide-rows", "antiburn-sqlite-native", 2) => CaptureSourceKind::CursorIdeComposer,
+        ("transcript", "cursor-cli-jsonl", 2) => CaptureSourceKind::CursorCliAgentJsonl,
         _ => return Err(Error::CorruptSpool),
     };
     let mut total = 0u64;

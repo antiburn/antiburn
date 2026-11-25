@@ -17,6 +17,14 @@ fn cloud_provider_wire_values_match_native_candidate_kinds() {
         ),
         (CaptureSourceKind::CodexJsonl, "\"codex_jsonl\""),
         (CaptureSourceKind::PiJsonl, "\"pi_jsonl\""),
+        (
+            CaptureSourceKind::CursorCliAgentJsonl,
+            "\"cursor_cli_agent_jsonl\"",
+        ),
+        (
+            CaptureSourceKind::CursorIdeComposer,
+            "\"cursor_ide_composer\"",
+        ),
     ] {
         let native = SourceKind::from(kind);
         assert_eq!(serde_json::to_string(&native).unwrap(), wire);

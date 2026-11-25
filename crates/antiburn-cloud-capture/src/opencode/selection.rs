@@ -101,6 +101,30 @@ const TABLES: &[TableSpec] = &[
     },
 ];
 
+const AUTOMATION_COLUMNS: &[&str] = &[
+    "id",
+    "project_id",
+    "session_id",
+    "directory",
+    "name",
+    "trigger",
+    "tz",
+    "action",
+    "status",
+    "next_due_at",
+    "expires_at",
+    "run_count",
+    "failures",
+    "last_run_at",
+    "last_message_id",
+    "last_outcome",
+    "last_output",
+    "retry_at",
+    "state",
+    "time_created",
+    "time_updated",
+];
+
 /// Ordered native row identifiers. They are transient read locators, not keys.
 pub(super) struct SelectedTable {
     pub name: &'static str,
@@ -158,6 +182,12 @@ impl Schema {
                 continue;
             }
             let fields = table_columns(connection, &name, &mut schema_bytes)?;
+            if name == "automation" {
+                // The creator session does not own scheduler state.
+                validate_automation_table(connection, &fields)?;
+                columns.insert(name, BTreeSet::new());
+                continue;
+            }
             let known = TABLES.iter().any(|spec| spec.name == name)
                 || matches!(name.as_str(), "blob" | "instruction_blob");
             if known {
@@ -673,6 +703,22 @@ fn unique_key(connection: &Connection, table: &str, columns: &[&str]) -> Result<
 
 fn excluded_table(name: &str) -> bool {
     matches!(name, "session" | "message" | "part" | "schedule")
+}
+
+/// Exclude the producer's scheduler table without accepting another layout
+/// that reuses its name. The event-position migration adds one optional column.
+fn validate_automation_table(connection: &Connection, columns: &BTreeSet<String>) -> Result<()> {
+    ordinary_table(connection, "automation")?;
+    if columns.len() != AUTOMATION_COLUMNS.len() + usize::from(columns.contains("event_position"))
+        || !AUTOMATION_COLUMNS
+            .iter()
+            .all(|name| columns.contains(*name))
+        || !unique_key(connection, "automation", &["id"])?
+        || references_owned_table(connection, "automation")?
+    {
+        return Err(Error::UnsupportedSource);
+    }
+    Ok(())
 }
 
 fn references_owned_table(connection: &Connection, table: &str) -> Result<bool> {

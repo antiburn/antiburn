@@ -177,7 +177,10 @@ impl Host {
                     .map_err(|_| "Could not list the selected Claude session folder.")?,
                 SourceKind::OpenCodeSqliteV2 => discover_opencode(Path::new(&root.path), &limits)
                     .map_err(|_| "Could not list the selected OpenCode V2 database. Check its access and supported schema.")?,
-                SourceKind::CodexJsonl | SourceKind::PiJsonl => {
+                SourceKind::CodexJsonl
+                | SourceKind::PiJsonl
+                | SourceKind::CursorIdeComposer
+                | SourceKind::CursorCliAgentJsonl => {
                     return Err("Use project sync for this session provider.".into());
                 }
             };
@@ -292,7 +295,7 @@ pub fn validate_selection(
     }
     for root in &roots {
         let path = Path::new(&root.path);
-        if root.source_kind.is_codex_or_pi() {
+        if root.source_kind.is_project_only() {
             return Err("Use project sync for this session provider.".into());
         }
         if !path.is_absolute()

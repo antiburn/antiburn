@@ -21,6 +21,48 @@ pub const RECORD_BYTES: u64 = 512 * 1024;
 /// Maximum queue entries, including unacknowledged accepted receipts.
 pub const MAX_QUEUE_ENTRIES: usize = 512;
 
+/// Prefix for local file generation keys. These keys never enter the wire format.
+pub const FILE_GENERATION_PREFIX: &str = "file-generation-v1:";
+
+/// Hash metadata for one transcript and its optional companion, in that order.
+/// The spool repeats this check on the descriptors it pins before reservation.
+/// A key is a local version check, not upload permission or a content digest.
+pub fn file_generation_key(files: &[std::fs::Metadata]) -> Result<String> {
+    #[cfg(unix)]
+    {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::MetadataExt;
+
+        if files.is_empty()
+            || files.len() > 2
+            || files
+                .iter()
+                .any(|file| !file.is_file() || file.nlink() != 1)
+        {
+            return Err(Error::InvalidSource);
+        }
+        let mut digest = Sha256::new();
+        for file in files {
+            digest.update(file.dev().to_le_bytes());
+            digest.update(file.ino().to_le_bytes());
+            digest.update(file.len().to_le_bytes());
+            digest.update(file.mtime().to_le_bytes());
+            digest.update(file.mtime_nsec().to_le_bytes());
+            digest.update(file.ctime().to_le_bytes());
+            digest.update(file.ctime_nsec().to_le_bytes());
+        }
+        Ok(format!(
+            "{FILE_GENERATION_PREFIX}{}",
+            hex(&digest.finalize())
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = files;
+        Err(Error::UnsupportedPlatform)
+    }
+}
+
 fn deserialize_version<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<u32, D::Error> {
@@ -626,6 +668,12 @@ pub enum TransportError {
 /// diagnostics. Errors can follow remote success, so retry and status must be
 /// safe under the same frozen inputs.
 pub trait Transport {
+    /// Supply the local file generation for a new file capture or capacity retry.
+    /// The spool checks it before reservation and never uses it on upload resume.
+    fn expected_file_generation(&self) -> Option<&str> {
+        None
+    }
+
     /// Reserve the fixed identity before full desktop capture reads source content.
     ///
     /// A separate, authorized local project-evidence scan can read bounded native
@@ -733,6 +781,9 @@ pub enum Error {
     InvalidMetadata,
     /// A pinned file generation or admitted database binding changed.
     SourceChanged,
+    /// The expected generation did not match the pin. No new entry or
+    /// reservation was created. An existing capacity-retry entry remains intact.
+    FileGenerationChanged,
     /// A configured byte, count, size, or execution bound was reached.
     Limit,
     /// Queue or disk capacity refused admission before publication or reservation.

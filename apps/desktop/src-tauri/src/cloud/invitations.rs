@@ -206,7 +206,7 @@ pub(crate) async fn cloud_invitations(
     let work = controller.blocking.clone();
     // The signed-in event can reach the panel before the callback frees the slot.
     let priority = if matches!(request, Action::List) {
-        Priority::Read(LIST_ADMISSION_WAIT)
+        Priority::Wait(LIST_ADMISSION_WAIT)
     } else {
         Priority::Normal
     };
@@ -226,7 +226,7 @@ pub(crate) async fn cloud_invitations(
             .map_err(|_| "Could not open Cloud invitations.")?;
         let status = engine.status;
         let result =
-            engine.with_invitation_access(&account_id, &current, |config, bearer, can_send| {
+            engine.with_invitation_access(&account_id, current, |config, bearer, can_send| {
                 let device = DeviceRequest {
                     config,
                     bearer,

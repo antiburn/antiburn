@@ -19,6 +19,16 @@ use std::path::Path;
 
 const MAX_DIRECTORY_FILES: usize = 132;
 
+/// Match the job's observation to the same descriptors used for capture.
+fn verify_file_generation(expected: Option<&str>, pins: &[Metadata]) -> Result<()> {
+    if let Some(expected) = expected
+        && file_generation_key(pins)? != expected
+    {
+        return Err(Error::FileGenerationChanged);
+    }
+    Ok(())
+}
+
 /// Retain file pins across reservation; SQLite payload opens only afterward.
 enum PreparedSource<'a> {
     Claude {
@@ -32,6 +42,12 @@ enum PreparedSource<'a> {
     },
     #[cfg(unix)]
     OpenCode(&'a crate::opencode::OpenCodeSource),
+    #[cfg(unix)]
+    Cursor {
+        source: &'a crate::cursor::CursorSource,
+        selection: &'a ProjectSelection,
+        pin: Option<crate::cursor::CursorPin>,
+    },
 }
 
 /// Private saved bodies and durable queue records owned by one executor.
@@ -223,6 +239,7 @@ impl Spool {
                         .ok_or(Error::Limit)?;
                     pinned.push(metadata);
                 }
+                verify_file_generation(transport.expected_file_generation(), &pinned)?;
                 let count = files.len();
                 (
                     PreparedSource::Claude {
@@ -236,6 +253,10 @@ impl Spool {
             }
             CandidateSource::Codex(source) | CandidateSource::Pi(source) => {
                 let (file, pinned) = source.pin(&self.limits)?;
+                verify_file_generation(
+                    transport.expected_file_generation(),
+                    std::slice::from_ref(&pinned),
+                )?;
                 let size = pinned.len();
                 (PreparedSource::HeaderFile { file, pinned }, size, 1)
             }
@@ -245,6 +266,32 @@ impl Spool {
                 self.limits.source_bytes,
                 1,
             ),
+            #[cfg(unix)]
+            CandidateSource::Cursor(source) => {
+                let selection = candidate
+                    .project_selection
+                    .as_ref()
+                    .ok_or(Error::InvalidSource)?;
+                let pin = source.pin(&self.limits)?;
+                if let Some(pin) = &pin {
+                    verify_file_generation(
+                        transport.expected_file_generation(),
+                        std::slice::from_ref(pin.metadata()),
+                    )?;
+                }
+                let bytes = pin
+                    .as_ref()
+                    .map_or(self.limits.source_bytes, crate::cursor::CursorPin::len);
+                (
+                    PreparedSource::Cursor {
+                        source,
+                        selection,
+                        pin,
+                    },
+                    bytes,
+                    1,
+                )
+            }
         };
         let maximum_expanded = native_bytes
             .checked_add(METADATA_BYTES)
@@ -295,6 +342,12 @@ impl Spool {
             PreparedSource::OpenCode(source) => {
                 capture_opencode(&directory, candidate, source, &self.limits, sections)?
             }
+            #[cfg(unix)]
+            PreparedSource::Cursor {
+                source,
+                selection,
+                pin,
+            } => capture_cursor(&directory, source, selection, pin, &self.limits, sections)?,
         };
         validate_section_bindings(&metadata.sections, &streams)?;
         let metadata_fingerprint = metadata.stable_fingerprint()?;
@@ -940,6 +993,27 @@ fn capture_opencode(
         sections,
     };
     Ok((vec![stream], metadata))
+}
+
+#[cfg(unix)]
+/// Save only the selected Cursor native stream after reservation.
+fn capture_cursor(
+    directory: &Directory,
+    source: &crate::cursor::CursorSource,
+    selection: &ProjectSelection,
+    pin: Option<crate::cursor::CursorPin>,
+    limits: &Limits,
+    sections: MetadataSections,
+) -> Result<(Vec<CapturedStream>, CaptureMetadata)> {
+    let (id, role, schema) = stream_spec(source.kind(), 0, 2);
+    let maximum_compressed = limits.source_bytes + limits.source_bytes / 100 + 1024;
+    let mut stream = ChunkStream::new(directory, id, maximum_compressed);
+    source.export(limits, selection, pin, |bytes| stream.write(bytes))?;
+    selection.verify_directories()?;
+    Ok((
+        vec![stream.finish(role, schema)?],
+        source.metadata(sections),
+    ))
 }
 
 /// Attribute only owned runtime versions and directly proved native relationships.
