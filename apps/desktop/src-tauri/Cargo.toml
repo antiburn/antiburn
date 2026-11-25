@@ -170,7 +170,7 @@ tracing = "0.1"
 # The reset time a Claude limit error states is a local clock and a zone
 # name. Resolving it to an instant needs a zone database, which `time`
 # does not carry.
-jiff = "0.2"
+jiff = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # Runtime scheduling and async process I/O. The non-default Cloud feature adds net.
 tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time", "process", "io-util"] }
@@ -182,7 +182,7 @@ getrandom = "0.4"
 # the scan watcher (`src/scan/watch.rs`). Default features: the platform
 # backend each OS needs, with no extra channel crate (`crossbeam-channel`,
 # `flume`) — the watcher forwards events over a `std::sync::mpsc` channel.
-notify = "8"
+notify = "9"
 # A cross-platform PTY for the Claude credential-refresh touch
 # (`provider_usage/live/sources/claude_touch.rs`). Nothing already in the tree
 # can allocate a PTY, and the Claude CLI refreshes its token only when it runs
