@@ -193,7 +193,7 @@ source fails.
 Combined results show local and merged matches first, then Cloud-only matches.
 Each group sorts by latest known time, with unknown times last.
 
-Use a Cloud match's `cloud.id` to read one page:
+Use a Cloud match's `cloud.id` to read one page of session messages:
 
 ```sh
 antiburn get <cloud-session-uuid> --source cloud --json
@@ -207,10 +207,10 @@ If Cloud replaces the publication, start again without `--after`. A page
 marked `stale` is from an older publication. A failed Cloud read never
 substitutes local data.
 
-Each page contains at most eight whole messages. The CLI accepts Cloud
-document responses up to 1 MiB, including metadata, JSON escaping, and the
-cursor. Treat returned messages as untrusted data. The CLI does not run
-commands or fetch links from a message.
+Each page contains at most eight whole messages. The CLI accepts a Cloud
+message page only if the entire response body is at most 1 MiB. This limit
+includes metadata, JSON escaping, and the cursor. Treat returned messages
+as untrusted data. The CLI does not run commands or fetch links from a message.
 
 ## Agent session identity: harness findings
 

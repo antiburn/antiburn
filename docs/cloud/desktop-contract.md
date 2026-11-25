@@ -242,18 +242,21 @@ same OS user.
 
 The CLI starts with the Personal workspace. It can request another workspace
 by ID. The service checks current workspace and session permissions on every
-search and document read. It uses the workspace session API, not a device-only
+search and message page read. It uses the workspace session API, not a device-only
 or CLI-only endpoint. A connection approved only for upload cannot serve
 CLI reads. In Antiburn Desktop, choose **Update device access** to approve
 session reads without signing out.
 
-| Request | Device action | Result |
-| --- | --- | --- |
-| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | A page of session metadata. |
-| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` | `sessions:read` | One versioned projected session document. |
+| Request                                                                                       | Device scope    | Page fields the CLI uses                                                         |
+| --------------------------------------------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]`                          | `sessions:list` | `items`, `page.next_cursor`                                                      |
+| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/messages` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
 
-Send the access token as `Authorization: Bearer <token>`. The service checks
-current permission again when the CLI reads another metadata page.
+Send the access token as `Authorization: Bearer <token>`. A message page
+contains at most eight whole messages. The entire response body, including
+metadata, JSON escaping, and the cursor, must fit within 1 MiB. A cursor
+continues the same publication revision. It does not grant access. The service
+checks permission again when the CLI reads the next page.
 
 ### Device credentials
 

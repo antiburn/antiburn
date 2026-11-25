@@ -79,7 +79,7 @@ impl CloudClient {
         let mut url = self.origin.clone();
         url.set_path(&format!("/v1/workspaces/{}/sessions", self.workspace_id));
         if let Some(session_id) = session_id {
-            url.set_path(&format!("{}/{session_id}/document", url.path()));
+            url.set_path(&format!("{}/{session_id}/messages", url.path()));
         }
         self.http
             .get(url)
@@ -170,7 +170,7 @@ pub(crate) async fn get(
                 || page.messages.is_empty()
         })
     {
-        return Err("Cloud document response does not match the request".into());
+        return Err("Cloud message page does not match the request".into());
     }
     let next_cursor = page.page.next_cursor.map(|token| {
         format!(
@@ -277,7 +277,7 @@ async fn read_json<T: DeserializeOwned>(
             return Err("Cloud document changed. Start again without --after".into());
         }
         StatusCode::UNPROCESSABLE_ENTITY => {
-            return Err("Cloud does not support reading this document format or size".into());
+            return Err("Cloud cannot read messages for this session format or size".into());
         }
         _ => return Err("Cloud request failed".into()),
     }

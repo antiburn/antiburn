@@ -354,7 +354,7 @@ fn a_cloud_access_denial_never_returns_local_content() {
     assert_private_error(output, "Cloud access denied");
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 }
 
@@ -639,7 +639,7 @@ fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
     assert_eq!(first["document"]["messages"][0]["role"], "user");
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 
     let cursor = first["document"]["next_cursor"].as_str().unwrap();
@@ -657,7 +657,7 @@ fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
         assert_cloud_request(
             server,
             &format!(
-                "{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document?page%5Bafter%5D={CURSOR}"
+                "{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages?page%5Bafter%5D={CURSOR}"
             ),
         );
     }
@@ -684,7 +684,7 @@ fn reads_a_complete_document_page_at_the_size_limit() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 }
 
@@ -708,7 +708,7 @@ fn displays_one_cloud_document_page_in_text_mode() {
     )));
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 }
 
@@ -722,7 +722,7 @@ fn rejects_a_different_document() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 }
 
@@ -730,7 +730,7 @@ fn rejects_a_different_document() {
 fn restarts_without_the_cursor_after_publication_replacement() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
-    let route = format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document");
+    let route = format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages");
     let args = ["get", SESSION, "--source", "cloud"];
 
     let server = serve_on(
@@ -792,7 +792,7 @@ fn rejects_an_oversized_declared_document_body_before_reading_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 }
 
@@ -819,7 +819,7 @@ fn rejects_an_oversized_chunked_document_body_without_showing_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 }
 
@@ -833,6 +833,6 @@ fn rejects_a_malformed_success_body_without_showing_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
     );
 }

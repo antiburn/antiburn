@@ -42,7 +42,7 @@ pub enum Command {
     },
     /// Search session IDs and titles. Use --json for structured results.
     Search(SearchArgs),
-    /// Read exact session metadata or one page of a Cloud document.
+    /// Read exact session metadata or one page of Cloud session messages.
     Get(GetArgs),
 }
 
@@ -90,7 +90,7 @@ pub(crate) enum SearchMode {
 pub struct GetArgs {
     /// The local session ID or the Cloud UUID returned by search.
     pub(crate) session_id: String,
-    /// Select local metadata or an explicit Cloud document.
+    /// Select local metadata or one page of Cloud session messages.
     #[arg(long, value_enum, default_value_t = GetSource::Local)]
     pub(crate) source: GetSource,
     /// Narrow a local ID to the agent returned by search.
@@ -112,7 +112,7 @@ pub struct GetArgs {
 pub(crate) enum GetSource {
     /// Read local metadata, not the transcript.
     Local,
-    /// Read one page of the Cloud document. Never substitute local data.
+    /// Read one page of Cloud session messages. Never substitute local data.
     #[cfg(feature = "cloud")]
     #[value(hide = !cfg!(unix))]
     Cloud,
