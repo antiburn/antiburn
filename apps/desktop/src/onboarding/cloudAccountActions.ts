@@ -10,7 +10,9 @@ export function createCloudAccountActions(
   },
   getPort: () => CloudPort,
 ) {
+  let pendingClaims = 0
   return {
+    isClaimPending: () => pendingClaims > 0,
     openDashboard: () =>
       getPort().openDashboard?.() ??
       Promise.reject(new Error("The Cloud dashboard is unavailable.")),
@@ -29,18 +31,24 @@ export function createCloudAccountActions(
       const binding = projectBinding(before, true)
       if (!binding || !port.teamJoin || !before.dashboardAvailable || !before.teamJoinAllowed)
         throw new Error("team_join_unavailable")
-      const result = await port.teamJoin(binding, action)
-      const { cloud: after } = session.getSnapshot()
-      if (
-        after.status !== "signed_in" ||
-        !after.teamJoinAllowed ||
-        after.identity?.id !== before.identity?.id ||
-        after.grantExpiresAt !== before.grantExpiresAt
-      )
-        throw new Error("team_join_account_changed")
-      if (result.status === "joined" && session.projectSyncSupported)
-        void session.retryFolderScope(true)
-      return result
+      const isClaim = action.action === "claim"
+      if (isClaim) pendingClaims++
+      try {
+        const result = await port.teamJoin(binding, action)
+        const { cloud: after } = session.getSnapshot()
+        if (
+          after.status !== "signed_in" ||
+          !after.teamJoinAllowed ||
+          after.identity?.id !== before.identity?.id ||
+          after.grantExpiresAt !== before.grantExpiresAt
+        )
+          throw new Error("team_join_account_changed")
+        if (result.status === "joined" && session.projectSyncSupported)
+          void session.retryFolderScope(true)
+        return result
+      } finally {
+        if (isClaim) pendingClaims--
+      }
     },
   }
 }

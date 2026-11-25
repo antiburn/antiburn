@@ -115,12 +115,23 @@ fn cloud_http_team_join_uses_only_the_resource_and_device_proof() {
             json!({"status": "started", "attemptId": id}),
         ),
         (
-            Action::SelectEmail {
-                attempt_id: id.into(),
-                address: "member@example.com".into(),
-            },
+            serde_json::from_value(json!({
+                "action": "selectEmail", "attemptId": id, "address": "member@example.com",
+            }))
+            .unwrap(),
             format!("PUT /v1/devices/team-join-attempts/{id}/email HTTP/1.1"),
             Some(json!({"address": "member@example.com"})),
+            wire.clone(),
+            ready.clone(),
+        ),
+        (
+            serde_json::from_value(json!({
+                "action": "selectEmail", "attemptId": id, "address": "member@example.com",
+                "resend": true,
+            }))
+            .unwrap(),
+            format!("PUT /v1/devices/team-join-attempts/{id}/email HTTP/1.1"),
+            Some(json!({"address": "member@example.com", "resend": true})),
             wire.clone(),
             ready.clone(),
         ),

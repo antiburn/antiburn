@@ -194,7 +194,7 @@ ownership only. Desktop checks that proof before the user can claim membership.
 | --- | --- |
 | `POST /v1/devices/team-join-attempts` | `{token}` |
 | `POST /v1/devices/team-join-attempts/{attempt_id}/resume` | None |
-| `PUT /v1/devices/team-join-attempts/{attempt_id}/email` | `{address}` |
+| `PUT /v1/devices/team-join-attempts/{attempt_id}/email` | `{address}`, or `{address,resend:true}` to request another email |
 | `POST /v1/devices/team-join-attempts/{attempt_id}/claim` | `{email_id}` |
 
 Every request uses the current access bearer with `workspaces:join`. Desktop

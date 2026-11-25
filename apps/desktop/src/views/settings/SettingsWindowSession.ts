@@ -67,10 +67,20 @@ export class SettingsWindowSession {
 
   /** The sidebar's `onChange`. */
   setPane = (pane: SettingsPane): void => {
+    if (!this.canSelectPane(pane)) return
     this.paneEventRevision += 1
     this.paneResolved = true
     this.update({ control: null })
     this.selectVisiblePane(pane)
+  }
+
+  /** Keep the current join view mounted until its claim returns. */
+  private canSelectPane(pane: SettingsPane): boolean {
+    return (
+      this.snapshot.pane !== "sessions" ||
+      pane === "sessions" ||
+      !this.cloudFolders.accountActions.isClaimPending()
+    )
   }
 
   private start = async (): Promise<void> => {
@@ -127,7 +137,7 @@ export class SettingsWindowSession {
       this.paneEventRevision += 1
       void takeSettingsPane().catch(() => {})
       const target = parseSettingsSearchRequest(requested)
-      if (target) {
+      if (target && this.canSelectPane(target.pane)) {
         this.paneResolved = true
         this.update({ control: target.control, targetRevision: this.paneEventRevision })
         this.selectVisiblePane(target.pane)
@@ -145,6 +155,7 @@ export class SettingsWindowSession {
         if (paneEventRevision !== this.paneEventRevision) return
         this.paneResolved = true
         const target = parseSettingsSearchRequest(requested)
+        if (target && !this.canSelectPane(target.pane)) return
         if (target)
           this.update({ control: target.control, targetRevision: this.paneEventRevision })
         this.selectVisiblePane(target?.pane ?? this.snapshot.pane)

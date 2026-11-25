@@ -277,6 +277,7 @@ export function CloudTeamJoin({
                       action: "selectEmail",
                       attemptId: step.attemptId,
                       address: step.email,
+                      resend: true,
                     })
                   }
                 >

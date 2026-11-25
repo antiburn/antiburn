@@ -467,7 +467,7 @@ export type SyncResult =
 export type CloudTeamJoinAction =
   | { action: "start"; link: string }
   | { action: "resume"; attemptId: string }
-  | { action: "selectEmail"; attemptId: string; address: string }
+  | { action: "selectEmail"; attemptId: string; address: string; resend?: true }
   | { action: "claim"; attemptId: string; emailId: string }
 
 /** The current join step. Membership and upload permission are separate. */

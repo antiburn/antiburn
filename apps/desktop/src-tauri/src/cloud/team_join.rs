@@ -25,6 +25,8 @@ pub(crate) enum Action {
     SelectEmail {
         attempt_id: String,
         address: String,
+        #[serde(default)]
+        resend: bool,
     },
     Claim {
         attempt_id: String,
@@ -129,17 +131,18 @@ pub(super) fn send(config: &Config, access: &str, action: Action) -> Result<Step
         Action::SelectEmail {
             attempt_id,
             address,
+            resend,
         } => {
             let address = address.trim();
             if address.is_empty() || address.len() > 254 || address.chars().any(char::is_control) {
                 return Err(JoinError::InvalidEmail);
             }
-            (
-                Method::PUT,
-                Some(json!({ "address": address })),
-                Some(attempt_id),
-                "email",
-            )
+            let body = if *resend {
+                json!({ "address": address, "resend": true })
+            } else {
+                json!({ "address": address })
+            };
+            (Method::PUT, Some(body), Some(attempt_id), "email")
         }
         Action::Claim {
             attempt_id,

@@ -159,7 +159,12 @@ test("requests verification again and lets the user change the pending address",
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Change email" })).toBeEnabled(),
   )
-  expect(send).toHaveBeenLastCalledWith({ action: "selectEmail", attemptId, address: email })
+  expect(send).toHaveBeenLastCalledWith({
+    action: "selectEmail",
+    attemptId,
+    address: email,
+    resend: true,
+  })
   fireEvent.click(screen.getByRole("button", { name: "Change email" }))
   const field = screen.getByRole("textbox", { name: "Work email" })
   expect(field).toHaveFocus()
