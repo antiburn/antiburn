@@ -1409,10 +1409,7 @@ struct LiveAnthropicTransport {
 impl AnthropicTransport for LiveAnthropicTransport {
     fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError> {
         let sent = claude_request(USAGE_ENDPOINT, access_token).send();
-        log_request(
-            "usage",
-            sent.as_ref().ok().map(|response| response.status()),
-        );
+        log_request("usage", sent.as_ref().ok());
         let response = sent.map_err(|_| ProviderUsageError::Unavailable)?;
         if let Some(error) = http::status_error(response.status()) {
             if error == ProviderUsageError::RateLimited {
@@ -1429,7 +1426,9 @@ impl AnthropicTransport for LiveAnthropicTransport {
 
     #[cfg(feature = "analytics")]
     fn limit_reset(&self, access_token: &str) -> LimitResetFetch {
-        let response = match claude_request(LIMIT_RESET_ENDPOINT, access_token).send() {
+        let sent = claude_request(LIMIT_RESET_ENDPOINT, access_token).send();
+        log_request("limit_reset", sent.as_ref().ok());
+        let response = match sent {
             Ok(response) => response,
             Err(_) => {
                 return LimitResetFetch {
@@ -1464,10 +1463,7 @@ impl AnthropicTransport for LiveAnthropicTransport {
     fn profile(&self, access_token: &str) -> Option<String> {
         cached_profile(&self.profile, access_token, || {
             let sent = claude_request(PROFILE_ENDPOINT, access_token).send();
-            log_request(
-                "profile",
-                sent.as_ref().ok().map(|response| response.status()),
-            );
+            log_request("profile", sent.as_ref().ok());
             let response = sent.ok()?;
             if http::status_error(response.status()).is_some() {
                 return None;
@@ -1501,14 +1497,43 @@ fn token_key(access_token: &str) -> u64 {
     claude_touch::hash(access_token.as_bytes())
 }
 
-/// Log one outgoing request to the Claude usage API. `status` is `None`
-/// when no response arrived. The event contains no token and no body.
-fn log_request(endpoint: &'static str, status: Option<reqwest::StatusCode>) {
-    ::tracing::debug!(
+/// Log a completed Claude HTTP attempt without headers, credentials, or bodies.
+fn log_request(endpoint: &'static str, response: Option<&reqwest::blocking::Response>) {
+    let (retry_after_form, retry_after_seconds) = match response
+        .filter(|response| response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS)
+        .and_then(|response| response.headers().get(reqwest::header::RETRY_AFTER))
+    {
+        None => ("absent", None),
+        Some(header) => match header
+            .to_str()
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+        {
+            Some(seconds) => ("seconds", Some(seconds)),
+            None => ("non_numeric", None),
+        },
+    };
+    log_request_fields(
+        endpoint,
+        response.map(|response| response.status().as_u16()),
+        retry_after_form,
+        retry_after_seconds,
+    );
+}
+
+fn log_request_fields(
+    endpoint: &'static str,
+    status: Option<u16>,
+    retry_after_form: &'static str,
+    retry_after_seconds: Option<u64>,
+) {
+    ::tracing::info!(
         event = "live_usage_request",
         provider = "anthropic",
         endpoint,
-        status = status.map(|status| status.as_u16())
+        status,
+        retry_after_form,
+        retry_after_seconds
     );
 }
 
@@ -2998,6 +3023,63 @@ mod tests {
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.detail, None);
         assert_eq!(outcome.snapshots.len(), 1);
+    }
+
+    #[test]
+    fn release_diagnostics_distinguish_a_429_from_replayed_backoff() {
+        use std::io::Write;
+
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                lock(&self.0).extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .with_writer({
+                let output = output.clone();
+                move || Capture(output.clone())
+            })
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let cooldown = Cooldown::new();
+            let mut requests = 0;
+            let request = || {
+                requests += 1;
+                log_request_fields("usage", Some(429), "seconds", Some(600));
+                Err(FetchFailure {
+                    error: ProviderUsageError::RateLimited,
+                    retry_after: Some(Duration::from_secs(600)),
+                    ..ProviderUsageError::RateLimited.into()
+                })
+            };
+            cooldown.poll(now(), Duration::ZERO, request);
+            for _ in 0..2 {
+                cooldown.poll(now(), Duration::ZERO, || panic!("backoff skips transport"));
+            }
+            assert_eq!(requests, 1);
+            assert!(cooldown.backoff_left_for_test().unwrap() > Duration::from_secs(590));
+            cooldown.open_for_test();
+            cooldown.poll(now(), Duration::ZERO, || Ok(None));
+        });
+        let logs = String::from_utf8(lock(&output).clone()).expect("utf8");
+        assert_eq!(logs.matches("live_usage_request").count(), 1);
+        assert_eq!(logs.matches("decision=\"attempted\"").count(), 2);
+        assert_eq!(logs.matches("reason=\"rate_limit_backoff\"").count(), 2);
+        assert!(logs.contains("status=429"), "{logs}");
+        assert!(logs.contains("retry_after_seconds=600"));
+        assert!(logs.contains("wait_seconds=600"));
+        assert!(!logs.contains("synthetic-token"));
     }
 
     #[test]

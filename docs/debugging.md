@@ -184,8 +184,11 @@ longer cooldown. A login without a usable refresh token reports
 `sign_in_required` without launching Claude or Pi. Missing access with a usable
 refresh token stays eligible for owner refresh. Credential read failures remain
 unknown and retry; they do not prove logout.
-`live_source_failed` also includes the typed error detail. These events contain
-no credentials or CLI output. A settled refresh means the credential carrier
+`live_source_failed` also includes the typed error detail. It reports the
+source outcome on each collection, including replayed cached failures. Count
+`live_usage_request` instead to count Claude HTTP attempts; repeated warnings
+do not prove repeated requests or responses. These events contain no
+credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
 When Claude Desktop is the only Claude app and no Claude Code or Pi login
 exists, the check fails as `authentication` with detail `DesktopOnly`. Claude
@@ -217,11 +220,26 @@ config folder or CLI exists, the check reports `NotSignedIn`, so the meter
 stays visible. The debug event `live_source_absent` records any source that
 returned no reading and no error.
 
-The debug event `live_usage_request` records each request to the Claude usage
-API with its endpoint (`usage` or `profile`) and HTTP status. It contains no
-token or body. The debug event `live_usage_rate_limit_backoff` records each
-rate limit with the count in a row, the wait before the next attempt, and the
-provider's `Retry-After` when it sent one.
+The release INFO event `live_usage_fetch_decision` distinguishes a source
+fetch attempt from a skipped check. It uses fixed provider and source labels,
+the requested `max_age_secs` (not an exact UI surface), and a cached reading's
+`observed_age_secs` when known. A skip has reason `failure_cooldown` or
+`rate_limit_backoff`, a cached error category, and remaining backoff seconds
+when present. Ordinary `fresh_cache` skips use DEBUG to avoid an INFO record
+for each healthy poll. A fetch attempt can use a local CLI cache or fail before
+HTTP; it does not prove an outbound request.
+
+The release INFO event `live_usage_request` records each outbound Claude HTTP
+attempt with endpoint `usage`, `profile`, or (when analytics is built)
+`limit_reset`, and the numeric response status if one arrived. On a 429 it
+records a bounded `Retry-After` form (`seconds`, `non_numeric`, or `absent`)
+and numeric seconds only when parsed. It contains no token, header value, URL,
+or body. The INFO event `live_usage_rate_limit_backoff` records each rate-limit
+outcome with its consecutive count, chosen wait, and parsed provider delay.
+It can follow a fetch with multiple credential carriers; it is not an HTTP
+request count. A skipped check does not emit another request or backoff event.
+Do not infer a provider HTTP response from `live_source_failed` or from the
+fetch decision alone.
 
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the
