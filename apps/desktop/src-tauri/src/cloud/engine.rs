@@ -223,6 +223,45 @@ impl Engine {
         Ok(result)
     }
 
+    /// Use the current device grant without sharing access proof with the
+    /// renderer. Sign-out or replacement fences queued requests and old replies.
+    pub(super) fn team_join(
+        &mut self,
+        binding: &super::DestinationBinding,
+        action: super::team_join::Action,
+        current: &dyn Fn() -> bool,
+    ) -> Result<super::team_join::Step, super::team_join::JoinError> {
+        use super::team_join::{self, JoinError};
+        if !current() {
+            return Err(JoinError::Cancelled);
+        }
+        self.refresh((self.clock)(), current)?;
+        let config = self.config.as_ref().ok_or(JoinError::Unavailable)?;
+        if config.dashboard.is_none() {
+            return Err(JoinError::Unavailable);
+        }
+        let access = self.access.as_ref().ok_or(JoinError::ReauthRequired)?;
+        if !current()
+            || !self
+                .session()
+                .is_some_and(|session| binding.matches(session))
+        {
+            return Err(JoinError::Cancelled);
+        }
+        if access.session.scope != super::auth::CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE {
+            return Err(JoinError::ReapprovalRequired);
+        }
+        let result = team_join::send(config, &access.token, action);
+        if !current() {
+            return Err(JoinError::Cancelled);
+        }
+        if matches!(result, Err(JoinError::ReauthRequired)) {
+            self.access = None;
+            self.status = AuthStatus::ReauthRequired;
+        }
+        result
+    }
+
     /// Send one bounded capture API request without returning access proof.
     /// Reject a changed service before credentials are used. Auth rotation uses
     /// only the account fence; content pause blocks dispatch without revocation.

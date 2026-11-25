@@ -6,19 +6,29 @@ joining a workspace, or enabling sync.
 
 ## Join a Team
 
-Open the invite link from your Team admin in your browser. Sign in with the
-same account you use in Desktop and follow the steps on the Cloud page. Desktop
-does not list or accept invites.
+Sign in to Cloud in Desktop. Your browser opens for GitHub sign-in and device
+approval. Return to Desktop and choose **Join a Team** after sign-in or in
+**Settings > Sessions**. This action needs a build with a
+[configured Cloud dashboard origin](desktop-contract.md#desktop-build-gate).
+
+1. Copy the invite link from your Team admin. Paste it in Desktop and select
+   **Check invite**.
+2. Choose the work email you want to use. If Desktop asks you to verify it, open
+   the link in your email and confirm your address in your browser. Return to
+   Desktop and select **Check verification**. If the address is wrong, select
+   **Change email**. If the link expired, select **Request another email**.
+3. Confirm the Team and email shown in Desktop, then select **Join Team**.
 
 In **Settings > Sessions**, **Open Cloud dashboard** opens the normal dashboard
-in your browser when the build has a dashboard configured.
+in your browser. You do not need to open the dashboard to join a Team.
 
-After joining, open **Settings > Sessions** in Desktop and select **Refresh
-workspaces**. Desktop uses your existing device connection to read the workspaces
-that can accept uploads. If you have not connected Desktop, sign in and approve
-the device in your browser first.
+Desktop refreshes the list of workspaces that can accept uploads after you join.
+If the owner has not opened the Team yet, it will not appear as an upload
+destination. Use **Refresh workspaces** in **Settings > Sessions** to check again.
 
 Joining does not approve folders, start uploads, or change saved destinations.
+If your device approval did not include Team joining, sign out and sign in
+again to approve it. You do not need to reconnect just to keep using capture.
 
 ## Choose folders
 

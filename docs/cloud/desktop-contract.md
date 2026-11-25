@@ -69,12 +69,15 @@ debug assertions defaults both origins to `https://api.antiburn.com` when
 neither variable is set. Set both variables to override that default with
 canonical HTTPS origins. The resource origin owns the device API routes.
 
-For the optional **Open Cloud dashboard** action, set the build-time
-`ANTIBURN_CLOUD_DASHBOARD` to the dashboard's canonical origin without a trailing
-slash. It must use HTTPS, or loopback HTTP in a build with debug assertions.
-Desktop opens the root of that origin in the system browser. It does not pass
-device proof or use the dashboard origin for API requests. An invalid or missing
-dashboard origin hides the action without changing device approval.
+For **Join a Team** and **Open Cloud dashboard**, set the build-time
+`ANTIBURN_CLOUD_DASHBOARD` to the dashboard's canonical origin without a
+trailing slash. It must use HTTPS, or loopback HTTP in a build with debug
+assertions.
+Desktop uses this origin to check pasted Team invite links.
+**Open Cloud dashboard** opens the root of this origin in the system browser.
+Only the configured resource origin receives API requests and device proof.
+An invalid or missing dashboard origin hides both actions without changing
+device approval.
 
 The explicit feature command also works for a debug build:
 
@@ -121,17 +124,18 @@ response supplies those same bindings, a nullable display name,
 the device label, and the access deadline. Deadlines use RFC 3339 strings.
 Desktop accepts only these exact scope strings:
 
-- New approvals use `capture:write sessions:list sessions:read`. This scope
-  permits capture and authorizes search and reads for sessions the signed-in
-  user can access. The service still checks the user's current access. Desktop
-  capture uses only the capture permission.
+- New approvals use `capture:write sessions:list sessions:read workspaces:join`.
+  This scope permits capture, search and reads, and joining a Team with an
+  invite. The service still checks current access and Team admission rules.
+- `capture:write sessions:list sessions:read` permits capture, search and reads.
+  It does not permit Team joining.
 - `capture:write` permits capture only. Older account grants keep this scope
   when refreshed.
 
 Desktop requires the token and session bindings to match before it saves a
 refresh credential. A changed grant, account, scope, or fixed deadline
 cannot restore the saved connection. To receive the broader scope on an older
-connection, sign in again instead of refreshing the old grant.
+connection, sign out and sign in again instead of refreshing the old grant.
 
 Device authentication requests use the configured API origin:
 
@@ -161,9 +165,9 @@ for each folder. With only Personal available, Desktop shows a folder switch.
 If workspace discovery is temporarily unavailable, Desktop retries while the
 folder pane is open. In Settings, choose **Check again** if Desktop could not
 read the account or verify its Personal workspace. This does not enable upload.
-A signed-in user can select **Refresh workspaces** in **Settings > Sessions**
-after joining a Team in the browser. This uses the same workspace list request
-and does not issue a new grant or change folder consent.
+A successful Team join in Desktop refreshes the workspace choices. A signed-in
+user can also select **Refresh workspaces** in **Settings > Sessions**. Refresh
+uses the same workspace list request. It does not issue a grant or change consent.
 A workspace list response of `401` asks the user to sign in again. A `403` tells
 the user that access is denied. Neither response starts folder discovery or
 grants upload permission.
@@ -176,16 +180,56 @@ back to Personal. An old workspace grant does not become an account grant.
 Sign in again to use the account flow. Old refresh proof can only sign out the
 grant it belongs to.
 
+### Join a Team in Desktop
+
+The browser handles GitHub sign-in and device approval. A signed-in user joins
+in Desktop with a reusable invite link and a verified work email. Desktop accepts
+the exact `/join#token=…` link at the configured dashboard origin. It never
+visits the invite link. It sends the token in a JSON body to the resource origin.
+Desktop keeps the invite and attempt in memory and excludes them from diagnostics
+and analytics. If email verification is needed, the browser proves mailbox
+ownership only. Desktop checks that proof before the user can claim membership.
+
+| Request | JSON body |
+| --- | --- |
+| `POST /v1/devices/team-join-attempts` | `{token}` |
+| `POST /v1/devices/team-join-attempts/{attempt_id}/resume` | None |
+| `PUT /v1/devices/team-join-attempts/{attempt_id}/email` | `{address}` |
+| `POST /v1/devices/team-join-attempts/{attempt_id}/claim` | `{email_id}` |
+
+Every request uses the current access bearer with `workspaces:join`. Desktop
+sends no cookies or `Origin` header. It does not follow redirects or retry
+automatically. The bearer identifies the user and device connection. It does
+not admit the user by itself. The service checks the invite, current email
+proof, and eligibility at claim.
+
+Start returns only `attempt_id`. An attempt ID is a UUID, not access
+proof. Only the device grant that started an attempt can resume it. If you
+reconnect, paste the invite link again. Resume, email selection, and claim can
+return `needs_email`,
+`verification_pending`, `ready`, `joined`, `removed`, `billing_inactive`,
+`billing_stale`, or `full`. Desktop uses the `email_id` from `ready` when it
+claims membership. `joined` returns `team_name` and `in_setup`. If the Team is
+still in setup, the owner must open it before it can
+accept uploads. Joining does not approve folders or turn on sync.
+
 ## Credential and logout safety
 
 ### Read sessions from the CLI
 
 On macOS and Linux, a Cloud-enabled CLI can reuse an active, read-capable
 device connection from a running Antiburn Desktop app. The app owns sign-in
-and refresh. It gives the CLI short-lived access proof over a private local
-socket that checks the OS user. It does not write the access proof to a file or
-give the CLI the refresh credential. This does not isolate processes that run
-as the same OS user.
+and refresh. Desktop requests a read-only token with `POST
+/v1/devices/grants/current/read-token`. It sends the current device bearer and
+no body, cookies, or `Origin` header. The response is `{access_token}`.
+The read token cannot upload or claim membership. It expires with the original
+access token, within 15 minutes, and has no refresh token.
+
+Desktop gives the CLI only the read token over a private local socket that
+checks the OS user. If Desktop cannot get a read token, it does not pass the
+device bearer instead. Desktop does not store the read token or give the CLI a
+refresh credential. The socket does not isolate processes that run as the
+same OS user.
 
 The CLI starts with the Personal workspace. It can request another workspace
 by ID. The service checks current workspace and session permissions on every

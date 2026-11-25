@@ -419,6 +419,8 @@ export interface CloudSnapshot {
   authEnabled: boolean
   /** A configured system-browser dashboard can open without device approval. */
   dashboardAvailable?: boolean
+  /** The current device approval includes Team joining. */
+  teamJoinAllowed?: boolean
   syncEnabled: boolean
   captureEnabled?: boolean
   status: CloudStatus
@@ -460,6 +462,24 @@ export type SyncResult =
       completed: number
       total: number
     }
+
+/** The renderer supplies user input. Desktop chooses the API origin and owns proof. */
+export type CloudTeamJoinAction =
+  | { action: "start"; link: string }
+  | { action: "resume"; attemptId: string }
+  | { action: "selectEmail"; attemptId: string; address: string }
+  | { action: "claim"; attemptId: string; emailId: string }
+
+/** The current join step. Membership and upload permission are separate. */
+export type CloudTeamJoinResult =
+  | { status: "started"; attemptId: string }
+  | { status: "needsEmail"; attemptId: string; teamName: string; email?: string }
+  | { status: "verificationPending"; attemptId: string; teamName: string; email: string }
+  | { status: "ready"; attemptId: string; teamName: string; email: string; emailId: string }
+  | { status: "joined"; teamName: string; inSetup: boolean }
+  | { status: "removed" }
+  | { status: "billingInactive" | "billingStale" | "full" }
+
 /**
  * Desktop commands for setup and Settings.
  * Attach watch before read: commands, including reads, can emit state before
@@ -471,6 +491,11 @@ export interface CloudPort {
   displayHome?(): Promise<string | null>
   /** Open the configured browser dashboard without connecting the device. */
   openDashboard?(): Promise<void>
+  /** Join a Team for the current account without changing folder consent. */
+  teamJoin?(
+    binding: CloudDestinationBinding,
+    action: CloudTeamJoinAction,
+  ): Promise<CloudTeamJoinResult>
   /** List verified destinations for this account. Listing does not grant folder consent. */
   workspaces?(binding: CloudDestinationBinding): Promise<CloudWorkspace[] | null>
   /** Clear an old Team connection locally. This does not close its remote grant. */
@@ -570,6 +595,10 @@ export const desktopCloudPort: CloudPort = {
   openDashboard: async () => {
     if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable.")
     await invoke("cloud_open_dashboard")
+  },
+  teamJoin: async (binding, action) => {
+    if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable in this build.")
+    return invoke<CloudTeamJoinResult>("cloud_team_join", { binding, action })
   },
   workspaces: async (binding) =>
     (await cloudBuildEnabled())

@@ -220,8 +220,9 @@ export class CloudProjectReader {
     return this.accountLane.request(read, signal)
   }
 
-  /** Retry the folder pane without a global account reload or duplicate scope request. */
-  retryScope() {
+  /** Retry the folder pane. After a membership change, discard an older read. */
+  retryScope(fresh = false) {
+    if (fresh) this.suspend()
     if (this.hasRead && this.scopeRead) return this.scopeRead
     if (this.hasRead) this.suspend()
     return this.load(false, true)

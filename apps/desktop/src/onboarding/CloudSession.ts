@@ -30,6 +30,7 @@ import {
 import type { ProjectPages } from "./cloudProjectPages"
 import { CloudProjectReader } from "./cloudProjectReader"
 import { retryCloudRead } from "./cloudReadRetry"
+import { createCloudAccountActions } from "./cloudAccountActions"
 import {
   cloudFolderReadChanged,
   savedUploadStatusBecameUnavailable,
@@ -171,10 +172,7 @@ export class CloudSession {
   get projectSyncSupported() {
     return this.port.ongoing !== undefined
   }
-  /** Open the browser dashboard without updating the desktop session. */
-  openDashboard = () =>
-    this.port.openDashboard?.() ??
-    Promise.reject(new Error("The Cloud dashboard is unavailable."))
+  readonly accountActions = createCloudAccountActions(this, () => this.port)
   /** Observe snapshots without starting reads. The host owns the active subscription. */
   subscribeSnapshot = (listener: () => void) => {
     this.snapshotListeners.add(listener)
@@ -328,6 +326,7 @@ export class CloudSession {
       !this.snapshot.busy &&
       this.snapshot.screen === "identity" &&
       !this.holdIdentity &&
+      !this.accountActions.canJoinTeam() &&
       !this.snapshot.cloud.setupError &&
       !this.snapshot.error
     if (handoff && this.identityTimer) return
@@ -695,7 +694,7 @@ export class CloudSession {
   loadProjects = (more = false, retryInBackground = true) =>
     this.projectReader.load(more, retryInBackground)
   /** Check folder access without blocking the rest of the account pane. */
-  retryFolderScope = () => this.projectReader.retryScope()
+  retryFolderScope = (fresh = false) => this.projectReader.retryScope(fresh)
   /** Extend the visible draft only after an explicit page request. */
   loadMoreProjects = () => this.loadProjects(true)
   /** Stage a local group choice for the current account. Only Start saves consent. */

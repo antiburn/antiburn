@@ -126,8 +126,19 @@ it("opens the dashboard without passing a URL or account proof", async () => {
   expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("cloud_open_dashboard")
 })
 
+it("sends Team join input only to the feature-gated Desktop command", async () => {
+  const binding = { accountId: "synthetic-account", destinationId: "synthetic-personal" }
+  const action = {
+    action: "start",
+    link: `https://dashboard.example/join#token=${"a".repeat(43)}`,
+  } as const
+  await desktopCloudPort.teamJoin?.(binding, action)
+  expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("cloud_team_join", { binding, action })
+  expect(mocks.open).not.toHaveBeenCalled()
+})
+
 it.each(["browser", "ordinary build"])(
-  "does not invoke capture or dashboard commands in %s",
+  "does not invoke capture, Team join, or dashboard commands in %s",
   async (build) => {
     if (build === "browser") mocks.hasShell.mockReturnValue(false)
     else mocks.appInfo.mockResolvedValue({ cloudEnabled: false })
@@ -139,6 +150,12 @@ it.each(["browser", "ordinary build"])(
     expect(await desktopCloudPort.cancelSync("request")).toEqual({ status: "unavailable" })
     expect(await desktopCloudPort.pick("opencode_sqlite_v2")).toEqual([])
     await expect(desktopCloudPort.openDashboard?.()).rejects.toThrow("Cloud is unavailable.")
+    await expect(
+      desktopCloudPort.teamJoin?.(
+        { accountId: "synthetic-account", destinationId: "synthetic-personal" },
+        { action: "start", link: "synthetic" },
+      ),
+    ).rejects.toThrow("Cloud is unavailable")
     expect(mocks.invoke).not.toHaveBeenCalled()
     expect(mocks.open).not.toHaveBeenCalled()
   },

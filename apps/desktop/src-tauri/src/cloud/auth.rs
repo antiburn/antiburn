@@ -37,10 +37,16 @@ fn short_hostname(hostname: &OsStr) -> Option<&str> {
 pub const CAPTURE_SCOPE: &str = "capture:write";
 /// Scope for account grants that can also search and read sessions.
 pub const CAPTURE_AND_SESSION_SCOPE: &str = "capture:write sessions:list sessions:read";
+/// Scope for new account grants that can also join a Team with an invite.
+pub const CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE: &str =
+    "capture:write sessions:list sessions:read workspaces:join";
 
 /// Accept only the service's exact scope strings. Do not normalize or split them.
 fn supported_scope(scope: &str) -> bool {
-    matches!(scope, CAPTURE_SCOPE | CAPTURE_AND_SESSION_SCOPE)
+    matches!(
+        scope,
+        CAPTURE_SCOPE | CAPTURE_AND_SESSION_SCOPE | CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE
+    )
 }
 
 /// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
@@ -60,7 +66,8 @@ pub struct Config {
     pub session: Url,
     pub workspaces: Url,
     pub revocation: Url,
-    /// Browser-only entry point. Never use it for device requests or proofs.
+    pub team_join_attempts: Url,
+    /// Browser entry point and trust check for pasted links. Never send proof to it.
     pub dashboard: Option<Url>,
 }
 
@@ -104,6 +111,7 @@ impl Config {
             revocation: resource_url.join("v1/devices/grants/current/revoke").ok()?,
             session: resource_url.join("v1/devices/grants/current").ok()?,
             workspaces: resource_url.join("v1/captures/destinations").ok()?,
+            team_join_attempts: resource_url.join(super::team_join::ATTEMPTS_PATH).ok()?,
             dashboard: None,
         })
     }

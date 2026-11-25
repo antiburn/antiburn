@@ -17,6 +17,7 @@ import {
   cloudSourceLabel,
   desktopCloudPort,
   type CloudPort,
+  type CloudTeamJoinAction,
 } from "../lib/cloud"
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import {
@@ -27,6 +28,7 @@ import {
   cloudUploadStatusUnknown,
 } from "./CloudSession"
 import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
+import { CloudTeamJoin } from "./CloudTeamJoin"
 import { changeFolderWithFocus } from "./cloudFolderFocus"
 import { cloudCaptureUnsupported, cloudDiscoveryRetryMessage } from "./cloudProjectScope"
 import { cloudAccountCleanupPending, cloudSignOutBeforeSignIn } from "./cloudSessionState"
@@ -67,13 +69,23 @@ export function CloudOnboarding({
     () => true,
   )
   const [session] = useState(() => new CloudSession(port, analytics, holdIdentity))
+  const [claimPending, setClaimPending] = useState(false)
   const foldersId = useId()
   const value = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
   )
-  const disabled = busy || value.busy
+  const disabled = busy || value.busy || claimPending
+  const joinTeam = async (action: CloudTeamJoinAction) => {
+    if (action.action !== "claim") return session.accountActions.joinTeam(action)
+    setClaimPending(true)
+    try {
+      return await session.accountActions.joinTeam(action)
+    } finally {
+      setClaimPending(false)
+    }
+  }
   const grouped = !!(port ?? desktopCloudPort).ongoing
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
@@ -233,7 +245,7 @@ export function CloudOnboarding({
           ? "Unavailable for this setup."
           : "CLI and skill"
   const finish = async () => {
-    if (busy || (value.screen !== "complete" && value.busy)) return
+    if (claimPending || busy || (value.screen !== "complete" && value.busy)) return
     if (analytics)
       noteCloudAction(
         value.screen,
@@ -342,6 +354,13 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
+            {session.accountActions.canJoinTeam() && (
+              <CloudTeamJoin
+                key={`${value.cloud.identity?.id}:${value.cloud.grantExpiresAt}`}
+                send={joinTeam}
+                onboarding
+              />
+            )}
             {value.cloud.setupError && (
               <>
                 <p className="type-callout text-onboarding-muted" role="status">
@@ -369,7 +388,11 @@ export function CloudOnboarding({
                 >
                   Try again
                 </button>
-                <button className="onboarding-secondary" disabled={disabled} onClick={onBack}>
+                <button
+                  className="onboarding-secondary"
+                  disabled={disabled}
+                  onClick={() => void back()}
+                >
                   Back
                 </button>
               </>
@@ -651,7 +674,9 @@ export function CloudOnboarding({
           </section>
         </>
       )}
-      <footer className="onboarding-footer cloud-footer">
+      <footer
+        className={`onboarding-footer cloud-footer${value.screen === "identity" && session.accountActions.canJoinTeam() ? " flex!" : ""}`}
+      >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
             <div className="cloud-outcomes" role="group" aria-label="Setup status">
@@ -761,6 +786,20 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
+            {value.screen === "identity" &&
+              session.accountActions.canJoinTeam() &&
+              !value.cloud.setupError &&
+              !value.error && (
+                <button
+                  className="onboarding-primary"
+                  disabled={disabled}
+                  onClick={() => {
+                    if (!disabled) void session.go("folders")
+                  }}
+                >
+                  Continue Cloud setup
+                </button>
+              )}
             {value.screen === "folders" && (
               <>
                 <button

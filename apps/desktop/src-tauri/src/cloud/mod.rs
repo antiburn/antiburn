@@ -19,6 +19,7 @@ mod repository_checkout;
 pub(crate) mod repository_origin;
 mod state;
 pub(crate) mod sync;
+pub(crate) mod team_join;
 #[cfg(test)]
 mod tests;
 mod upload;
@@ -143,6 +144,7 @@ fn existing_folder_choices() -> bool {
 pub struct Snapshot {
     auth_enabled: bool,
     dashboard_available: bool,
+    team_join_allowed: bool,
     capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
@@ -323,6 +325,8 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             .config
             .as_ref()
             .is_some_and(|config| config.dashboard.is_some()),
+        team_join_allowed: session
+            .is_some_and(|session| session.scope == auth::CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE),
         capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
         sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
@@ -517,6 +521,34 @@ pub async fn cloud_workspaces(
                 }
                 .into()
             })
+    })
+    .await
+}
+
+/// Continue Team admission for the signed-in Personal account on the bounded
+/// Cloud worker. Do not change connections, capture requests, or folder consent.
+#[tauri::command]
+pub async fn cloud_team_join(
+    app: tauri::AppHandle,
+    binding: DestinationBinding,
+    action: team_join::Action,
+) -> Result<team_join::Step, String> {
+    let controller = app.state::<Controller>();
+    let generation = controller.account_generation.load(Ordering::Acquire);
+    let work = controller.blocking.clone();
+    work.run(Priority::Normal, move || {
+        let controller = app.state::<Controller>();
+        let current = || controller.account_generation.load(Ordering::Acquire) == generation;
+        let mut engine = controller
+            .engine
+            .lock()
+            .map_err(|_| team_join::JoinError::Unavailable.ipc_code())?;
+        if !current() || engine.generation != generation {
+            return Err(team_join::JoinError::Cancelled.ipc_code());
+        }
+        let result = engine.team_join(&binding, action, &current);
+        emit_snapshot(&app, snapshot(&app, &engine));
+        result.map_err(team_join::JoinError::ipc_code)
     })
     .await
 }

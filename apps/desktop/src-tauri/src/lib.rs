@@ -969,6 +969,7 @@ mod tests {
         "cloud_status",
         "cloud_sync_projects",
         "cloud_sync_status",
+        "cloud_team_join",
         "cloud_workspaces",
     ];
 

@@ -6,14 +6,14 @@ use std::{
     time::Duration,
 };
 
-struct Request {
-    line: String,
+pub(super) struct Request {
+    pub(super) line: String,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    pub(super) body: Vec<u8>,
 }
 
 impl Request {
-    fn header(&self, name: &str) -> Option<&str> {
+    pub(super) fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
             .find(|(key, _)| key == name)
@@ -26,7 +26,7 @@ impl Request {
     }
 }
 
-fn server(status: u16, body: &str) -> (Config, JoinHandle<Request>) {
+pub(super) fn server(status: u16, body: &str) -> (Config, JoinHandle<Request>) {
     server_with_reply(Some((status, body)))
 }
 
@@ -40,6 +40,8 @@ fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>
     config.session = origin.join("v1/devices/grants/current").unwrap();
     config.workspaces = origin.join("v1/captures/destinations").unwrap();
     config.revocation = origin.join("v1/devices/grants/current/revoke").unwrap();
+    config.team_join_attempts = origin.join(super::team_join::ATTEMPTS_PATH).unwrap();
+    config.dashboard = Some("https://dashboard.example".parse().unwrap());
     let reply = reply.map(|(status, body)| (status, body.to_owned()));
     let worker = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
@@ -85,6 +87,124 @@ fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>
         }
     });
     (config, worker)
+}
+
+#[test]
+fn cloud_http_team_join_uses_only_the_resource_and_device_proof() {
+    use super::team_join::{self, Action};
+    use serde_json::{Value, json};
+    let id = "11111111-2222-4333-8444-555555555555";
+    let email_id = "22222222-2222-4333-8444-555555555555";
+    let invite = "a".repeat(43);
+    let wire = json!({
+        "status": "ready", "email_id": email_id, "team_name": "Example Studio",
+        "email": "member@example.com",
+    });
+    let ready = json!({
+        "status": "ready", "attemptId": id, "emailId": email_id,
+        "teamName": "Example Studio", "email": "member@example.com",
+    });
+    for (action, path, body, reply, expected) in [
+        (
+            Action::Start {
+                link: format!("https://dashboard.example/join#token={invite}"),
+            },
+            "POST /v1/devices/team-join-attempts HTTP/1.1".to_owned(),
+            Some(json!({"token": invite})),
+            json!({"attempt_id": id}),
+            json!({"status": "started", "attemptId": id}),
+        ),
+        (
+            Action::SelectEmail {
+                attempt_id: id.into(),
+                address: "member@example.com".into(),
+            },
+            format!("PUT /v1/devices/team-join-attempts/{id}/email HTTP/1.1"),
+            Some(json!({"address": "member@example.com"})),
+            wire.clone(),
+            ready.clone(),
+        ),
+        (
+            Action::Resume {
+                attempt_id: id.into(),
+            },
+            format!("POST /v1/devices/team-join-attempts/{id}/resume HTTP/1.1"),
+            None,
+            wire,
+            ready,
+        ),
+        (
+            Action::Claim {
+                attempt_id: id.into(),
+                email_id: email_id.into(),
+            },
+            format!("POST /v1/devices/team-join-attempts/{id}/claim HTTP/1.1"),
+            Some(json!({"email_id": email_id})),
+            json!({"status": "joined", "team_name": "Example Studio", "in_setup": false}),
+            json!({"status": "joined", "teamName": "Example Studio", "inSetup": false}),
+        ),
+    ] {
+        let (config, worker) = server(200, &reply.to_string());
+        let result = team_join::send(&config, "synthetic-access", action).unwrap();
+        let request = worker.join().unwrap();
+        assert_eq!(request.line, path);
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer synthetic-access")
+        );
+        request.native_only();
+        if let Some(body) = body {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request.body).unwrap(),
+                body
+            );
+        } else {
+            assert!(request.body.is_empty());
+        }
+        assert_eq!(serde_json::to_value(result).unwrap(), expected);
+    }
+}
+
+#[test]
+fn cloud_http_team_join_rejects_bad_attempts_and_maps_closed_errors() {
+    use super::team_join::{self, Action, JoinError};
+    let config = Config::parse("https://issuer.example", "https://api.example").unwrap();
+    assert!(matches!(
+        team_join::send(
+            &config,
+            "synthetic-access",
+            Action::Resume {
+                attempt_id: "../verify".into(),
+            },
+        ),
+        Err(JoinError::InactiveInvite)
+    ));
+    for (status, body, expected) in [
+        (401, "{}", JoinError::ReauthRequired),
+        (403, "{}", JoinError::Unavailable),
+        (429, "{}", JoinError::RateLimited),
+        (
+            409,
+            r#"{"code":"invite_link_inactive","message":"Not shown"}"#,
+            JoinError::InactiveInvite,
+        ),
+        (
+            200,
+            r#"{"status":"ready","team_name":"Example","email":"member@example.com","email_id":"invalid"}"#,
+            JoinError::Unconfirmed,
+        ),
+    ] {
+        let (config, worker) = server(status, body);
+        let result = team_join::send(
+            &config,
+            "synthetic-access",
+            Action::Resume {
+                attempt_id: "11111111-2222-4333-8444-555555555555".into(),
+            },
+        );
+        assert!(matches!(result, Err(issue) if issue == expected));
+        worker.join().unwrap();
+    }
 }
 
 #[test]

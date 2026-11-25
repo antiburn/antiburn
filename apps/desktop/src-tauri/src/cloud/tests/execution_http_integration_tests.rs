@@ -114,6 +114,7 @@ fn cloud_capture_only_account_bearer_reserves_only_the_exact_team_membership() {
 #[test]
 fn cloud_capture_and_session_account_bearer_reserves_only_the_exact_team_membership() {
     assert_team_reservation("capture:write sessions:list sessions:read");
+    assert_team_reservation("capture:write sessions:list sessions:read workspaces:join");
 }
 
 fn assert_team_reservation(scope: &'static str) {

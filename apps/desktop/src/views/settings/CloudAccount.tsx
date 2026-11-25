@@ -11,6 +11,7 @@ import {
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
 import { canRetryTeamUploads } from "../../onboarding/cloudTeamRetry"
+import { CloudTeamJoin } from "../../onboarding/CloudTeamJoin"
 import { changeFolderWithFocus } from "../../onboarding/cloudFolderFocus"
 import {
   cloudCaptureUnsupported,
@@ -380,7 +381,7 @@ export function CloudAccount({
                     if (openingDashboard) return
                     setOpeningDashboard(true)
                     setDashboardOpenFailed(false)
-                    void session
+                    void session.accountActions
                       .openDashboard()
                       .catch(() => setDashboardOpenFailed(true))
                       .finally(() => setOpeningDashboard(false))
@@ -459,6 +460,22 @@ export function CloudAccount({
           </button>
         )}
       </div>
+      {session.accountActions.canJoinTeam() && (
+        <div className="border-t border-separator px-4 py-3">
+          <CloudTeamJoin
+            key={`${value.cloud.identity?.id}:${value.cloud.grantExpiresAt}`}
+            send={session.accountActions.joinTeam}
+          />
+        </div>
+      )}
+      {value.cloud.status === "signed_in" &&
+        value.cloud.dashboardAvailable &&
+        value.cloud.teamJoinAllowed === false && (
+          <p className="border-t border-separator px-4 py-3 type-footnote text-label-secondary">
+            To join a Team, sign out and sign in again to approve this device. You can keep
+            using your current connection if you do not need to join.
+          </p>
+        )}
       {value.cloud.localResetAvailable && (
         <div className="flex flex-col gap-3 px-4 py-3 type-callout text-label">
           {confirmReset ? (

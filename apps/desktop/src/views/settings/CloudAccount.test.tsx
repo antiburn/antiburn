@@ -228,6 +228,60 @@ it("opens the configured dashboard without changing the desktop account", async 
   expect(screen.getByText("Signed in as Example")).toBeVisible()
 })
 
+it("joins in Settings and refreshes the destinations without changing sync", async () => {
+  const { port, emit, ongoing } = cloudProjectFixture()
+  const personal = { id: "synthetic-personal", name: "Personal", kind: "personal" } as const
+  const team = { id: "synthetic-team", name: "Example Studio", kind: "team" } as const
+  const link = `https://dashboard.example/join#token=${"a".repeat(43)}`
+  emit({ dashboardAvailable: true, teamJoinAllowed: true })
+  const workspaces = vi.fn<NonNullable<typeof port.workspaces>>().mockResolvedValue([personal])
+  port.workspaces = workspaces
+  const teamJoin = vi
+    .fn<NonNullable<typeof port.teamJoin>>()
+    .mockImplementation(async (_binding, action) => {
+      if (action.action === "start")
+        return { status: "started", attemptId: "synthetic-join-attempt" }
+      workspaces.mockResolvedValue([personal, team])
+      return { status: "joined", teamName: team.name, inSetup: false }
+    })
+  port.teamJoin = teamJoin
+  const signIn = vi.spyOn(port, "begin")
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  await screen.findByText("1 workspace")
+
+  fireEvent.click(screen.getByRole("button", { name: "Join a Team" }))
+  fireEvent.change(screen.getByRole("textbox", { name: "Team invite link" }), {
+    target: { value: link },
+  })
+  fireEvent.click(screen.getByRole("button", { name: "Check invite" }))
+
+  expect(await screen.findByText("You joined Example Studio.")).toBeVisible()
+  expect(await screen.findByText("2 workspaces")).toBeVisible()
+  expect(teamJoin).toHaveBeenCalledWith(
+    { accountId: "synthetic-account", destinationId: personal.id },
+    { action: "start", link },
+  )
+  expect(signIn).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+  expect(ongoing.setEnabled).not.toHaveBeenCalled()
+})
+
+it("keeps the old connection signed in and explains that Team joining needs reapproval", async () => {
+  const { port, emit } = cloudProjectFixture()
+  emit({ dashboardAvailable: true, teamJoinAllowed: false })
+  const signOut = vi.spyOn(port, "signOut")
+  const signIn = vi.spyOn(port, "begin")
+  render(<Account session={new CloudSession(port, false, true)} />)
+  expect(await screen.findByText(/To join a Team, sign out and sign in again/)).toBeVisible()
+  expect(screen.getByText("Signed in as Example")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Join a Team" })).toBeNull()
+  expect(signOut).not.toHaveBeenCalled()
+  expect(signIn).not.toHaveBeenCalled()
+})
+
 it("canceling the reset confirmation does not call a native cleanup action", async () => {
   const { session, resetLocal, signOut } = fixture()
   render(<Account session={session} />)

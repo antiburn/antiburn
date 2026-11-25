@@ -7,6 +7,7 @@ import {
   type CloudPort,
   type CloudProjectGroup,
   type CloudSnapshot,
+  type CloudTeamJoinResult,
 } from "../lib/cloud"
 import { CloudOnboarding, CloudProjectFolders } from "./CloudOnboarding"
 import { localToolsFixture } from "./__tests__/cloudProjectFixtures"
@@ -76,6 +77,74 @@ it("saves desktop capture requests with truthful completion copy", async () => {
   expect(screen.queryByText(/Sessions syncing/)).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Done" }))
   expect(done).toHaveBeenCalledOnce()
+})
+
+it("offers Team joining after sign-in without requiring it to continue", async () => {
+  const { port, start } = fixture({
+    dashboardAvailable: true,
+    teamJoinAllowed: true,
+    draft: { screen: "identity", folders: [] },
+  })
+  port.teamJoin = vi.fn<NonNullable<CloudPort["teamJoin"]>>(async () => ({
+    status: "joined",
+    teamName: "Example Studio",
+    inSetup: false,
+  }))
+  const done = vi.fn()
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Join a Team" }))
+  expect(screen.getByRole("textbox", { name: "Team invite link" })).toHaveFocus()
+  expect(screen.getByRole("button", { name: "Continue Cloud setup" })).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
+  expect(done).toHaveBeenCalledOnce()
+  expect(port.teamJoin).not.toHaveBeenCalled()
+  expect(start).not.toHaveBeenCalled()
+})
+
+it("keeps onboarding on the Team join until its pending claim is confirmed", async () => {
+  const { port } = fixture({
+    dashboardAvailable: true,
+    teamJoinAllowed: true,
+    draft: { screen: "identity", folders: [] },
+  })
+  let resolveClaim: ((result: CloudTeamJoinResult) => void) | undefined
+  const claim = new Promise<CloudTeamJoinResult>((resolve) => {
+    resolveClaim = resolve
+  })
+  const teamName = "Example Studio"
+  port.teamJoin = vi
+    .fn<NonNullable<CloudPort["teamJoin"]>>()
+    .mockResolvedValueOnce({ status: "started", attemptId: "example-attempt" })
+    .mockResolvedValueOnce({
+      status: "ready",
+      attemptId: "example-attempt",
+      teamName,
+      email: "member@example.com",
+      emailId: "example-email",
+    })
+    .mockReturnValueOnce(claim)
+  const save = vi.spyOn(port, "save")
+  const done = vi.fn()
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Join a Team" }))
+  fireEvent.change(screen.getByRole("textbox", { name: "Team invite link" }), {
+    target: { value: `https://dashboard.example/join#token=${"a".repeat(43)}` },
+  })
+  fireEvent.click(screen.getByRole("button", { name: "Check invite" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Join Team" }))
+
+  for (const name of ["Continue locally", "Continue Cloud setup"]) {
+    const control = screen.getByRole("button", { name })
+    expect(control).toBeDisabled()
+    fireEvent.click(control)
+  }
+  expect(done).not.toHaveBeenCalled()
+  expect(save).not.toHaveBeenCalled()
+
+  await act(async () => resolveClaim?.({ status: "joined", teamName, inSetup: false }))
+  expect(await screen.findByText("You joined Example Studio.")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
+  expect(screen.getByRole("button", { name: "Continue Cloud setup" })).toBeEnabled()
 })
 
 it("does not claim a desktop request was saved when its result is unknown", async () => {

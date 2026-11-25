@@ -27,10 +27,11 @@ const UNAVAILABLE: &[u8] = b"{\"status\":\"unavailable\"}\n";
 const MAX_RESPONSE: usize = 32 * 1024;
 const MAX_CONNECTIONS: usize = 8;
 const IO_DEADLINE: Duration = Duration::from_secs(2);
-// Restore can exchange proof and verify the session.
+// Restore can exchange proof and verify the session before getting a read token.
 const SESSION_DEADLINE: Duration = Duration::from_secs(50);
 
-/// Private wire fields. Never derive Debug or send this value to a renderer.
+/// Private wire fields. The access token is read-only. Never log it or send it
+/// to a renderer.
 #[derive(Serialize)]
 pub(super) struct DeviceSession {
     pub(super) origin: String,

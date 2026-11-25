@@ -34,6 +34,27 @@ async function expectWarningAboveFooter(warning: Locator, footer: Locator) {
   expect(message.y + message.height).toBeLessThanOrEqual(bounds.y)
 }
 
+test("Team join works by keyboard inside onboarding", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 480 })
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
+  await page.goto("/tests/visual/?surface=cloud&cloud=identity&theme=dark&teamJoin")
+  const open = page.getByRole("button", { name: "Join a Team" })
+  await expect(open).toBeVisible()
+  await open.focus()
+  await page.keyboard.press("Enter")
+  const link = page.getByRole("textbox", { name: "Team invite link" })
+  await expect(link).toBeFocused()
+  await link.fill(`https://dashboard.example/join#token=${"a".repeat(43)}`)
+  await page.keyboard.press("Enter")
+  const join = page.getByRole("button", { name: "Join Team", exact: true })
+  await expect(join).toBeFocused()
+  await capture(page, "dark-onboarding-team-join-review")
+  await page.keyboard.press("Enter")
+  await expect(page.getByRole("status")).toContainText("You joined Example Team")
+  await expect(page.getByRole("button", { name: "Continue Cloud setup" })).toBeInViewport()
+  await expect(page.getByRole("button", { name: "Continue locally" })).toBeInViewport()
+})
+
 for (const theme of ["light", "dark"] as const) {
   test(`Cloud handoff and recovery states stay truthful in ${theme}`, async ({ page }) => {
     const external: string[] = []

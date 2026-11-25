@@ -1123,10 +1123,15 @@ fn cloud_sign_in_rejects_mismatched_or_unsupported_scopes() {
 
 #[test]
 fn cloud_refresh_after_restart_requires_the_original_scope() {
-    use auth::{CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE};
+    use auth::{CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE, CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE};
 
-    for initial in [CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE] {
-        for returned in [CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE] {
+    let scopes = [
+        CAPTURE_SCOPE,
+        CAPTURE_AND_SESSION_SCOPE,
+        CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE,
+    ];
+    for initial in scopes {
+        for returned in scopes {
             let mut fixture = Fixture::new();
             *fixture.transport.token_scope.lock().unwrap() = Some(initial);
             *fixture.transport.returned_session.lock().unwrap() = Some(Session {
@@ -1482,6 +1487,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
     let value = Snapshot {
         auth_enabled: true,
         dashboard_available: true,
+        team_join_allowed: true,
         capture_enabled: true,
         sync_enabled: false,
         status: AuthStatus::SignedIn,
@@ -1508,6 +1514,27 @@ fn cloud_snapshot_does_not_include_native_secrets() {
     ] {
         assert!(!encoded.contains(field));
     }
+}
+
+#[test]
+fn cloud_team_join_requires_reapproval_but_keeps_the_existing_grant() {
+    let mut fixture = Fixture::new();
+    fixture.engine.config.as_mut().unwrap().dashboard =
+        Some("https://dashboard.example".parse().unwrap());
+    fixture.sign_in();
+    let binding = DestinationBinding {
+        account_id: session().user.id,
+        destination_id: session().workspace.id,
+    };
+    let action = team_join::Action::Start {
+        link: "not a link".into(),
+    };
+    assert!(matches!(
+        fixture.engine.team_join(&binding, action, &|| true),
+        Err(team_join::JoinError::ReapprovalRequired)
+    ));
+    assert_eq!(fixture.engine.session().unwrap().scope, auth::CAPTURE_SCOPE);
+    assert!(fixture.transport.revoked.lock().unwrap().is_empty());
 }
 
 #[test]
