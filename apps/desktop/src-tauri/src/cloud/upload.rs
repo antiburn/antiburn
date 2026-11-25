@@ -33,14 +33,25 @@ impl Route {
     fn path(self, capture: &str) -> String {
         match self {
             Self::Capabilities => "/v1/captures/capabilities".into(),
-            Self::Reserve => "/v1/captures/reserve".into(),
+            Self::Reserve => "/v1/captures".into(),
             Self::Manifest => format!("/v1/captures/{capture}/manifest"),
-            Self::Status => format!("/v1/captures/{capture}/status"),
-            Self::Parts => format!("/v1/captures/{capture}/parts"),
+            Self::Status => format!("/v1/captures/{capture}"),
+            Self::Parts => format!("/v1/captures/{capture}/part-urls"),
             Self::Finalize => format!("/v1/captures/{capture}/finalize"),
-            Self::Renew => format!("/v1/captures/{capture}/renew"),
+            Self::Renew => format!("/v1/captures/{capture}/renew-lease"),
         }
     }
+}
+
+/// Build the exact status target for the frozen plan, both to poll and to
+/// check the finalization response. Never use a response URL to send a request.
+fn status_target(capture: &str, plan: &str, manifest: &str) -> String {
+    let path = Route::Status.path(capture);
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("plan_id", plan)
+        .append_pair("manifest_sha256", manifest)
+        .finish();
+    format!("{path}?{query}")
 }
 
 /// A bounded response without request URLs, headers, or credentials.
@@ -62,14 +73,11 @@ pub(super) fn api_request(
     if !super::capture::valid_request_id(&identity.capture_id) {
         return Err(TransportError::Rejected);
     }
-    let mut url = url::Url::parse(&config.resource)
-        .and_then(|origin| origin.join(&route.path(&identity.capture_id)))
-        .map_err(|_| TransportError::Rejected)?;
     let bytes = serde_json::to_vec(body).map_err(|_| TransportError::Rejected)?;
     if bytes.len() as u64 > MAX_API_BYTES {
         return Err(TransportError::Rejected);
     }
-    if matches!(route, Route::Status) {
+    let target = if matches!(route, Route::Status) {
         let context: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| TransportError::Rejected)?;
         let plan = context["plan_id"]
@@ -78,10 +86,13 @@ pub(super) fn api_request(
         let manifest = context["manifest_sha256"]
             .as_str()
             .ok_or(TransportError::Rejected)?;
-        url.query_pairs_mut()
-            .append_pair("plan_id", plan)
-            .append_pair("manifest_sha256", manifest);
-    }
+        status_target(&identity.capture_id, plan, manifest)
+    } else {
+        route.path(&identity.capture_id)
+    };
+    let url = url::Url::parse(&config.resource)
+        .and_then(|origin| origin.join(&target))
+        .map_err(|_| TransportError::Rejected)?;
     let client = auth::client(&url).map_err(|_| TransportError::Offline)?;
     let request = if matches!(route, Route::Status | Route::Capabilities) {
         client.get(url)
@@ -492,7 +503,29 @@ impl<'a> HttpTransport<'a> {
     ) -> Result<(), TransportError> {
         let binding = Context::new(reservation, plan);
         let response = self.request(&manifest.identity, Route::Finalize, &binding)?;
-        check_finalization_response(&response)
+        self.check_finalization_response(&response, &manifest.identity.capture_id, &binding)
+    }
+
+    fn check_finalization_response(
+        &mut self,
+        response: &ApiResponse,
+        capture: &str,
+        binding: &Context<'_>,
+    ) -> Result<(), TransportError> {
+        #[derive(Deserialize)]
+        struct Finalization {
+            status_url: String,
+        }
+
+        if response.status == 202
+            && let Ok(finalization) = serde_json::from_slice::<Finalization>(&response.body)
+            && finalization.status_url
+                == status_target(capture, binding.plan_id, binding.manifest_sha256)
+        {
+            return Ok(());
+        }
+        self.failure = Some(Failure::Rejected);
+        Err(TransportError::Rejected)
     }
 }
 
@@ -761,14 +794,6 @@ impl Transport for HttpTransport<'_> {
         let binding = Context::new(reservation_id, plan);
         let response =
             self.request_with_renewal(&manifest.identity, Route::Finalize, &binding, &binding)?;
-        check_finalization_response(&response)
-    }
-}
-
-fn check_finalization_response(response: &ApiResponse) -> Result<(), TransportError> {
-    if response.status == 202 {
-        Ok(())
-    } else {
-        Err(TransportError::Rejected)
+        self.check_finalization_response(&response, &manifest.identity.capture_id, &binding)
     }
 }

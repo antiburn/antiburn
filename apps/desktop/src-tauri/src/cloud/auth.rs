@@ -101,8 +101,8 @@ impl Config {
             resource: resource.to_owned(),
             authorization: resource_url.join("devices/authorize/account").ok()?,
             token: resource_url.join("v1/devices/token").ok()?,
-            revocation: resource_url.join("v1/devices/logout").ok()?,
-            session: resource_url.join("v1/devices/session").ok()?,
+            revocation: resource_url.join("v1/devices/grants/current/revoke").ok()?,
+            session: resource_url.join("v1/devices/grants/current").ok()?,
             workspaces: resource_url.join("v1/captures/destinations").ok()?,
             dashboard: None,
         })

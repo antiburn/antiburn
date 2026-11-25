@@ -150,9 +150,16 @@ impl Service {
                 } else {
                     serde_json::from_slice(&body).unwrap()
                 };
-                if (line.contains("/parts ")
-                    || line.contains("/finalize ")
-                    || line.contains("/manifest "))
+                let status_request = line.starts_with("GET ")
+                    && manifest.as_ref().is_some_and(|saved| {
+                        line == format!(
+                            "GET /v1/captures/{}?plan_id=plan&manifest_sha256={} HTTP/1.1",
+                            saved.identity.capture_id,
+                            saved.sha256().unwrap()
+                        )
+                    });
+                let part_url_request = line.contains("/part-urls ");
+                if (part_url_request || line.contains("/finalize ") || line.contains("/manifest "))
                     && let Some(previous) = conflicted_request.take()
                 {
                     assert_eq!((line.clone(), body.clone()), previous);
@@ -189,7 +196,7 @@ impl Service {
                             }),
                         )
                     }
-                } else if line.contains("/reserve ") {
+                } else if line == "POST /v1/captures HTTP/1.1" {
                     worker_reserves.fetch_add(1, Ordering::AcqRel);
                     let identity: CaptureIdentity =
                         serde_json::from_value(input["identity"].clone()).unwrap();
@@ -313,8 +320,7 @@ impl Service {
                     };
                     manifest = Some(incoming);
                     (200, serde_json::to_value(plan).unwrap())
-                } else if line.starts_with("GET ")
-                    && line.contains("/status?")
+                } else if status_request
                     && (matches!(
                         mode,
                         STATUS_REPLAY_REJECTED
@@ -328,7 +334,7 @@ impl Service {
                         409,
                         serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
                     )
-                } else if line.starts_with("GET ") && line.contains("/status?") {
+                } else if status_request {
                     let saved = manifest.as_ref().unwrap();
                     if mode == REPLACED_PART && !replaced {
                         receipts.retain(|receipt| {
@@ -354,7 +360,7 @@ impl Service {
                         })
                         .unwrap(),
                     )
-                } else if line.contains("/renew ") {
+                } else if line.contains("/renew-lease ") {
                     worker_renewals.fetch_add(1, Ordering::AcqRel);
                     assert_eq!(input["reservation_id"], "reservation");
                     if let Some(saved) = &manifest {
@@ -381,21 +387,21 @@ impl Service {
                             serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
                         )
                     }
-                } else if line.contains("/parts ") && mode == PART_OFFLINE {
+                } else if part_url_request && mode == PART_OFFLINE {
                     (503, serde_json::json!({}))
-                } else if line.contains("/parts ") && mode == PART_CAPACITY {
+                } else if part_url_request && mode == PART_CAPACITY {
                     (429, serde_json::json!({}))
-                } else if line.contains("/parts ") && mode == PART_REJECTED {
+                } else if part_url_request && mode == PART_REJECTED {
                     (422, serde_json::json!({}))
-                } else if line.contains("/parts ") && mode == PART_DENIED {
+                } else if part_url_request && mode == PART_DENIED {
                     (403, serde_json::json!({}))
-                } else if line.contains("/parts ") && mode == PART_UNAUTHORIZED {
+                } else if part_url_request && mode == PART_UNAUTHORIZED {
                     (401, serde_json::json!({}))
-                } else if (mode == PART_CONFLICT && line.contains("/parts "))
+                } else if (mode == PART_CONFLICT && part_url_request)
                     || (mode == FINALIZE_CONFLICT && line.contains("/finalize "))
-                    || (mode == RENEWED_PART_CONFLICT && line.contains("/parts "))
+                    || (mode == RENEWED_PART_CONFLICT && part_url_request)
                     || (mode == RENEWED_FINALIZE_CONFLICT && line.contains("/finalize "))
-                    || (!renewed && mode == IDLE_PART && line.contains("/parts "))
+                    || (!renewed && mode == IDLE_PART && part_url_request)
                     || (!renewed && mode == IDLE_FINALIZE && line.contains("/finalize "))
                 {
                     worker_conflicts.fetch_add(1, Ordering::AcqRel);
@@ -404,7 +410,7 @@ impl Service {
                         409,
                         serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
                     )
-                } else if line.contains("/parts ") {
+                } else if part_url_request {
                     let key: ChunkKey = serde_json::from_value(input["key"].clone()).unwrap();
                     worker_part_keys.lock().unwrap().push(key.clone());
                     let chunk = manifest.as_ref().unwrap().chunk(&key).unwrap();
@@ -443,7 +449,8 @@ impl Service {
                     } else {
                         finalized_request = Some((line.clone(), body.clone()));
                     }
-                    assert_eq!(receipts.len(), manifest.as_ref().unwrap().chunks().count());
+                    let saved = manifest.as_ref().unwrap();
+                    assert_eq!(receipts.len(), saved.chunks().count());
                     if mode == STATUS_REPLAY_OFFLINE {
                         (503, serde_json::json!({}))
                     } else if mode == STATUS_REPLAY_CAPACITY {
@@ -457,7 +464,17 @@ impl Service {
                         )
                     } else {
                         finalized = true;
-                        (202, serde_json::Value::Null)
+                        (
+                            202,
+                            serde_json::json!({
+                                "operation_id": "synthetic-operation",
+                                "status_url": format!(
+                                    "/v1/captures/{}?plan_id=plan&manifest_sha256={}",
+                                    saved.identity.capture_id,
+                                    saved.sha256().unwrap()
+                                ),
+                            }),
+                        )
                     }
                 } else {
                     panic!("unexpected test service route");

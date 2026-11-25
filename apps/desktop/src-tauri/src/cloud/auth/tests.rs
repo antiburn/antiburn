@@ -62,8 +62,8 @@ fn cloud_auth_build_origins_default_only_when_both_are_absent() {
     for (url, path) in [
         (config.authorization, "/devices/authorize/account"),
         (config.token, "/v1/devices/token"),
-        (config.session, "/v1/devices/session"),
-        (config.revocation, "/v1/devices/logout"),
+        (config.session, "/v1/devices/grants/current"),
+        (config.revocation, "/v1/devices/grants/current/revoke"),
         (config.workspaces, "/v1/captures/destinations"),
     ] {
         assert_eq!(url.as_str(), format!("{origin}{path}"));
@@ -473,8 +473,8 @@ fn cloud_auth_release_disables_loopback_http_transport() {
         let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
         let url = Url::parse(origin).unwrap();
         config.token = url.join("v1/devices/token").unwrap();
-        config.session = url.join("v1/devices/session").unwrap();
-        config.revocation = url.join("v1/devices/logout").unwrap();
+        config.session = url.join("v1/devices/grants/current").unwrap();
+        config.revocation = url.join("v1/devices/grants/current/revoke").unwrap();
         assert!(matches!(
             HttpTransport.exchange(
                 &config,
@@ -839,7 +839,7 @@ mod debug_http {
         assert!(tokens.matches_session(&session));
         let request = worker.join().unwrap();
         request.native_only();
-        assert_eq!(request.line, "GET /v1/devices/session HTTP/1.1");
+        assert_eq!(request.line, "GET /v1/devices/grants/current HTTP/1.1");
         assert_eq!(
             request.header("authorization"),
             Some("Bearer synthetic-access")
@@ -850,7 +850,10 @@ mod debug_http {
         HttpTransport.revoke(&config, "synthetic-refresh").unwrap();
         let request = worker.join().unwrap();
         request.native_only();
-        assert_eq!(request.line, "POST /v1/devices/logout HTTP/1.1");
+        assert_eq!(
+            request.line,
+            "POST /v1/devices/grants/current/revoke HTTP/1.1"
+        );
         assert!(request.header("authorization").is_none());
         assert_eq!(
             request.body,

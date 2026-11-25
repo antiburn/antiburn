@@ -135,13 +135,13 @@ connection, sign in again instead of refreshing the old grant.
 
 Device authentication requests use the configured API origin:
 
-| Request                          | Proof                                                                                                        |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Request | Proof |
+| --- | --- |
 | `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
-| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
-| `GET /v1/devices/session`        | Access bearer                                                                                                |
-| `GET /v1/captures/destinations`  | Access bearer                                                                                                |
-| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                       |
+| `POST /v1/devices/token` | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
+| `GET /v1/devices/grants/current` | Access bearer |
+| `GET /v1/captures/destinations` | Access bearer |
+| `POST /v1/devices/grants/current/revoke` | JSON `{refresh_token}` |
 
 Desktop uses the short OS hostname as `device_name`. It omits the domain suffix
 and falls back to `Antiburn Desktop` if the name is unavailable or unsuitable.
@@ -683,8 +683,8 @@ Expired incomplete parts can require transfer again from the same local bytes.
 This never grants permission to read source again, change the capture, or
 overwrite a newer publication. Deletion and cancellation remain final.
 
-Capture API requests use `/v1/captures` on the configured resource origin
-and use credentials held by Desktop.
+Desktop sends capture API requests to the configured resource origin with its
+own credentials. See the [capture routes](capture.md#desktop-http-routes).
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.
 Upload locations never enter saved state, renderer status, or diagnostics.

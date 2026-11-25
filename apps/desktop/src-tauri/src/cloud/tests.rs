@@ -494,7 +494,7 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
     );
     assert_eq!(
         config().session.as_str(),
-        "https://api.example/v1/devices/session"
+        "https://api.example/v1/devices/grants/current"
     );
     for origin in [
         "http://api.example",

@@ -37,9 +37,9 @@ fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>
     let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
     config.authorization = origin.join("devices/authorize/account").unwrap();
     config.token = origin.join("v1/devices/token").unwrap();
-    config.session = origin.join("v1/devices/session").unwrap();
+    config.session = origin.join("v1/devices/grants/current").unwrap();
     config.workspaces = origin.join("v1/captures/destinations").unwrap();
-    config.revocation = origin.join("v1/devices/logout").unwrap();
+    config.revocation = origin.join("v1/devices/grants/current/revoke").unwrap();
     let reply = reply.map(|(status, body)| (status, body.to_owned()));
     let worker = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
@@ -244,7 +244,7 @@ fn cloud_http_session_sends_only_the_access_bearer() {
         Err(Failure::Rejected)
     ));
     let request = worker.join().unwrap();
-    assert_eq!(request.line, "GET /v1/devices/session HTTP/1.1");
+    assert_eq!(request.line, "GET /v1/devices/grants/current HTTP/1.1");
     request.native_only();
     assert_eq!(
         request.header("authorization"),
@@ -262,7 +262,10 @@ fn cloud_http_logout_sends_only_refresh_proof_and_requires_synchronous_204() {
             status == 204
         );
         let request = worker.join().unwrap();
-        assert_eq!(request.line, "POST /v1/devices/logout HTTP/1.1");
+        assert_eq!(
+            request.line,
+            "POST /v1/devices/grants/current/revoke HTTP/1.1"
+        );
         request.native_only();
         assert!(request.header("authorization").is_none());
         assert_eq!(request.header("content-type"), Some("application/json"));
