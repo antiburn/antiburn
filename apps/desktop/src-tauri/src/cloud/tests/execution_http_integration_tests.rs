@@ -427,6 +427,7 @@ fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
 #[test]
 fn cloud_execution_http_finalize_requires_exact_status_target() {
     use super::super::upload::{Failure, HttpTransport};
+    use antiburn_cloud_capture::TransportError;
 
     let manifest = CaptureManifest {
         version: 1,
