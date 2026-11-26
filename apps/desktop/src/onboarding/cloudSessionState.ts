@@ -74,7 +74,7 @@ export interface CloudViewSnapshot {
 }
 
 /** Compare consent-relevant roots without treating display-count changes as edits. */
-export function selectedFoldersKey(value: CloudSnapshot) {
+function selectedFoldersKey(value: CloudSnapshot) {
   return JSON.stringify(
     value.draft.folders
       .filter((folder) => folder.selected)

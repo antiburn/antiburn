@@ -33,7 +33,6 @@ export interface CloudOnboardingProps {
   holdIdentity?: boolean
 }
 const focusHeading = (node: HTMLHeadingElement | null) => node?.focus()
-export { CloudProjectFolders } from "./CloudOnboardingFolders"
 /** Observe one CloudSession. Completion can stay local without content consent;
  * leaving browser approval cancels only that attempt, not upload consent.
  */

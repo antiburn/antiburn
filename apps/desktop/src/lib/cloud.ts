@@ -118,7 +118,7 @@ export interface CloudFolder {
   sourceKind?: CloudSourceKind
 }
 /** Normalize only an absent legacy kind; desktop code rejects unknown kinds. */
-export const cloudSourceKind = (source: CloudFolder): CloudSourceKind =>
+const cloudSourceKind = (source: CloudFolder): CloudSourceKind =>
   source.sourceKind ?? "claude_jsonl"
 /** Compare provider and path together without treating display counts as consent. */
 export const cloudSourceKey = (source: CloudFolder) =>
