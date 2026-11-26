@@ -1,4 +1,5 @@
 import {
+  displayWindows,
   pace,
   percentage,
   primaryWindow,
@@ -14,6 +15,7 @@ export function sameUsagePresentation(
 ): boolean {
   return (
     previous?.status === snapshot.status &&
+    previous.fiveHourAbsent === snapshot.fiveHourAbsent &&
     JSON.stringify(previous.windows) === JSON.stringify(snapshot.windows) &&
     PRIMARY_WINDOWS.every((kind) => {
       const window = primaryWindow(snapshot, kind);
@@ -47,7 +49,7 @@ export function usageReplyText(snapshot: UsageSnapshot, now: number): string {
     return snapshot.status === "error"
       ? "Usage is unavailable."
       : "Usage has not been reported yet.";
-  return PRIMARY_WINDOWS.map((kind) =>
-    meterDescription(primaryWindow(snapshot, kind), now),
-  ).join("\n");
+  return displayWindows(snapshot)
+    .map((window) => meterDescription(window, now))
+    .join("\n");
 }

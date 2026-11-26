@@ -1117,7 +1117,11 @@ async function renderUsage(
       liveNow,
       variant,
     }) => {
-      const layout = usageLayout(event.props.bodyColumns * 8, variant);
+      const layout = usageLayout(
+        event.props.bodyColumns * 8,
+        variant,
+        windows.length === 1 ? 1 : 2,
+      );
       usageMeterWidth = layout.meterWidth;
       const mount = `${event.requestId}:${event.props.bodyColumns}:${event.props.maxRows}:${variant}`;
       if (usageMount !== undefined && usageMount !== mount)

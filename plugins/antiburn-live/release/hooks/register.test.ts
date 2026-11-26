@@ -1237,8 +1237,10 @@ for (const limits of [
     await start($)
     await attachDesktop($)
     await refresh($)
-    expect(fake.authorizations).toBe(0)
-    expect(fake.requests.length).toBe(0)
+    // A weekly-only reading asks the account once whether a 5-hour limit exists.
+    const checks = limits.length === 1 && limits[0]!.kind === "seven_day" ? 1 : 0
+    expect(fake.authorizations).toBe(checks)
+    expect(fake.requests.length).toBe(checks)
     if (limits.length === 1)
       expect((await $.command.run(command(PLUGIN))).text).toContain(
         "5-hour: Unavailable.",
@@ -3111,3 +3113,143 @@ for (const newer of ["attach", "measure", "detach"] as const) {
     expect(fake.requests).toHaveLength(newer === "attach" ? 1 : 0)
   })
 }
+
+const WEEKLY_ONLY_ACCOUNT = JSON.stringify({
+  five_hour: null,
+  seven_day: { utilization: 12, resets_at: "2026-01-04T00:00:00Z" },
+  limits: [
+    { kind: "weekly_all", percent: 12, resets_at: "2026-01-04T00:00:00Z", scope: null, is_active: true },
+    {
+      kind: "weekly_scoped",
+      percent: 0,
+      resets_at: "2026-01-04T00:00:00Z",
+      scope: { model: { display_name: "Example" } },
+      is_active: false,
+    },
+  ],
+})
+const SESSION_ACCOUNT = JSON.stringify({
+  five_hour: { utilization: 99, resets_at: "2026-01-01T09:00:00Z" },
+  limits: [
+    { kind: "session", percent: 31, resets_at: 1767240000, is_active: true },
+    { kind: "weekly_all", utilization: 0.42, resets_at: "2026-01-04T00:00:00Z", is_active: true },
+  ],
+})
+const accountResponse = (text: string) =>
+  ({ status: 200, ok: true, headers: {}, text }) as HttpResponse
+const svgAlts = async (band: { findAll: (query: { type: string }) => Promise<{ props: { alt?: unknown } }[]> }) =>
+  (await band.findAll({ type: "Svg" })).map((node) => String(node.props.alt)).join(" | ")
+
+for (const surface of ["terminal", "desktop"] as const) {
+  test(`an account without a 5-hour limit shows only the weekly meter on ${surface}`, async ($, on) => {
+    const fake = fakeEngine(on)
+    fake.rateLimits = [{ kind: "seven_day", percentUsed: 7, resetsAt: "2026-01-04T00:00:00Z" }]
+    fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+    await start($)
+    const band = await $.ui.mount({ plugin: PLUGIN, surface, component: "AbovePrompt", props: props() })
+    await measure($, fake.rateLimits)
+    expect(fake.requests.length).toBe(1)
+    await band.redraw()
+    const details = (await $.command.run(command(PLUGIN))).text
+    // The native reading stays the source of the weekly value.
+    expect(details).toContain("Weekly: 7%.")
+    expect(details).not.toContain("5-hour")
+    if (surface === "terminal") {
+      expect(await band.find({ text: "Weekly" })).toBeDefined()
+      expect(await band.find({ text: "5-hour" })).toBeUndefined()
+      expect(await band.find({ key: "usage-five_hour" })).toBeUndefined()
+    } else {
+      const alts = await svgAlts(band)
+      expect(alts).toContain("Weekly: 7%.")
+      expect(alts).not.toContain("5-hour")
+    }
+    await measure($, [{ kind: "seven_day", percentUsed: 9 }])
+    await refresh($)
+    expect(fake.requests.length).toBe(1)
+    expect((await $.command.run(command(PLUGIN))).text).not.toContain("5-hour")
+  })
+}
+
+test("a flat account payload keeps the 5-hour meter waiting for a message", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  await start($)
+  await measure($, fake.rateLimits)
+  await measure($, fake.rateLimits)
+  expect(fake.requests.length).toBe(1)
+  const details = (await $.command.run(command(PLUGIN))).text
+  expect(details).toContain("5-hour: Unavailable. Starts when a message is sent")
+  expect(details).toContain("Weekly: 7%.")
+})
+
+test("a reported 5-hour reading restores its meter after an absent limit check", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+  await start($)
+  await measure($, fake.rateLimits)
+  expect((await $.command.run(command(PLUGIN))).text).not.toContain("5-hour")
+  await measure($, LIMITS)
+  expect((await $.command.run(command(PLUGIN))).text).toContain("5-hour: 8%.")
+  expect(fake.requests.length).toBe(1)
+})
+
+test("a failed limit check keeps both meters and backs off", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  fake.response = { status: 500, ok: false, headers: {}, text: "" } as HttpResponse
+  await start($)
+  await measure($, fake.rateLimits)
+  await measure($, fake.rateLimits)
+  expect(fake.requests.length).toBe(1)
+  const details = (await $.command.run(command(PLUGIN))).text
+  expect(details).toContain("Weekly: 7%.")
+  expect(details).toContain("5-hour: Unavailable. Starts when a message is sent")
+  expect(details).not.toContain("Usage unavailable")
+  fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+  fake.now += 60_000
+  await measure($, fake.rateLimits)
+  expect(fake.requests.length).toBe(2)
+  expect((await $.command.run(command(PLUGIN))).text).not.toContain("5-hour")
+})
+
+test("a new session checks the account limits again", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+  await start($)
+  await measure($, fake.rateLimits)
+  expect(fake.requests.length).toBe(1)
+  await $.session.end({ reason: "clear", sessionId: "s", resume: {} } as never)
+  fake.response = accountResponse(SESSION_ACCOUNT)
+  await start($)
+  await measure($, fake.rateLimits)
+  expect(fake.requests.length).toBe(2)
+  expect((await $.command.run(command(PLUGIN))).text).toContain(
+    "5-hour: Unavailable. Starts when a message is sent",
+  )
+})
+
+test("Desktop account usage reads the limits array before the flat keys", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = []
+  fake.response = accountResponse(SESSION_ACCOUNT)
+  await start($)
+  await attachDesktop($)
+  const details = (await $.command.run(command(PLUGIN))).text
+  expect(details).toContain("5-hour: 31%. RESETS IN 4H 0M")
+  expect(details).toContain("Weekly: 42%.")
+})
+
+test("Desktop account usage without a session limit shows only the weekly meter", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = []
+  fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+  await start($)
+  await attachDesktop($)
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: "desktop", component: "AbovePrompt", props: props() })
+  const alts = await svgAlts(band)
+  expect(alts).toContain("Weekly: 12%.")
+  expect(alts).not.toContain("5-hour")
+  expect((await $.command.run(command(PLUGIN))).text).not.toContain("5-hour")
+})

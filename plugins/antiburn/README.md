@@ -7,9 +7,9 @@ weekly percentages, reset times and even-pace markers. Pace compares usage with
 the elapsed part of a limit window; it is a reference, not a forecast or a
 guarantee that a limit will not be reached. Missing readings stay unavailable.
 
-Version **0.2.7** adds a shared Desktop usage fade and compact spacing between
-stacked mod strips on Desktop and Terminal. It preserves responsive meters,
-anchored reset and pace details, other mods above the prompt, and quota behavior.
+Version **0.2.8** hides the 5-hour meter for accounts whose limit list has no
+5-hour limit, and lets the Weekly meter use the full strip. It preserves the
+Desktop usage fade, compact spacing, responsive meters and quota behavior.
 The plugin version is independent of Antiburn desktop app versions.
 
 ## Supported surfaces

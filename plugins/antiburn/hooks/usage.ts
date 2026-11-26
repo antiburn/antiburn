@@ -4,6 +4,8 @@ export type UsageSnapshot = {
   status: 'ready' | 'empty' | 'error'
   windows: UsageWindow[]
   capturedAt: number
+  // True only when the account limit list has no 5-hour limit.
+  fiveHourAbsent?: true
 }
 
 const LABELS: Readonly<Record<string, string>> = {
@@ -16,7 +18,11 @@ const LABELS: Readonly<Record<string, string>> = {
 const PERIODS: Readonly<Record<string, number>> = { five_hour: 5 * 60 * 60_000, seven_day: 7 * 24 * 60 * 60_000 }
 export const PRIMARY_WINDOWS = ['five_hour', 'seven_day'] as const
 
-export function normalizeUsage(readings: readonly RateLimitReading[], capturedAt: number): UsageSnapshot {
+export function normalizeUsage(
+  readings: readonly RateLimitReading[],
+  capturedAt: number,
+  fiveHourAbsent = false,
+): UsageSnapshot {
   const windows: UsageWindow[] = []
   for (const reading of readings) {
     const label = LABELS[reading.kind]
@@ -28,7 +34,33 @@ export function normalizeUsage(readings: readonly RateLimitReading[], capturedAt
       resetsAt: typeof reading.resetsAt === 'string' && Number.isFinite(Date.parse(reading.resetsAt)) ? reading.resetsAt : null,
     })
   }
-  return { status: windows.some((window) => window.percent !== null) ? 'ready' : 'empty', windows, capturedAt }
+  return withFiveHourAbsent(
+    { status: windows.some((window) => window.percent !== null) ? 'ready' : 'empty', windows, capturedAt },
+    fiveHourAbsent,
+  )
+}
+
+export function withFiveHourAbsent(snapshot: UsageSnapshot, fiveHourAbsent: boolean): UsageSnapshot {
+  const { status, windows, capturedAt } = snapshot
+  return fiveHourAbsent ? { status, windows, capturedAt, fiveHourAbsent: true } : { status, windows, capturedAt }
+}
+
+// A weekly reading without a 5-hour reading can mean an unstarted window or no 5-hour limit.
+export function weeklyWithoutFiveHour(snapshot: UsageSnapshot): boolean {
+  return (
+    snapshot.status === 'ready' &&
+    !snapshot.windows.some((window) => window.kind === 'five_hour') &&
+    snapshot.windows.some((window) => window.kind === 'seven_day' && window.percent !== null)
+  )
+}
+
+// Show the 5-hour meter unless the account has no 5-hour limit and no reading for it.
+export function displayWindows(snapshot: UsageSnapshot): UsageWindow[] {
+  const hidden =
+    snapshot.fiveHourAbsent === true && !snapshot.windows.some((window) => window.kind === 'five_hour')
+  return PRIMARY_WINDOWS.filter((kind) => !(hidden && kind === 'five_hour')).map((kind) =>
+    primaryWindow(snapshot, kind),
+  )
 }
 
 export function primaryWindow(snapshot: UsageSnapshot, kind: (typeof PRIMARY_WINDOWS)[number]): UsageWindow {
@@ -47,7 +79,7 @@ export function primaryWindow(snapshot: UsageSnapshot, kind: (typeof PRIMARY_WIN
 }
 
 export function usageFailure(previous: UsageSnapshot, capturedAt: number): UsageSnapshot {
-  return { status: 'error', windows: previous.windows, capturedAt }
+  return withFiveHourAbsent({ status: 'error', windows: previous.windows, capturedAt }, previous.fiveHourAbsent === true)
 }
 
 export function percentage(window: UsageWindow): string {

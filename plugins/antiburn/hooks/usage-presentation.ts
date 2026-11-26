@@ -51,9 +51,10 @@ export const INLINE_METER_HEIGHT = 18
 
 export const METER_HEIGHT = PRESENTATION.captionHeight + (PRESENTATION.trackHeight + PRESENTATION.paceHeight) / 2
 
-export function usageLayout(contentWidth: number, variant: UsageLayout = 'current') {
+// Lay out one or two meters. One meter takes the full content width.
+export function usageLayout(contentWidth: number, variant: UsageLayout = 'current', count: 1 | 2 = 2) {
   const width = Math.max(1, Number.isFinite(contentWidth) ? contentWidth : 1)
-  const inline = width >= PRESENTATION.inlineWidth
+  const inline = count === 2 && width >= PRESENTATION.inlineWidth
   const metersX = PRESENTATION.brandInset + PRESENTATION.markSlotSize + PRESENTATION.brandGap
   const metersWidth = Math.max(
     1,
@@ -62,7 +63,14 @@ export function usageLayout(contentWidth: number, variant: UsageLayout = 'curren
   const meterWidth = inline ? (metersWidth - PRESENTATION.inlineGap) / 2 : metersWidth
   const meterHeight = variant === 'inline' ? INLINE_METER_HEIGHT : METER_HEIGHT
   const stackedGap = variant === 'inline' ? 1 : PRESENTATION.stackedGap
-  const height = inline ? meterHeight : meterHeight * 2 + stackedGap
+  const height = inline || count === 1 ? meterHeight : meterHeight * 2 + stackedGap
+  const meters = [
+    { x: metersX, y: 0 },
+    {
+      x: inline ? metersX + meterWidth + PRESENTATION.inlineGap : metersX,
+      y: inline ? 0 : meterHeight + stackedGap,
+    },
+  ].slice(0, count)
   return {
     width,
     height,
@@ -74,13 +82,7 @@ export function usageLayout(contentWidth: number, variant: UsageLayout = 'curren
       x: PRESENTATION.brandInset + (PRESENTATION.markSlotSize - PRESENTATION.markSize) / 2,
       y: (height - PRESENTATION.markSize) / 2,
     },
-    meters: [
-      { x: metersX, y: 0 },
-      {
-        x: inline ? metersX + meterWidth + PRESENTATION.inlineGap : metersX,
-        y: inline ? 0 : meterHeight + stackedGap,
-      },
-    ],
+    meters,
   }
 }
 
