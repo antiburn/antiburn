@@ -63,7 +63,11 @@ export function CloudOnboarding({
   const disabled = busy || value.busy || openingSetup
   const browserSetup = session.canOpenSetup() && value.cloud.status === "signed_in"
   const projects = value.projects
-  const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
+  const accessUpdateWaiting = value.cloud.accessUpdate === "waiting"
+  const waiting =
+    !accessUpdateWaiting &&
+    value.cloud.authEnabled &&
+    ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.authEnabled && value.cloud.status === "returned"
   const cleanupPending = cloudAccountCleanupPending(value.cloud)
   const ongoing = value.lastTeamSync ?? value.ongoing
@@ -270,7 +274,7 @@ export function CloudOnboarding({
                   {value.cloud.localCleanupPending ? "Finish signing out" : "Sign out"}
                 </button>
               )
-            ) : !checkingSignIn ? (
+            ) : !accessUpdateWaiting && !checkingSignIn ? (
               <button
                 className={
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
@@ -288,6 +292,15 @@ export function CloudOnboarding({
                 <ArrowUpRight size={16} aria-hidden />
               </button>
             ) : null}
+            {accessUpdateWaiting && (
+              <DeviceAccessUpdate
+                value={value.cloud}
+                busy={disabled}
+                update={session.begin}
+                cancel={session.cancel}
+                onboarding
+              />
+            )}
             <p className="cloud-status type-footnote" role="status">
               {value.loaded
                 ? cleanupPending

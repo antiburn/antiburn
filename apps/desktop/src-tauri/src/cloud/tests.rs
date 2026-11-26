@@ -65,7 +65,7 @@ fn cloud_startup_and_onboarding_prereads_use_the_worker_boundary() {
         .0;
     assert!(
         begin.find("work.run(Priority::Normal").unwrap()
-            < begin.find(".compare_exchange(").unwrap()
+            < begin.find("claim_browser_attempt(").unwrap()
     );
     assert!(
         begin.find("let expected_generation =").unwrap()
@@ -1245,7 +1245,7 @@ fn rejected_browser_starts_leave_the_live_access_update_current() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
     let generation = AtomicU64::new(0);
-    let first = claim_browser_attempt(&fixture.engine, &generation, 0, true).unwrap();
+    let first = claim_browser_attempt(&mut fixture.engine, &generation, 0, 102, true).unwrap();
     let actions = [
         auth::DeviceAction::SessionList,
         auth::DeviceAction::SessionRead,
@@ -1257,15 +1257,12 @@ fn rejected_browser_starts_leave_the_live_access_update_current() {
     assert!(launch_account_browser(&mut fixture.engine, &attempt, || true, || Ok(())).unwrap());
 
     for access_update in [true, false] {
-        assert!(claim_browser_attempt(&fixture.engine, &generation, first, access_update).is_err());
+        assert!(
+            claim_browser_attempt(&mut fixture.engine, &generation, first, 103, access_update)
+                .is_err()
+        );
         assert_eq!(generation.load(Ordering::Acquire), first);
     }
-    assert!(matches!(
-        fixture
-            .engine
-            .begin_access_update(103, first + 1, &actions, || true),
-        Err(Failure::Unavailable)
-    ));
     assert_eq!(
         fixture.engine.attempt.as_ref().unwrap().callback,
         listener.callback()
@@ -1286,6 +1283,93 @@ fn rejected_browser_starts_leave_the_live_access_update_current() {
         fixture.engine.session().unwrap().grant_id,
         "replacement-grant"
     );
+}
+
+#[test]
+fn expired_access_update_allows_retry_with_revocation_uncertainty() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let expired = begin_session_access_update(&mut fixture);
+    assert!(launch_account_browser(&mut fixture.engine, &expired, || true, || Ok(())).unwrap());
+    let generation = AtomicU64::new(expired.generation);
+    let retry_at = expired.expires_at;
+
+    let next = claim_browser_attempt(
+        &mut fixture.engine,
+        &generation,
+        expired.generation,
+        retry_at,
+        true,
+    )
+    .unwrap();
+    assert_eq!(next, expired.generation + 1);
+    assert!(fixture.engine.attempt.is_none());
+    assert!(fixture.engine.remote_logout_unconfirmed());
+
+    let (_, _listener, retry) = fixture
+        .engine
+        .begin_access_update(retry_at, next, &[auth::DeviceAction::SessionRead], || true)
+        .unwrap();
+    assert_eq!(retry.generation, next);
+    assert!(fixture.engine.session().is_some());
+}
+
+#[test]
+fn sign_in_restores_the_saved_grant_after_cancelling_an_offline_access_update() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let attempt = begin_session_access_update(&mut fixture);
+    assert!(launch_account_browser(&mut fixture.engine, &attempt, || true, || Ok(())).unwrap());
+    fixture
+        .transport
+        .fail_before_send
+        .store(true, Ordering::Release);
+
+    let failure = fixture.engine.refresh(200, || true).unwrap_err();
+    assert_eq!(failure, Failure::Offline);
+    fixture.engine.status = failure.into();
+    assert!(fixture.engine.session().is_none());
+    assert!(matches!(
+        fixture.engine.access_update,
+        Some(AccessUpdateStatus::Waiting)
+    ));
+
+    fixture.engine.cancel(attempt.generation + 1).unwrap();
+    assert!(fixture.engine.access_update.is_none());
+    assert!(fixture.engine.remote_logout_unconfirmed());
+    assert!(fixture.engine.status == AuthStatus::Offline);
+    let saved = fixture.vault.read().unwrap().unwrap();
+    assert!(matches!(
+        fixture.engine.begin_account_sign_in(201, 3, || true),
+        Err(Failure::Offline)
+    ));
+    assert_eq!(
+        fixture.vault.read().unwrap().unwrap().refresh_token,
+        saved.refresh_token
+    );
+
+    fixture
+        .transport
+        .fail_before_send
+        .store(false, Ordering::Release);
+    assert!(
+        fixture
+            .engine
+            .begin_account_sign_in(202, 4, || true)
+            .unwrap()
+            .is_none()
+    );
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+    assert!(fixture.engine.attempt.is_none());
+    assert!(fixture.engine.remote_logout_unconfirmed());
+    let refreshed = fixture.vault.read().unwrap().unwrap();
+    assert_eq!(refreshed.epoch, saved.epoch);
+    assert_eq!(refreshed.refresh_token, "synthetic-refresh-1");
+    assert_eq!(
+        *fixture.transport.seen.lock().unwrap(),
+        ["code", "synthetic-refresh-0"]
+    );
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -1323,6 +1407,45 @@ fn rejected_local_reset_leaves_the_access_update_current() {
     assert_eq!(
         fixture.engine.session().unwrap().grant_id,
         "replacement-grant"
+    );
+}
+
+#[test]
+fn local_reset_reports_storage_failure_only_for_current_closed_recovery() {
+    let mut fixture = Fixture::new();
+    let record = fixture
+        .engine
+        .state
+        .lock()
+        .unwrap()
+        .replace(
+            state::Phase::ReauthRequired,
+            state::Cleanup::Revoke {
+                prior_unconfirmed: false,
+            },
+        )
+        .unwrap();
+    fixture.engine.refresh(102, || true).unwrap();
+    assert!(fixture.engine.local_reset_available);
+    fixture.vault.fail_read.store(true, Ordering::Release);
+    let account = AtomicU64::new(0);
+    let browser = AtomicU64::new(1);
+
+    assert_eq!(
+        reset_local_account(&mut fixture.engine, &account, &browser, 1),
+        Ok(false)
+    );
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert_eq!(
+        reset_local_account(&mut fixture.engine, &account, &browser, 0),
+        Ok(true)
+    );
+    assert!(fixture.engine.status == AuthStatus::CredentialFailed);
+    assert_eq!(account.load(Ordering::Acquire), 0);
+    assert_eq!(browser.load(Ordering::Acquire), 1);
+    assert_eq!(
+        fixture.engine.state.lock().unwrap().read().unwrap().epoch,
+        record.epoch
     );
 }
 
@@ -2102,7 +2225,7 @@ fn cloud_lock_serializes_separate_processes() {
 }
 
 #[test]
-fn cloud_snapshot_does_not_include_native_secrets() {
+fn cloud_snapshot_includes_grant_identifier_without_credentials() {
     let value = Snapshot {
         auth_enabled: true,
         dashboard_available: true,
@@ -2125,17 +2248,21 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         setup_error: None,
         draft: Draft::default(),
     };
-    let encoded = serde_json::to_string(&value).unwrap();
-    assert!(encoded.contains("\"sessionReadUpdateAvailable\":false"));
-    assert!(encoded.contains("\"grantId\":\"synthetic-grant\""));
+    let encoded = serde_json::to_value(&value).unwrap();
+    assert_eq!(encoded["sessionReadUpdateAvailable"], false);
+    // Onboarding uses this identifier to ignore workspace results for an old grant.
+    assert_eq!(encoded["grantId"], "synthetic-grant");
     for field in [
         "access_token",
+        "accessToken",
         "refresh_token",
+        "refreshToken",
         "verifier",
         "state",
         "device_id",
+        "deviceId",
     ] {
-        assert!(!encoded.contains(field));
+        assert!(encoded.get(field).is_none());
     }
 }
 
@@ -2185,10 +2312,10 @@ fn cloud_state_read_failure_clears_cached_access_and_logout_repairs_only_closed_
 }
 
 #[test]
-fn cloud_browser_cancellation_during_established_refresh_does_not_revoke_the_account() {
+fn cloud_browser_cancellation_during_access_update_refresh_does_not_revoke_the_account() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
-    let attempt_generation = Arc::new(AtomicU64::new(0));
+    let attempt_generation = Arc::new(AtomicU64::new(1));
     let account_generation = AtomicU64::new(0);
     let cancel = attempt_generation.clone();
     let transport = Arc::new(FakeTransport {
@@ -2199,10 +2326,24 @@ fn cloud_browser_cancellation_during_established_refresh_does_not_revoke_the_acc
         ..FakeTransport::default()
     });
     fixture.engine.transport = Arc::new(transport.clone());
-    fixture
+    let (_, _listener, attempt) = fixture
         .engine
-        .refresh(200, || account_generation.load(Ordering::Acquire) == 0)
+        .begin_access_update(200, 1, &[auth::DeviceAction::SessionRead], || {
+            account_generation.load(Ordering::Acquire) == 0
+        })
         .unwrap();
+    assert!(
+        !launch_account_browser(
+            &mut fixture.engine,
+            &attempt,
+            || {
+                attempt_generation.load(Ordering::Acquire) == attempt.generation
+                    && account_generation.load(Ordering::Acquire) == 0
+            },
+            || panic!("a cancelled update cannot open the browser"),
+        )
+        .unwrap()
+    );
     fixture
         .engine
         .cancel(attempt_generation.load(Ordering::Acquire))

@@ -8,7 +8,7 @@ type Props = {
   onboarding?: boolean
 }
 
-/** Request more access without replacing the current connection before approval. */
+/** Request more access and let the user cancel a pending update even without a session. */
 export function DeviceAccessUpdate({ value, busy, update, cancel, onboarding }: Props) {
   const row = onboarding
     ? "flex flex-wrap items-center gap-2"
@@ -21,7 +21,8 @@ export function DeviceAccessUpdate({ value, busy, update, cancel, onboarding }: 
     return (
       <div className={row}>
         <p className={text} role="status">
-          Review device access in your browser. Your current connection stays active.
+          Review device access in your browser.
+          {value.identity && " Your current connection stays active."}
         </p>
         <button type="button" className={button} disabled={busy} onClick={() => void cancel()}>
           Cancel access update

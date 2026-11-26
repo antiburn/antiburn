@@ -331,6 +331,28 @@ impl Engine {
         state
     }
 
+    /// Restore an active saved grant when local access is missing. Return no
+    /// listener after refresh. Only open browser approval for a new connection.
+    pub(super) fn begin_account_sign_in(
+        &mut self,
+        now: i64,
+        generation: u64,
+        account_current: impl Fn() -> bool,
+    ) -> Result<Option<(String, Listener, Attempt)>, Failure> {
+        if !self.cleanup_only
+            && !self.sign_out_marker_failed
+            && self.attempt.is_none()
+            && self.session().is_none()
+        {
+            let (_, record) = self.read_state()?;
+            if record.phase == Phase::Active {
+                self.refresh(now, account_current)?;
+                return Ok(None);
+            }
+        }
+        self.begin(now, generation).map(Some)
+    }
+
     /// Bind a fresh callback before browser launch and persist its pending epoch.
     /// The caller must wait for the returned listener outside the controller lock.
     pub fn begin(
@@ -382,18 +404,16 @@ impl Engine {
     }
 
     /// Reuse browser approval without changing active credentials or folder settings.
-    /// Reject a start while another browser approval is pending.
+    /// The caller must claim the browser attempt before starting the update.
+    /// Browser cancellation cannot cancel refresh of the current account grant.
     pub(super) fn begin_access_update(
         &mut self,
         now: i64,
         generation: u64,
         actions: &[DeviceAction],
-        current: impl Fn() -> bool,
+        account_current: impl Fn() -> bool,
     ) -> Result<(String, Listener, Attempt), Failure> {
-        if self.attempt.is_some() {
-            return Err(Failure::Unavailable);
-        }
-        self.refresh(now, current)?;
+        self.refresh(now, account_current)?;
         let session = self.session().ok_or(Failure::ReauthRequired)?;
         if self.cleanup_only || !actions.iter().any(|&action| !session.allows(action)) {
             return Err(Failure::Unavailable);

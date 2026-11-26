@@ -134,10 +134,11 @@ Desktop requires the token and session bindings to match before it saves a
 refresh credential. A changed grant, account, scope, or fixed deadline
 cannot restore the saved connection. To add missing actions, choose
 **Update device access**. Desktop asks the same account to approve its current
-actions and the missing actions in the browser. An access update cannot start
-while a browser approval is pending, and a new sign-in cannot replace a pending
-access update. Desktop keeps the current grant
-until it verifies and securely saves the replacement. It records unconfirmed
+actions and the missing actions in the browser. An access update cannot overlap
+another browser approval. Once the approval expires, a new attempt can start.
+You can still cancel an access update if Desktop loses the current session.
+Desktop keeps the current grant until it verifies and securely saves the
+replacement. It records unconfirmed
 revocation with the replacement epoch, then tries to revoke the old grant
 before returning from the callback. That request can take up to 15 seconds.
 It leaves the detached logout slot free for sign-out. Both proofs share one
@@ -149,7 +150,7 @@ keeps revocation uncertainty.
 If Desktop cannot confirm rollback to the old epoch, it leaves both proofs
 in place. A later refresh selects the proof that matches the active epoch.
 
-Denial or cancellation leaves the old grant connected. If Desktop abandons
+Denial or cancellation does not revoke the old grant. If Desktop abandons
 an update after the browser may have opened, it records revocation uncertainty
 without blocking the current grant. This also applies if a verified callback
 fails before Desktop has proof it can use to revoke the replacement. Explicit

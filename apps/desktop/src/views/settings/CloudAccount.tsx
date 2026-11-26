@@ -280,6 +280,7 @@ export function CloudAccount({
   const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false)
   const [openingBrowser, setOpeningBrowser] = useState(false)
   const [browserOpenError, setBrowserOpenError] = useState<string | null>(null)
+  const accessUpdateWaiting = value.cloud.accessUpdate === "waiting"
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed =
@@ -446,6 +447,7 @@ export function CloudAccount({
           !requiresAccountCleanup &&
           !value.cloud.localCleanupPending &&
           value.cloud.status !== "credential_failed" &&
+          !accessUpdateWaiting &&
           !checkingSignIn && (
             <button
               className="ui-push-button shrink-0 aria-disabled:opacity-50"
@@ -472,7 +474,7 @@ export function CloudAccount({
           </button>
         )}
       </div>
-      {value.cloud.status === "signed_in" && (
+      {(value.cloud.status === "signed_in" || accessUpdateWaiting) && (
         <DeviceAccessUpdate
           value={value.cloud}
           busy={value.busy}

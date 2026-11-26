@@ -63,7 +63,7 @@ pub enum AuthStatus {
     RevocationUnconfirmed,
 }
 
-/// Status of a browser access update while the old grant stays active.
+/// Status of a browser access update, including when local access expires.
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum AccessUpdateStatus {
@@ -352,9 +352,9 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         capture_update_available: cfg!(unix)
             && setup_error.is_none()
             && session.is_some_and(|session| !session.allows(auth::DeviceAction::CaptureWrite)),
-        access_update: engine
-            .access_update
-            .filter(|_| current && session.is_some()),
+        access_update: engine.access_update.filter(|status| {
+            current && (session.is_some() || matches!(status, AccessUpdateStatus::Waiting))
+        }),
         capture_enabled: cfg!(unix)
             && setup_error.is_none()
             && session.is_some_and(|session| session.allows(auth::DeviceAction::CaptureWrite)),
@@ -614,10 +614,15 @@ pub async fn cloud_begin(
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
+        if engine.generation != controller.account_generation.load(Ordering::Acquire) {
+            return Err("Cloud account cleanup is still in progress.".to_owned());
+        }
+        let started_at = now();
         let generation = claim_browser_attempt(
-            &engine,
+            &mut engine,
             &controller.attempt_generation,
             expected_generation,
+            started_at,
             access_update.is_some(),
         )?;
         if controller.attempt_generation.load(Ordering::Acquire) != generation {
@@ -639,15 +644,17 @@ pub async fn cloud_begin(
             };
             return Ok(publish(&app, &engine));
         }
+        let account_current =
+            || controller.account_generation.load(Ordering::Acquire) == account_generation;
         let begun = match &access_update {
-            Some(update) => engine.begin_access_update(now(), generation, update.actions(), || {
-                controller.attempt_generation.load(Ordering::Acquire) == generation
-                    && controller.account_generation.load(Ordering::Acquire) == account_generation
-            }),
-            None => engine.begin(now(), generation),
+            Some(update) => engine
+                .begin_access_update(started_at, generation, update.actions(), account_current)
+                .map(Some),
+            None => engine.begin_account_sign_in(started_at, generation, account_current),
         };
         let (url, listener, attempt) = match begun {
-            Ok(value) => value,
+            Ok(Some(value)) => value,
+            Ok(None) => return Ok(publish(&app, &engine)),
             Err(error) => {
                 if access_update.is_some() && engine.session().is_some() {
                     engine.access_update = Some(AccessUpdateStatus::Failed);
@@ -763,25 +770,32 @@ pub async fn cloud_begin(
     .await
 }
 
-/// Reject overlaps with access updates before making a pending listener stale.
+/// Reject live overlaps before making a listener stale. Retire an expired
+/// attempt through normal cancellation to preserve revocation uncertainty.
 /// The caller holds the engine lock across the generation claim and attempt start.
 fn claim_browser_attempt(
-    engine: &Engine,
+    engine: &mut Engine,
     attempt_generation: &AtomicU64,
     expected: u64,
+    started_at: i64,
     access_update: bool,
 ) -> Result<u64, String> {
-    if engine
-        .attempt
-        .as_ref()
-        .is_some_and(|attempt| access_update || attempt.upgrade.is_some())
-    {
-        return Err("Cloud browser approval is already in progress.".into());
-    }
+    let expired = match &engine.attempt {
+        Some(attempt) if attempt.expires_at <= started_at => Some(attempt.generation),
+        Some(attempt) if access_update || attempt.upgrade.is_some() => {
+            return Err("Cloud browser approval is already in progress.".into());
+        }
+        _ => None,
+    };
     let generation = expected + 1;
     attempt_generation
         .compare_exchange(expected, generation, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Cloud sign-in was cancelled.".to_owned())?;
+    if let Some(expired) = expired {
+        engine
+            .cancel(expired)
+            .map_err(|_| "Could not cancel Cloud sign-in.".to_owned())?;
+    }
     Ok(generation)
 }
 
@@ -979,8 +993,8 @@ pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String
     .await
 }
 
-/// Run under the engine lock. A rejected reset cannot stale an active listener
-/// or replace the current account generation.
+/// Run under the engine lock. Return true to publish a successful reset or a
+/// storage failure for current closed recovery. Rejected resets do not fence work.
 fn reset_local_account(
     engine: &mut Engine,
     account_generation: &AtomicU64,
@@ -990,7 +1004,20 @@ fn reset_local_account(
     if engine.generation != expected || account_generation.load(Ordering::Acquire) != expected {
         return Ok(false);
     }
-    engine.reset_local()?;
+    if let Err(error) = engine.reset_local() {
+        if account_generation.load(Ordering::Acquire) != expected {
+            return Ok(false);
+        }
+        if error == Failure::CredentialFailed
+            && engine.local_reset_available
+            && engine.session().is_none()
+            && engine.attempt.is_none()
+        {
+            engine.status = error.into();
+            return Ok(true);
+        }
+        return Err(error);
+    }
     if !advance_account_generation(account_generation, engine, expected) {
         return Ok(false);
     }

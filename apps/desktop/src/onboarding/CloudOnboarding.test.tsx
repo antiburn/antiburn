@@ -67,6 +67,56 @@ it("disables device access updates while the parent is busy or browser setup is 
   expect(update).toBeEnabled()
 })
 
+it("keeps an upload access update cancellable in onboarding after sign-in is lost", async () => {
+  const { port, emit, ongoing } = fixture({
+    captureUpdateAvailable: true,
+    draft: { screen: "identity", folders: [] },
+  })
+  const disconnected: CloudSnapshot = {
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "offline",
+  }
+  const current = await port.read()
+  const begin = vi
+    .spyOn(port, "begin")
+    .mockResolvedValueOnce({ ...current, accessUpdate: "waiting" })
+    .mockResolvedValueOnce(current)
+  const cancel = vi.spyOn(port, "cancel").mockResolvedValue(disconnected)
+  const signOut = vi.spyOn(port, "signOut")
+  render(
+    <CloudOnboarding
+      port={port}
+      analytics={false}
+      holdIdentity
+      onBack={vi.fn()}
+      onComplete={vi.fn()}
+    />,
+  )
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Update device access to upload sessions" }),
+  )
+  expect(await screen.findByText(/your current connection stays active/i)).toBeVisible()
+  expect(begin).toHaveBeenCalledExactlyOnceWith("capture")
+
+  act(() => emit({ ...disconnected, destination: null, accessUpdate: "waiting" }))
+  expect(screen.getByRole("heading", { name: "Sign in to Antiburn Cloud" })).toBeVisible()
+  expect(screen.queryByText(/your current connection stays active/i)).toBeNull()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "Cancel access update" }))
+
+  const signIn = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  expect(screen.queryByRole("button", { name: "Cancel access update" })).toBeNull()
+  fireEvent.click(signIn)
+  expect(await screen.findByRole("heading", { name: "You’re signed in" })).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Cancel sign-in" })).toBeNull()
+  expect(begin).toHaveBeenLastCalledWith()
+  expect(cancel).toHaveBeenCalledOnce()
+  expect(signOut).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
 it("waits for a fresh workspace list before showing folder choices", async () => {
   const { port, ongoing } = fixture({
     draft: { screen: "identity", folders: [] },

@@ -264,15 +264,21 @@ it("offers browser workspace setup in Settings even without the dashboard shortc
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
-it("requests session access without signing out the current connection", async () => {
-  const { port, emit } = cloudProjectFixture()
+it("keeps session access updates cancellable in Settings after sign-in is lost", async () => {
+  const { port, emit, ongoing } = cloudProjectFixture()
   emit({ sessionReadsAllowed: false, sessionReadUpdateAvailable: true })
   const signOut = vi.spyOn(port, "signOut")
   const current = await port.read()
-  const begin = vi.spyOn(port, "begin").mockResolvedValueOnce({
-    ...current,
-    accessUpdate: "waiting",
-  })
+  const disconnected: CloudSnapshot = {
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "reauth_required",
+  }
+  const begin = vi
+    .spyOn(port, "begin")
+    .mockResolvedValueOnce({ ...current, accessUpdate: "waiting" })
+    .mockResolvedValueOnce({ ...disconnected, status: "waiting" })
+  const cancel = vi.spyOn(port, "cancel").mockResolvedValue(disconnected)
   render(<Account session={new CloudSession(port, false, true)} />)
   const updateAccess = await screen.findByRole("button", {
     name: "Update device access to search and read Cloud sessions",
@@ -283,7 +289,24 @@ it("requests session access without signing out the current connection", async (
   expect(await screen.findByRole("button", { name: "Cancel access update" })).toBeVisible()
   expect(begin).toHaveBeenCalledExactlyOnceWith("session_reads")
   expect(screen.getByText("Signed in as Example")).toBeVisible()
+  expect(screen.getByText(/your current connection stays active/i)).toBeVisible()
+
+  act(() => emit({ ...disconnected, destination: null, accessUpdate: "waiting" }))
+  expect(screen.getByText("Not signed in")).toBeVisible()
+  expect(screen.queryByText(/your current connection stays active/i)).toBeNull()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Cancel access update" }))
+
+  const signIn = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  expect(screen.queryByRole("button", { name: "Cancel access update" })).toBeNull()
+  fireEvent.click(signIn)
+  expect(await screen.findByRole("button", { name: "Cancel sign-in" })).toBeVisible()
+  expect(begin).toHaveBeenLastCalledWith(undefined)
+  expect(cancel).toHaveBeenCalledOnce()
   expect(signOut).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
 it("canceling the reset confirmation does not call a native cleanup action", async () => {
