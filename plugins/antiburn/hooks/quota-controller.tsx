@@ -11,20 +11,24 @@ import type { EngineInterface, On, Register, RenderInput,
 import type { UsageState } from "../types"
 import { APP_URL } from "./brand"
 import { UsageEntrance } from "./usage-entrance"
-import { retryAfterTime, type AccountUsageResult } from "./account-usage"
 import {
+  accountSnapshot,
+  retryAfterTime,
+  type AccountUsageResult,
+} from "./account-usage"
+import {
+  displayWindows,
   filledDotCount,
   normalizeUsage,
   pace,
   paceLabel,
   percentage,
-  primaryWindow,
   resetText,
   terminalDotCount,
   usageFailure,
   UsageOrder,
-  PRIMARY_WINDOWS,
-  type RateLimitReading,
+  weeklyWithoutFiveHour,
+  withFiveHourAbsent,
   type UsageSnapshot,
   type UsageWindow,
 } from "./usage"
@@ -81,12 +85,16 @@ const newAccountState = () => ({
   nextAttempt: 0,
   failures: 0,
   epoch: 0,
+  // The account limit list result for this session: null until it is known.
+  fiveHourAbsent: null as boolean | null,
+  limitsRetryAt: 0,
 })
 let accountState = newAccountState()
 let accountRequest:
   | {
       state: typeof accountState
       epoch: number
+      display: boolean
       promise: Promise<AccountUsageResult>
     }
   | undefined
@@ -117,20 +125,10 @@ export async function fetchAccountUsage($: EngineInterface,
     const payload: unknown = JSON.parse(response.text)
     if (!payload || typeof payload !== "object" || Array.isArray(payload))
       return { status: "error" }
-    const readings: RateLimitReading[] = []
-    for (const kind of ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet",
-    ]) {
-      const value: unknown = (payload as Record<string, unknown>)[kind]
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue
-      const window = value as Record<string, unknown>
-      if (typeof window.utilization !== "number") continue
-      readings.push({
-        kind,
-        percentUsed: window.utilization,
-        resetsAt: typeof window.resets_at === "string" ? window.resets_at : undefined,
-      })
-    }
-    const snapshot = normalizeUsage(readings, await $.clock.now())
+    const snapshot = accountSnapshot(
+      payload as Record<string, unknown>,
+      await $.clock.now(),
+    )
     return snapshot.status === "ready" ? { status: "ready", snapshot } : { status: "error" }
   } catch {
     return { status: "error" }
@@ -197,6 +195,91 @@ async function applyAccountResult(
   }
 }
 
+// Only a display read keeps the result as the shown account reading.
+// A limit check updates the backoff but does not replace the display cache.
+function startAccountRequest(
+  $: EngineInterface,
+  state: typeof accountState,
+  epoch: number,
+  display = true,
+): Promise<AccountUsageResult> {
+  const promise = (async () => {
+    const result = await fetchAccountUsage($)
+    const observedAt = await $.clock.now()
+    if (state === accountState) {
+      if (result.status === "ready")
+        state.fiveHourAbsent = result.snapshot.fiveHourAbsent === true
+      else if (result.status === "unsupported") state.fiveHourAbsent ??= false
+      else
+        state.limitsRetryAt = Math.max(
+          state.limitsRetryAt,
+          observedAt + 60_000,
+          retryAfterTime(result.retryAfter, observedAt),
+        )
+    }
+    if (state !== accountState || epoch !== state.epoch) return result
+    if (display) state.lastResult = result
+    if (result.status === "ready") {
+      if (display) state.snapshot = result.snapshot
+      state.failures = 0
+      state.nextAttempt = observedAt + 60_000
+    } else if (result.status === "error") {
+      state.failures = Math.min(5, state.failures + 1)
+      state.nextAttempt = Math.max(
+        observedAt + Math.min(900_000, 60_000 * 2 ** (state.failures - 1)),
+        retryAfterTime(result.retryAfter, observedAt),
+      )
+      state.limitsRetryAt = Math.max(state.limitsRetryAt, state.nextAttempt)
+    } else {
+      state.nextAttempt = observedAt + 60_000
+    }
+    return result
+  })()
+  const request = { state, epoch, display, promise }
+  accountRequest = request
+  void promise
+    .finally(() => {
+      if (accountRequest === request) accountRequest = undefined
+    })
+    .catch(() => {})
+  return promise
+}
+
+// Native readings cannot show if an absent 5-hour reading means no 5-hour limit.
+// Ask the account limit list once per session, then apply the result to native readings.
+function nativeSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
+  return accountState.fiveHourAbsent === true && weeklyWithoutFiveHour(snapshot)
+    ? withFiveHourAbsent(snapshot, true)
+    : snapshot
+}
+
+// A failed check keeps the current display and does not mark usage as unavailable.
+async function checkFiveHourLimit(
+  $: EngineInterface,
+  snapshot: UsageSnapshot,
+): Promise<void> {
+  const state = accountState
+  if (state.fiveHourAbsent !== null || !weeklyWithoutFiveHour(snapshot)) return
+  try {
+    if (!accountRequest) {
+      const now = await $.clock.now()
+      if (state !== accountState || now < state.limitsRetryAt || now < state.nextAttempt)
+        return
+    }
+    // Check the slot again after the clock read, because another check can start a request.
+    if (accountRequest && accountRequest.state !== state) return
+    await (accountRequest?.promise ?? startAccountRequest($, state, state.epoch, false))
+    if (state !== accountState || state.fiveHourAbsent !== true) return
+    await update($, usage, (current) =>
+      state === accountState && weeklyWithoutFiveHour(current.snapshot)
+        ? { ...current, snapshot: withFiveHourAbsent(current.snapshot, true) }
+        : current,
+    )
+  } catch {
+    // Keep the native reading. A later event can check again after the delay.
+  }
+}
+
 async function readAccountUsage(
   $: EngineInterface,
   now: number,
@@ -224,42 +307,20 @@ async function readAccountUsage(
     await applyAccountResult($, state.lastResult, ticket)
     return
   }
-  if (!accountRequest) {
-    const promise = (async () => {
-      const result = await fetchAccountUsage($)
-      const observedAt = await $.clock.now()
-      if (state !== accountState || epoch !== state.epoch) return result
-      state.lastResult = result
-      if (result.status === "ready") {
-        state.snapshot = result.snapshot
-        state.failures = 0
-        state.nextAttempt = observedAt + 60_000
-      } else if (result.status === "error") {
-        state.failures = Math.min(5, state.failures + 1)
-        state.nextAttempt = Math.max(
-          observedAt + Math.min(900_000, 60_000 * 2 ** (state.failures - 1)),
-          retryAfterTime(result.retryAfter, observedAt),
-        )
-      } else {
-        state.nextAttempt = observedAt + 60_000
-      }
-      return result
-    })()
-    const request = { state, epoch, promise }
-    accountRequest = request
-    void promise
-      .finally(() => {
-        if (accountRequest === request) accountRequest = undefined
-      })
-      .catch(() => {})
-  }
-  const result = await accountRequest.promise
+  if (!accountRequest) startAccountRequest($, state, epoch)
+  const request = accountRequest!
+  const result = await request.promise
   if (
     state !== accountState ||
     epoch !== state.epoch ||
     !usageOrder.isCurrent(ticket)
   )
     return
+  // A joined limit check does not keep its result. Keep it here, because this read shows it.
+  if (!request.display) {
+    state.lastResult = result
+    if (result.status === "ready") state.snapshot = result.snapshot
+  }
   await applyAccountResult($, result, ticket)
 }
 
@@ -286,7 +347,9 @@ async function readUsage($: EngineInterface, discoverDesktop = false): Promise<v
     let failed = false
     const now = await $.clock.now()
     try {
-      native = normalizeUsage((await $.session.usage()).rateLimits, now)
+      native = nativeSnapshot(
+        normalizeUsage((await $.session.usage()).rateLimits, now),
+      )
     } catch {
       failed = true
     }
@@ -296,6 +359,7 @@ async function readUsage($: EngineInterface, discoverDesktop = false): Promise<v
       accountState.snapshot = null
       accountState.lastResult = null
       await commitUsage($, native, ticket)
+      await checkFiveHourLimit($, native)
     } else if (desktopAttached) {
       await readAccountUsage($, now, ticket)
     } else if (failed) {
@@ -495,7 +559,7 @@ async function renderUsageContent(
   const now = await $.clock.now()
   recordTime(now)
   const snapshot = state.snapshot
-  const windows = PRIMARY_WINDOWS.map((kind) => primaryWindow(snapshot, kind))
+  const windows = displayWindows(snapshot)
   const columns = Math.max(1, Math.min(4096, e.props.bodyColumns))
   const isDesktop = e.surface === "desktop" && "Svg" in ui
   const hasReading = windows.some((window) => window.percent !== null)
@@ -728,7 +792,7 @@ async function renderUsageContent(
 
   if (isDesktop && columns >= 24) {
     terminalHoverBinding(e.requestId, "desktop")
-    const layout = usageLayout(columns * 8, "inline")
+    const layout = usageLayout(columns * 8, "inline", windows.length === 1 ? 1 : 2)
     const descriptions = windows.map((window) =>
       meterDescription(window, now, true),
     )
@@ -777,6 +841,7 @@ async function renderUsageContent(
   const content = Math.max(1, columns - (isDesktop ? 3 : 12))
   const inlineColumns = Math.max(1, Math.floor((content - 3) / 2))
   const isInline =
+    windows.length > 1 &&
     columns >= 80 &&
     windows.every(
       (window) =>
@@ -1155,8 +1220,8 @@ export async function usageDetails(
   return {
     text:
       prefix +
-      PRIMARY_WINDOWS.map((kind) =>
-        meterDescription(primaryWindow(state.snapshot, kind), now),
+      displayWindows(state.snapshot).map((window) =>
+        meterDescription(window, now),
       ).join("\n") +
       (retryHint ? `\n${retryHint} · ${RETRY_EXPLANATION}` : ""),
   }
@@ -1351,8 +1416,11 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
     if (desktopAttached && normalizeUsage(e.rateLimits, 0).status !== "ready") return next(e)
     const ticket = usageOrder.acceptEvent()
     needsUsageReconciliation = false
+    let checked: UsageSnapshot | undefined
     try {
-      const snapshot = normalizeUsage(e.rateLimits, await $.clock.now())
+      const snapshot = nativeSnapshot(
+        normalizeUsage(e.rateLimits, await $.clock.now()),
+      )
       if (!usageOrder.isCurrent(ticket)) return next(e)
       accountState.epoch++
       if (snapshot.status === "ready") {
@@ -1361,6 +1429,7 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
       }
       if (snapshot.status === "ready" || accountState.snapshot === null)
         await commitUsage($, snapshot, ticket)
+      checked = snapshot
     } catch {
       try {
         await update($, usage, (current) =>
@@ -1376,7 +1445,9 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
         // Forward the measurement even if its unavailable label cannot be saved.
       }
     }
-    return next(e)
+    const result = await next(e)
+    if (checked) await checkFiveHourLimit($, checked)
+    return result
   })
 
   on("ui.message", async ($, e, next) => {

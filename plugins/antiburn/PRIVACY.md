@@ -1,12 +1,16 @@
 # Privacy and data handling
 
-antiburn 0.2.7 reads account quota data through the Claude Code host.
+antiburn 0.2.8 reads account quota data through the Claude Code host.
 Native measurements take precedence, including partial readings. The mod uses
 percentages, reset timestamps, measurement status, and the host clock to display
 the usage strip and its details.
 
 After Desktop attaches, an empty or unavailable native reading can trigger a GET
-to `https://api.anthropic.com/api/oauth/usage` through the host HTTP API. The host
+to `https://api.anthropic.com/api/oauth/usage` through the host HTTP API. On
+Desktop and Terminal, a native reading with a weekly value and no 5-hour value
+can trigger the same GET once per session. The mod reads only the account limit
+list from that response, to find if the account has a 5-hour limit. The native
+reading stays the source of the displayed values. The host
 supplies an opaque bearer authorization handle and keeps the actual credential.
 The request has no body; its explicit headers are
 `anthropic-beta: oauth-2025-04-20` and `accept: application/json`. No session,
@@ -14,10 +18,12 @@ prompt, project, or account-usage content is sent by the mod. API-key and absent
 authorization do not trigger this request. Host traffic policy can refuse it.
 
 Fallback requests occur only on Desktop attachment, eligible refresh, and
-lifecycle reconciliation. There is one concurrent request, 60 seconds of success
+lifecycle reconciliation. The 5-hour limit check occurs at most once per session
+after it gets a response, and waits at least 60 seconds after a failure. Requests share one
+concurrent slot, 60 seconds of success
 freshness, and event-driven failure backoff from 60 seconds to 15 minutes;
-a longer valid HTTP 429 Retry-After is respected. Rendering and native
-measurements do not fetch account data. There are no usage-fetch or retry timers,
+a longer valid HTTP 429 Retry-After is respected. Rendering does not fetch
+account data, and native measurements fetch it only for the 5-hour limit check. There are no usage-fetch or retry timers,
 polling, automatic retries, model calls, or prompt mutation. The terminal
 Checking indicator uses a lifecycle-scoped 300 ms display timer only while it is
 mounted. Desktop dots use CSS animation with reduced-motion handling; the

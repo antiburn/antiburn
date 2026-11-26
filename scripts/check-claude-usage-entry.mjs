@@ -87,9 +87,9 @@ try {
     await frame.waitForSelector('svg')
     return frame
   }
-  const scene = (variant, columns, replay = false) => {
-    const layout = usageLayout(columns * 8, variant)
-    const sources = readings.map((reading, meterIndex) =>
+  const scene = (variant, columns, replay = false, meterReadings = readings) => {
+    const layout = usageLayout(columns * 8, variant, meterReadings.length)
+    const sources = meterReadings.map((reading, meterIndex) =>
       responsiveMeterSvg(reading, now, {
         layout: variant,
         ...(replay ? { entranceElapsed: 0, meterIndex } : {}),
@@ -109,10 +109,12 @@ try {
   let geometryCases = 0
   for (const colorScheme of ['light', 'dark']) {
     await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' })
+    // An account without a 5-hour limit shows only the weekly meter.
+    for (const meterReadings of [readings, readings.slice(1)])
     for (const variant of ['inline', 'current'])
       for (const columns of [24, 40, 59, 60, 61, 80, 120])
         for (const nativeCell of [6, 8.85, 12]) {
-          const { source, layout } = scene(variant, columns)
+          const { source, layout } = scene(variant, columns, false, meterReadings)
           const width = Math.round(columns * nativeCell)
           const cell = width / columns
           const frame = await mount(source, width, layout.height, colorScheme)
@@ -143,7 +145,8 @@ try {
               }
             }),
           )
-          for (let index = 0; index < 2; index++) {
+          assert.equal(geometry.length, meterReadings.length, 'One strip meter for each reading')
+          for (let index = 0; index < meterReadings.length; index++) {
             const expectedX =
               metersX +
               (index === 1 && layout.inline
@@ -157,9 +160,9 @@ try {
               Math.abs(
                 geometry[index].percentX -
                   expectedX -
-                  meterGeometry(readings[index], meterWidth, now, variant).percentX,
+                  meterGeometry(meterReadings[index], meterWidth, now, variant).percentX,
               ) < 0.1,
-              `Percentage x: ${variant}/${columns}/${cell}, actual ${geometry[index].percentX}, expected ${expectedX + meterGeometry(readings[index], meterWidth, now, variant).percentX}, meterWidth ${meterWidth}`,
+              `Percentage x: ${variant}/${columns}/${cell}, actual ${geometry[index].percentX}, expected ${expectedX + meterGeometry(meterReadings[index], meterWidth, now, variant).percentX}, meterWidth ${meterWidth}`,
             )
             assert.equal(geometry[index].scale, 1, 'Fonts retain their pixel size')
             assert.equal(geometry[index].dotScale, 1, 'Dots retain their pixel size')
@@ -174,7 +177,7 @@ try {
           }
           assert.ok(
             Math.abs(
-              width - geometry[1].x - meterWidth - (PRESENTATION.brandInset / 8) * cell,
+              width - geometry.at(-1).x - meterWidth - (PRESENTATION.brandInset / 8) * cell,
             ) < 0.1,
             'Only the brand inset remains at the right edge',
           )

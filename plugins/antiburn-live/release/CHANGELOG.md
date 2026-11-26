@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8 · Accounts without a 5-hour limit
+
+- Hide the 5-hour meter when the account limit list has no 5-hour limit, and let the Weekly meter use the full strip on Desktop and Terminal.
+- Check the account limit list once per session when Claude Code reports a weekly value without a 5-hour value.
+- Read the account limit list before the older flat usage keys.
+- Keep the "Starts when a message is sent" copy when the account has a 5-hour limit or the check is not available.
+
 ## 0.2.7 — Desktop entrance and compact mod spacing
 
 - Fade Desktop usage graphics together on session entry and plugin reload.

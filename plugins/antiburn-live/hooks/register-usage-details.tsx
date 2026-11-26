@@ -4,7 +4,7 @@ import {
   pace,
   paceLabel,
   percentage,
-  primaryWindow,
+  displayWindows,
   resetText,
   PRIMARY_WINDOWS,
 } from './usage';
@@ -19,7 +19,7 @@ export function renderUsageDetailsView(
   refresh: () => Promise<void>,
 ): RenderNode {
   const { Box, Button, Text } = ui;
-  const primary = PRIMARY_WINDOWS.map((kind) => primaryWindow(snapshot, kind));
+  const primary = displayWindows(snapshot);
   const extra = snapshot.windows.filter(
     (window) => !PRIMARY_WINDOWS.some((kind) => kind === window.kind),
   );

@@ -1,6 +1,7 @@
-> Status: the 0.2.7 Claude repository candidate combines Desktop usage entrance
-> and compact mod spacing. Combined automated tests pass; earlier native captures
-> cover the changes separately. Combined native Desktop/Terminal and hosted-delivery
+> Status: the 0.2.8 Claude repository candidate adds the Weekly-only strip for
+> accounts without a 5-hour limit to the 0.2.7 Desktop usage entrance and compact
+> mod spacing. Automated tests pass; native captures of the Weekly-only strip
+> are not recorded yet. Combined native Desktop/Terminal and hosted-delivery
 > acceptance remain required before promotion. See [validation](validation.md).
 > Other-agent adapters remain unpublished; the tables below are historical.
 

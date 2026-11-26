@@ -376,3 +376,19 @@ test('layered desktop meters draw the marker shadow only in the base layer', () 
   expect(interaction).toContain('class="pace" tabindex="0"')
   expect(interaction).toContain('.pace:focus .marker{opacity:1')
 })
+
+test('a single weekly meter takes the full strip at every width', () => {
+  for (const width of [200, 479, 480, 720, 960]) {
+    for (const variant of ['inline', 'current'] as const) {
+      const two = usageLayout(width, variant)
+      const one = usageLayout(width, variant, 1)
+      expect(one.inline).toBe(false)
+      expect(one.meters.length).toBe(1)
+      expect(one.meters[0]).toEqual(two.meters[0])
+      expect(one.meterWidth).toBe(
+        width - PRESENTATION.brandInset * 2 - PRESENTATION.markSlotSize - PRESENTATION.brandGap,
+      )
+      expect(one.height).toBe(one.meterHeight)
+    }
+  }
+})

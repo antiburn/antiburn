@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { BRAND_MARK_SVG, markSvg, responsiveMeterSvg } from './usage-meter-graphics'
-import { usageLayout } from './usage-presentation'
+import { PRESENTATION, usageLayout } from './usage-presentation'
 import { secondaryTextSvg, usageStatusSvg } from './usage-meter-graphics'
 import { normalizeUsage, primaryWindow } from './usage'
 import { usageStatusStripSvg, usageStripSvg } from './usage-strip-graphics'
@@ -126,4 +126,19 @@ test('retains branded replay identities when flattening source roots', () => {
   expect(first.match(/data-entrance="1"/g)).toHaveLength(3)
   expect(second.match(/data-entrance="2"/g)).toHaveLength(3)
   expect(second).not.toBe(first)
+})
+
+test('composes a single full-width meter without an inline gap', () => {
+  for (const width of [200, 720]) {
+    const layout = usageLayout(width, 'inline', 1)
+    const svg = usageStripSvg(markSvg(BRAND_MARK_SVG, 120), meterSources().slice(1), layout, 80)
+    expect(svg.includes(`height="${layout.height}"`)).toBe(true)
+    expect(svg.includes('strip-meter-0-')).toBe(true)
+    expect(svg.includes('strip-meter-1-')).toBe(false)
+    expect(svg.includes(`--meter-width:calc(100vw - ${(PRESENTATION.brandInset * 2 + PRESENTATION.markSlotSize + PRESENTATION.brandGap) / 8} * var(--cell))`)).toBe(true)
+    expect(referencesAreLocal(svg)).toBe(true)
+  }
+  expect(() =>
+    usageStripSvg(BRAND_MARK_SVG, meterSources(), usageLayout(720, 'inline', 1), 80),
+  ).toThrow()
 })

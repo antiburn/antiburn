@@ -15,9 +15,9 @@ import {
 import {
   pace,
   percentage,
+  displayWindows,
   primaryWindow,
   terminalDotCount,
-  PRIMARY_WINDOWS,
   type UsageSnapshot,
   type UsageWindow,
 } from "./usage";
@@ -260,7 +260,7 @@ export async function renderUsageView(
   const snapshot = fixture?.snapshot ?? state.snapshot;
   const now = fixture ? preview!.capturedAt : liveNow;
   runtime.settle(liveNow);
-  const windows = PRIMARY_WINDOWS.map((kind) => primaryWindow(snapshot, kind));
+  const windows = displayWindows(snapshot);
   const isDesktop = event.surface === "desktop" && "Svg" in ui;
   const { active: burnActive } = runtime.prepareBurn(burnState, liveNow);
   const hasReading = windows.some((window) => window.percent !== null);
@@ -335,6 +335,7 @@ export async function renderUsageView(
   const content = Math.max(1, columns - (isDesktop ? 3 : 12));
   const inlineColumns = Math.max(1, Math.floor((content - 3) / 2));
   const isInline =
+    windows.length > 1 &&
     columns >= 80 &&
     windows.every(
       (window) =>

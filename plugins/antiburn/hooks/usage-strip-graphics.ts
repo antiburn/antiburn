@@ -191,7 +191,8 @@ export function usageStripSvg(
   layout: Layout,
   columns: number,
 ): string {
-  if (sources.length !== 2) throw new Error('A usage strip needs two meter sources')
+  if (sources.length !== layout.meters.length)
+    throw new Error('A usage strip needs one meter source for each layout meter')
   if (!Number.isFinite(columns) || columns <= 0)
     throw new Error('Expected a positive column count')
   const fixedCells =

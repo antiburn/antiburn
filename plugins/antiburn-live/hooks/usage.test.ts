@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import {
+  displayWindows,
   dotFraction,
   filledDotCount,
   graphicDotCount,
@@ -13,6 +14,7 @@ import {
   terminalDotCount,
   usageFailure,
   UsageOrder,
+  weeklyWithoutFiveHour,
 } from './usage'
 
 const NOW = Date.parse('2026-01-01T00:00:00Z')
@@ -152,4 +154,29 @@ test('whole-dot rounding is monotonic and reserves the full track for 100 percen
   expect(filledDotCount(100, 20)).toBe(20)
   expect(filledDotCount(null, 20)).toBe(0)
   expect(filledDotCount(Number.NaN, 20)).toBe(0)
+})
+
+test('an account without a 5-hour limit shows only the weekly meter', () => {
+  const weekly = [{ kind: 'seven_day', percentUsed: 12, resetsAt: '2026-01-04T00:00:00Z' }]
+  const absent = normalizeUsage(weekly, NOW, true)
+  expect(absent.fiveHourAbsent).toBe(true)
+  expect(displayWindows(absent).map((window) => window.kind)).toEqual(['seven_day'])
+  expect(displayWindows(usageFailure(absent, NOW)).map((window) => window.kind)).toEqual(['seven_day'])
+  const unknown = normalizeUsage(weekly, NOW)
+  expect('fiveHourAbsent' in unknown).toBe(false)
+  expect(displayWindows(unknown).map((window) => window.kind)).toEqual(['five_hour', 'seven_day'])
+  expect(resetText(displayWindows(unknown)[0]!, NOW)).toBe('Starts when a message is sent')
+})
+
+test('a reported 5-hour reading always keeps its meter', () => {
+  const both = normalizeUsage([limit(8), { kind: 'seven_day', percentUsed: 12 }], NOW, true)
+  expect(displayWindows(both).map((window) => window.kind)).toEqual(['five_hour', 'seven_day'])
+  expect(displayWindows(both)[0]!.percent).toBe(8)
+})
+
+test('only a weekly reading without a 5-hour reading needs the limit check', () => {
+  expect(weeklyWithoutFiveHour(normalizeUsage([{ kind: 'seven_day', percentUsed: 0 }], NOW))).toBe(true)
+  expect(weeklyWithoutFiveHour(normalizeUsage([limit(8), { kind: 'seven_day', percentUsed: 1 }], NOW))).toBe(false)
+  expect(weeklyWithoutFiveHour(normalizeUsage([{ kind: 'seven_day_opus', percentUsed: 1 }], NOW))).toBe(false)
+  expect(weeklyWithoutFiveHour(normalizeUsage([], NOW))).toBe(false)
 })
