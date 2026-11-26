@@ -325,12 +325,14 @@ fn check_fingerprint(check: &CheckAssessment) -> Result<String, String> {
             check.result.clone()
         }
         CheckAssessmentSource::SessionPriceOutlier => None,
-        CheckAssessmentSource::BurnCheckAssessment => check
-            .result
-            .as_ref()
-            .and_then(|result| result.get("findings"))
-            .cloned()
-            .map(|mut findings| {
+        CheckAssessmentSource::BurnCheckAssessment => {
+            let mut findings = check
+                .result
+                .as_ref()
+                .and_then(|result| result.get("findings"))
+                .cloned();
+            if let Some(findings) = &mut findings {
+                normalize_fingerprint_numbers(findings)?;
                 if let Some(items) = findings.as_array_mut() {
                     for item in items.iter_mut() {
                         if let Some(object) = item.as_object_mut() {
@@ -362,13 +364,40 @@ fn check_fingerprint(check: &CheckAssessment) -> Result<String, String> {
                     }
                     items.sort_by_cached_key(Value::to_string);
                 }
-                findings
-            }),
+            }
+            findings
+        }
     };
     let payload = serde_json::to_vec(&(check.source, &check.check_id, &check.status, result))
         .map_err(|error| format!("could not fingerprint an Antiburn check: {error}"))?;
     let digest = Sha256::digest(payload);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Match JSON number decoding before documents enabled lossless numbers.
+fn normalize_fingerprint_numbers(value: &mut Value) -> Result<(), String> {
+    match value {
+        Value::Number(number)
+            if number.as_str() == "-0" || !(number.is_i64() || number.is_u64()) =>
+        {
+            let parsed: f64 = serde_json::from_str(number.as_str())
+                .map_err(|_| "could not fingerprint an Antiburn check: invalid number")?;
+            *number = serde_json::Number::from_f64(parsed)
+                .ok_or("could not fingerprint an Antiburn check: invalid number")?;
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_fingerprint_numbers(item)?;
+            }
+        }
+        Value::Object(fields) => {
+            for field in fields.values_mut() {
+                normalize_fingerprint_numbers(field)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn read_state(path: &Path) -> Result<StateFile, String> {

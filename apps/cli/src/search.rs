@@ -2,12 +2,15 @@
 
 use std::time::Instant;
 
-use rusqlite::{Connection, Row, limits::Limit, params, params_from_iter};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension, Row, limits::Limit, params, params_from_iter,
+};
 use serde::Serialize;
 
 use crate::{
     checks::{SessionIdentity, database::open_read_only, discovery::find_database_path},
     config::Config,
+    document::{IndexedDatabase, LocalSource, SessionDocument, read_local},
 };
 
 const SESSION_METADATA: &str = "WITH session_metadata AS (
@@ -61,33 +64,56 @@ pub(crate) async fn lookup(
     .map_err(|error| format!("Antiburn session search task failed: {error}"))?
 }
 
-/// Read metadata for one exact identity match. Missing selectors do not set defaults.
-pub(crate) async fn get_local_session(
+/// Resolve one exact identity and read the indexed source off the runtime thread.
+pub(crate) async fn get_local_document(
     session_id: String,
     agent: Option<String>,
     environment: Option<String>,
     config: Config,
-) -> Result<SearchSession, String> {
+) -> Result<SessionDocument, String> {
     tokio::task::spawn_blocking(move || {
-        let connection = open_session_database(&config)?;
+        let mut connection = open_session_database(&config)?;
+        let snapshot = connection.transaction().map_err(|error| local_index_error(&error))?;
         let mut matches = read_exact_matches(
-            &connection,
+            &snapshot,
             &session_id,
             agent.as_deref(),
             environment.as_deref(),
         )
-        .map_err(|error| format!("could not read local Antiburn session metadata: {error}"))?;
+        .map_err(|error| local_index_error(&error))?;
         if matches.len() > 1 {
             return Err(format!(
                 "session ID {session_id:?} matches multiple local Antiburn sessions; use --agent and --environment to select one"
             ));
         }
-        matches.pop().ok_or_else(|| {
+        let mut source = matches.pop().ok_or_else(|| {
             format!("session ID {session_id:?} was not found in the local Antiburn database")
-        })
+        })?;
+        if source.is_opencode_v2() {
+            source.database = read_indexed_database(&snapshot, &source.identity)
+                .map_err(|error| local_index_error(&error))?;
+        }
+        drop(snapshot);
+        drop(connection);
+        read_local(source)
     })
     .await
     .map_err(|error| format!("local Antiburn session lookup task failed: {error}"))?
+}
+
+fn local_index_error(error: &rusqlite::Error) -> &'static str {
+    match error.sqlite_error_code() {
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
+            "the local session index is busy; try again"
+        }
+        Some(ErrorCode::OperationInterrupted) => {
+            "the local session index read exceeded the time limit; increase local_search_timeout_ms"
+        }
+        Some(ErrorCode::TooBig) => {
+            "the local session index read exceeded the size limit; raise local_search_sqlite_length_limit_bytes if it is below the maximum"
+        }
+        _ => "could not read the local session source index",
+    }
 }
 
 /// Read matches and optional accepted source keys from the same SQLite snapshot.
@@ -140,7 +166,7 @@ fn read_exact_matches(
     session_id: &str,
     agent: Option<&str>,
     environment: Option<&str>,
-) -> rusqlite::Result<Vec<SearchSession>> {
+) -> rusqlite::Result<Vec<LocalSource>> {
     // Keep equality terms visible so SQLite can use the composite primary key.
     let agent_filter = if agent.is_some() {
         " AND agent = ?"
@@ -153,13 +179,50 @@ fn read_exact_matches(
         ""
     };
     let mut statement = connection.prepare(&format!(
-        "{SESSION_METADATA}
+        "SELECT environment_key, agent, session_id, source_kind, source_label, source_format,
+               CASE WHEN title_source IN ('userRename', 'aiGenerated', 'explicit')
+                    THEN title END
+           FROM session
          WHERE session_id = ?{agent_filter}{environment_filter}
          LIMIT 2"
     ))?;
     let selectors = [Some(session_id), agent, environment].into_iter().flatten();
-    let rows = statement.query_map(params_from_iter(selectors), read_metadata)?;
+    let rows = statement.query_map(params_from_iter(selectors), |row| {
+        Ok(LocalSource {
+            identity: read_identity(row)?,
+            kind: row.get(3)?,
+            label: row.get(4)?,
+            format: row.get(5)?,
+            title: row.get(6)?,
+            database: None,
+        })
+    })?;
     rows.collect()
+}
+
+/// Read the provider database binding from the same snapshot as the exact index row.
+fn read_indexed_database(
+    connection: &Connection,
+    identity: &SessionIdentity,
+) -> rusqlite::Result<Option<IndexedDatabase>> {
+    connection
+        .query_row(
+            "SELECT fingerprint_source_path, source_fingerprint FROM session
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND fingerprint_source_path IS NOT NULL AND source_fingerprint IS NOT NULL",
+            params![
+                identity.environment_key,
+                identity.agent,
+                identity.session_id
+            ],
+            |row| {
+                Ok(IndexedDatabase {
+                    path: row.get(0)?,
+                    fingerprint: row.get(1)?,
+                })
+            },
+        )
+        .optional()
 }
 
 /// Read only the session table, which has one row per full session identity.
@@ -189,16 +252,31 @@ fn read_sessions(
 
 fn read_metadata(row: &Row<'_>) -> rusqlite::Result<SearchSession> {
     Ok(SearchSession {
-        identity: SessionIdentity {
-            environment_key: row.get(0)?,
-            agent: row.get(1)?,
-            session_id: row.get(2)?,
-        },
+        identity: read_identity(row)?,
         title: row.get(3)?,
         updated_at_epoch: row.get(4)?,
     })
 }
 
+fn read_identity(row: &Row<'_>) -> rusqlite::Result<SessionIdentity> {
+    Ok(SessionIdentity {
+        environment_key: row.get(0)?,
+        agent: row.get(1)?,
+        session_id: row.get(2)?,
+    })
+}
+
 #[cfg(test)]
-#[path = "tests/search_integration_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_the_local_index_deadline() {
+        let interrupted = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+            None,
+        );
+        assert!(local_index_error(&interrupted).contains("exceeded the time limit"));
+        assert!(local_index_error(&interrupted).contains("local_search_timeout_ms"));
+    }
+}

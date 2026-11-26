@@ -247,13 +247,16 @@ or CLI-only endpoint. A connection approved only for upload cannot serve
 CLI reads. In Antiburn Desktop, choose **Update device access** to approve
 session reads without signing out.
 
-| Request | Device action | Result |
+| Request | Device scope | Response |
 | --- | --- | --- |
-| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | A page of session metadata. |
-| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` | `sessions:read` | One versioned projected session document. |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | Session metadata with `items` and `page.next_cursor` |
+| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` | `sessions:read` | One projected document with `schema_version`, `source`, `workspace_id`, `session_id`, `revision`, and `stale` |
 
-Send the access token as `Authorization: Bearer <token>`. The service checks
-current permission again when the CLI reads another metadata page.
+Send the access token as `Authorization: Bearer <token>`. A document read
+returns one publication without a cursor. The Cloud response body must fit
+within 20 MiB, including the envelope and JSON escaping. The server returns
+an error for a document that exceeds the limit. An older publication can be
+returned with `stale: true`.
 
 ### Device credentials
 

@@ -17,7 +17,7 @@ use super::{CloudClient, Page, read_json};
 
 const MAX_SEARCH_BYTES: usize = 512 * 1024;
 const MAX_LIMIT: u16 = 50;
-const MAX_QUERY_BYTES: usize = 256;
+const MAX_QUERY_BYTES: usize = 200;
 
 #[derive(Deserialize, Serialize)]
 struct Agent {
@@ -38,19 +38,6 @@ pub(crate) struct CloudSession {
     started_at: Option<String>,
     #[serde(skip_serializing, deserialize_with = "Deserialize::deserialize")]
     source_key: Option<String>,
-}
-
-impl CloudSession {
-    /// Cloud document reads return an ID but no search metadata.
-    pub(crate) fn from_id(id: Uuid) -> Self {
-        Self {
-            id,
-            title: None,
-            agent: None,
-            started_at: None,
-            source_key: None,
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -84,8 +71,15 @@ pub(crate) async fn search(
     client: CloudClient,
 ) -> Result<SearchResponse, String> {
     let limit = limit.unwrap_or(config.search_limit.min(MAX_LIMIT));
-    if limit > MAX_LIMIT || query.len() > MAX_QUERY_BYTES {
-        return Err("Cloud search allows 1 to 50 results and queries up to 256 bytes".into());
+    if limit > MAX_LIMIT {
+        return Err(format!(
+            "Cloud search allows 1 to {MAX_LIMIT} results and queries up to {MAX_QUERY_BYTES} bytes"
+        ));
+    }
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(format!(
+            "Cloud search allows queries up to {MAX_QUERY_BYTES} bytes; use --source local to search only the local index"
+        ));
     }
     let page: SearchPage = read_json(
         client
