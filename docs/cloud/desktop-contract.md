@@ -240,17 +240,16 @@ The CLI starts with the Personal workspace. It can request another workspace
 by ID. The service checks current workspace and session permissions on every
 search and document read. It uses the workspace session API, not a device-only
 or CLI-only endpoint. A connection approved only for upload cannot serve
-CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
-where the service offers them.
+CLI reads. In Antiburn Desktop, choose **Update device access** to approve
+session reads without signing out.
 
-| Request                                                                                        | Device scope    | Page fields the CLI uses                                                          |
-| ---------------------------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------- |
-| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]`                         | `sessions:list` | `items`, `page.next_cursor`                                                       |
-| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
+| Request | Device action | Result |
+| --- | --- | --- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | A page of session metadata. |
+| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` | `sessions:read` | One versioned projected session document. |
 
-Send the access token as `Authorization: Bearer <token>`. A cursor continues
-the same document revision; it does not grant access. The service checks
-permission again when the CLI reads the next page.
+Send the access token as `Authorization: Bearer <token>`. The service checks
+current permission again when the CLI reads another metadata page.
 
 ### Device credentials
 
