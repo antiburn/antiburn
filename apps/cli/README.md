@@ -159,6 +159,10 @@ but other readable messages still appear. If the source is still writing its
 first record, retry after it finishes. The document does not return child
 sessions or follow attachments.
 
+Local `get` labels unattributed text in a user slot as `unknown` in JSON and
+`Unknown` in text. A `user` label identifies a source slot, not verified
+human authorship.
+
 ## Search and read Cloud sessions
 
 Standard builds use only local sessions. A Cloud-enabled CLI on macOS or Linux
@@ -189,6 +193,8 @@ workspace you can access, set `cloud.workspace_id` in the CLI configuration:
 Set `cloud.connect_timeout_secs` to override the 5-second connection timeout.
 Set `cloud.request_timeout_secs` to override the 15-second timeout for the
 full request, including the response body. Both accept whole seconds from 1 to 300.
+If a document download times out on a slow connection, increase
+`cloud.request_timeout_secs` and retry.
 
 ```sh
 antiburn search "example migration" --source cloud --limit 10 --json
@@ -215,9 +221,10 @@ antiburn get '<cloud-session-uuid>' --source cloud --json
 ```
 
 Both sources return the same JSON envelope: `schema_version`, `source`,
-`session_id`, and `document`. A Cloud read also returns `workspace_id`,
-`revision`, and `stale`. `stale: true` means Cloud returned an older
-publication. A failed Cloud read never substitutes local data.
+`session_id`, and `document`. A local read also returns `environment_key`.
+A Cloud read also returns `workspace_id`, `revision`, and `stale`.
+`stale: true` means Cloud returned an older publication. A failed Cloud read
+never substitutes local data.
 
 The document has `version`, `header`, `messages`, and `coverage`. Other sections
 are optional. Check `coverage` before treating missing content as evidence.
@@ -229,6 +236,7 @@ returns an error instead of a shortened document.
   "schema_version": 1,
   "source": "local",
   "session_id": "example-session-id",
+  "environment_key": "native",
   "document": {
     "version": 1,
     "header": {"agent": {"name": "claude-code", "version": null}},

@@ -44,6 +44,7 @@ static WINDSURF: passive::PassiveSessionReader = passive::PassiveSessionReader {
 };
 static DEVIN: devin::DevinLocalSessionReader = devin::DevinLocalSessionReader;
 
+/// Resolve the reader for the indexed agent label and source format.
 pub fn reader_for_input(input: &crate::analysis::SessionInput) -> &'static dyn SessionReader {
     match (
         input.agent.to_ascii_lowercase().as_str(),
@@ -54,6 +55,7 @@ pub fn reader_for_input(input: &crate::analysis::SessionInput) -> &'static dyn S
             crate::analysis::SourceFormat::OpenCodeSqliteV2
             | crate::analysis::SourceFormat::OpenCodeV2SessionExport,
         ) => &OPENCODE_V2,
+        ("claude-code", crate::analysis::SourceFormat::ClaudeJsonl) => &CLAUDE,
         (_, crate::analysis::SourceFormat::DevinLocalSqlite) => &DEVIN,
         _ => reader_for(&input.agent),
     }
@@ -163,6 +165,21 @@ mod tests {
         for agent in ["", "totally-unknown"] {
             assert!(!has_dedicated_reader(agent));
         }
+    }
+
+    #[test]
+    fn claude_code_uses_the_claude_reader_for_claude_jsonl() {
+        let mut input = crate::analysis::SessionInput {
+            agent: "claude-code".to_owned(),
+            session_id: "test".to_owned(),
+            source: RawSource::Jsonl(String::new()),
+            source_format: crate::analysis::SourceFormat::ClaudeJsonl,
+            fork_parent_session_id: None,
+        };
+        assert_eq!(reader_for_input(&input).agent(), "claude");
+
+        input.source_format = crate::analysis::SourceFormat::PiV3Jsonl;
+        assert_eq!(reader_for_input(&input).agent(), GENERIC.agent());
     }
 
     #[test]

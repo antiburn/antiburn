@@ -6,7 +6,10 @@ use std::{
     os::unix::{fs::PermissionsExt, net::UnixListener},
     path::PathBuf,
     process::{Command, Output},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -415,6 +418,36 @@ fn rejects_out_of_range_cloud_timeouts_before_network_io() {
 }
 
 #[test]
+fn reports_cloud_timeout_without_returning_response_data() {
+    for prefix in [
+        "",
+        "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nprivate-synthetic-body",
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
+        fixture.set_cloud_option("request_timeout_secs", json!(1));
+        let (finished, wait) = mpsc::channel::<()>();
+        let server = serve_with(listener, move |stream| {
+            stream.write_all(prefix.as_bytes()).unwrap();
+            assert_eq!(
+                wait.recv_timeout(Duration::from_secs(5)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            );
+        });
+        let output = fixture.run(&["get", SESSION, "--source", "cloud"]);
+        drop(finished);
+        assert_private_error(
+            output,
+            "Cloud request timed out; check cloud.request_timeout_secs",
+        );
+        assert_cloud_request(
+            server,
+            &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        );
+    }
+}
+
+#[test]
 fn searches_cloud_without_opening_the_local_database() {
     let (origin, server) = serve(http(
         "200 OK",
@@ -641,6 +674,7 @@ fn large_document_body(size: usize) -> (String, String) {
 #[test]
 fn reads_one_document_and_drops_unknown_fields() {
     let mut body = document(SESSION, "Synthetic reply.");
+    body["environment_key"] = json!("synthetic-cloud-environment");
     body["future_envelope_field"] = json!("synthetic");
     body["document"]["messages"][0]["future_message_field"] = json!({"sample": 1});
     body["document"]["messages"][0]["parts"][0]["future_part_field"] = json!("synthetic");
@@ -741,6 +775,7 @@ fn reads_a_document_at_the_wire_size_limit() {
 #[test]
 fn displays_document_status_and_escapes_text() {
     let mut body = document(SESSION, "Synthetic reply.\x1b[2J");
+    body["environment_key"] = json!("synthetic-cloud-environment");
     body["document"]["header"]["title"] = json!("Synthetic title\nsecond line");
     body["document"]["coverage"]["source"] = json!("partial");
     let (origin, server) = serve(http("200 OK", &body.to_string()));
@@ -792,17 +827,23 @@ fn rejects_wrong_document_identity_and_version() {
 }
 
 #[test]
-fn checks_cloud_document_versions_before_decoding_v1_fields() {
+fn reports_cloud_version_errors_even_if_v1_fields_are_invalid() {
     let mut wrong_coverage_shape = document(SESSION, "private-synthetic-body");
     wrong_coverage_shape["document"]["coverage"] = json!(["partial"]);
     let mut unknown_envelope = wrong_coverage_shape.clone();
-    unknown_envelope["schema_version"] = json!(2);
+    unknown_envelope["schema_version"] = json!(256);
     unknown_envelope["document"] = json!(["changed document shape"]);
     let mut unknown_document = wrong_coverage_shape.clone();
-    unknown_document["document"]["version"] = json!(256);
+    unknown_document["document"]["version"] = json!(u64::MAX);
+    let mut compatible_shape = document(SESSION, "private-synthetic-body");
+    compatible_shape["document"]["version"] = json!(2);
+    let mut invalid_envelope = unknown_document.clone();
+    invalid_envelope["schema_version"] = json!("invalid");
     for (body, expected) in [
         (unknown_envelope, "unsupported document version"),
         (unknown_document, "unsupported document version"),
+        (compatible_shape, "unsupported document version"),
+        (invalid_envelope, "returned an invalid response"),
         (wrong_coverage_shape, "returned an invalid response"),
     ] {
         let (origin, server) = serve(http("200 OK", &body.to_string()));

@@ -129,7 +129,16 @@ async fn read_json<T: DeserializeOwned>(
 
 /// Read only the expected success body. Never put transport or response details in diagnostics.
 async fn read_body(request: RequestBuilder, max_bytes: usize) -> Result<Vec<u8>, String> {
-    let mut response = request.send().await.map_err(|_| "Cloud request failed")?;
+    let timeout = "Cloud request timed out; check cloud.request_timeout_secs";
+    let mut response = request.send().await.map_err(|error| {
+        if !error.is_timeout() {
+            "Cloud request failed"
+        } else if error.is_connect() {
+            "Cloud connection timed out; check cloud.connect_timeout_secs and cloud.request_timeout_secs"
+        } else {
+            timeout
+        }
+    })?;
     match response.status() {
         StatusCode::OK => {}
         StatusCode::BAD_REQUEST => return Err("Cloud rejected the request".into()),
@@ -150,11 +159,13 @@ async fn read_body(request: RequestBuilder, max_bytes: usize) -> Result<Vec<u8>,
         return Err("Cloud response exceeds the size limit".into());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "Cloud response could not be read")?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        if error.is_timeout() {
+            timeout
+        } else {
+            "Cloud response could not be read"
+        }
+    })? {
         if chunk.len() > max_bytes - bytes.len() {
             return Err("Cloud response exceeds the size limit".into());
         }

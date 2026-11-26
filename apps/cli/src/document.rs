@@ -28,7 +28,7 @@ pub(crate) struct SessionDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     workspace_id: Option<String>,
     session_id: String,
-    #[serde(skip)]
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     environment_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revision: Option<String>,
@@ -297,15 +297,25 @@ enum Role {
     #[cfg(feature = "cloud")]
     Developer,
     Tool,
-    #[cfg(feature = "cloud")]
-    #[serde(other)]
+    #[cfg_attr(feature = "cloud", serde(other))]
     Unknown,
 }
 
 impl SessionDocument {
-    /// Check both version fields before interpreting the v1 document fields.
+    /// Parse supported documents once. If decoding fails, check the envelope version first.
     #[cfg(feature = "cloud")]
     pub(crate) fn decode_cloud(bytes: &[u8]) -> Result<Self, String> {
+        let unsupported = "Cloud returned an unsupported document version";
+        if let Ok(document) = serde_json::from_slice::<Self>(bytes) {
+            return if document.schema_version == SCHEMA_VERSION
+                && document.document.version == SCHEMA_VERSION
+            {
+                Ok(document)
+            } else {
+                Err(unsupported.into())
+            };
+        }
+
         #[derive(Deserialize)]
         struct EnvelopeVersion {
             schema_version: u64,
@@ -324,7 +334,6 @@ impl SessionDocument {
         let envelope: EnvelopeVersion =
             serde_json::from_slice(bytes).map_err(|_| INVALID_CLOUD_RESPONSE)?;
         let supported = u64::from(SCHEMA_VERSION);
-        let unsupported = "Cloud returned an unsupported document version";
         if envelope.schema_version != supported {
             return Err(unsupported.into());
         }
@@ -333,7 +342,7 @@ impl SessionDocument {
         if envelope.document.version != supported {
             return Err(unsupported.into());
         }
-        serde_json::from_slice(bytes).map_err(|_| INVALID_CLOUD_RESPONSE.into())
+        Err(INVALID_CLOUD_RESPONSE.into())
     }
 
     #[cfg(feature = "cloud")]
@@ -423,7 +432,6 @@ impl SessionDocument {
                 #[cfg(feature = "cloud")]
                 Role::Developer => "Developer",
                 Role::Tool => "Tool",
-                #[cfg(feature = "cloud")]
                 Role::Unknown => "Unknown",
             };
             for part in &message.parts {

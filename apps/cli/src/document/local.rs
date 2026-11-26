@@ -8,9 +8,9 @@ use std::{
 };
 
 use antiburn_local::analysis::{
-    ClaudeSessionReader, ContentKind, NormalizedRecord, OpenCodeV2SnapshotError, PartialReason,
-    RawSource, RecordSink, Role as LocalRole, SessionInput, SessionReader, SessionSummary,
-    SourceFormat, TurnContent, VisitOutcome, reader_for_input,
+    ContentAuthority, ContentKind, NormalizedRecord, OpenCodeV2SnapshotError, PartialReason,
+    RawSource, RecordSink, Role as LocalRole, SessionInput, SessionSummary, SourceFormat,
+    TurnContent, VisitOutcome, reader_for_input,
 };
 
 use crate::checks::SessionIdentity;
@@ -87,7 +87,6 @@ pub(crate) fn read_local(source: LocalSource) -> Result<SessionDocument, String>
     let mut sink = Projection {
         partial: tail_incomplete,
         database_session_id: fingerprint.as_ref().map(|_| input.session_id.clone()),
-        ignore_source: fingerprint.is_some(),
         ..Projection::default()
     };
     visit_source(&input, fingerprint.as_deref(), &mut sink)?;
@@ -137,12 +136,7 @@ fn visit_source(
             ),
         };
     }
-    let reader: &dyn SessionReader = if input.source_format == SourceFormat::ClaudeJsonl {
-        &ClaudeSessionReader
-    } else {
-        reader_for_input(input)
-    };
-    reader
+    reader_for_input(input)
         .visit(input, sink)
         .map_err(|_| "the local session source could not be parsed")?;
     Ok(())
@@ -281,7 +275,7 @@ fn read_snapshot(path: &Path) -> Result<(String, bool), String> {
 #[derive(Default)]
 struct Projection {
     messages: Vec<Message>,
-    role: Option<Role>,
+    role: Option<LocalRole>,
     bytes: usize,
     partial: bool,
     record_oversized: bool,
@@ -296,8 +290,8 @@ impl Projection {
             self.partial = true;
             return;
         };
-        let id = format!("message:{}", self.messages.len());
         let mut parts = Vec::new();
+        let mut unknown = false;
         for part in turn.parts {
             self.partial |= part.truncated;
             self.bytes += std::mem::size_of::<Part>()
@@ -307,6 +301,14 @@ impl Projection {
                 self.capacity_exceeded = true;
                 return;
             }
+            // A user event can contain text that the source does not attribute to the user.
+            let part_unknown = role == LocalRole::User
+                && part.kind == ContentKind::UserText
+                && part.authority != ContentAuthority::User;
+            if part_unknown != unknown && !parts.is_empty() {
+                self.push_message(role, unknown, std::mem::take(&mut parts));
+            }
+            unknown = part_unknown;
             let mut details = PartDetails::default();
             let (kind, text) = match part.kind {
                 ContentKind::UserText | ContentKind::AssistantText => ("text", Some(part.text)),
@@ -329,7 +331,7 @@ impl Projection {
                 }
             };
             parts.push(Part {
-                id: format!("{id}:{}", parts.len()),
+                id: format!("message:{}:{}", self.messages.len(), parts.len()),
                 kind: kind.into(),
                 content_state: if part.truncated {
                     "partial"
@@ -342,14 +344,25 @@ impl Projection {
             });
         }
         if !parts.is_empty() {
-            self.messages.push(Message {
-                id,
-                role,
-                parts,
-                recorded_at: None,
-                details: MessageDetails::default(),
-            });
+            self.push_message(role, unknown, parts);
         }
+    }
+
+    fn push_message(&mut self, role: LocalRole, unknown: bool, parts: Vec<Part>) {
+        let role = match role {
+            LocalRole::User if unknown => Role::Unknown,
+            LocalRole::User => Role::User,
+            LocalRole::Assistant => Role::Assistant,
+            LocalRole::Tool => Role::Tool,
+            LocalRole::System => Role::System,
+        };
+        self.messages.push(Message {
+            id: format!("message:{}", self.messages.len()),
+            role,
+            parts,
+            recorded_at: None,
+            details: MessageDetails::default(),
+        });
     }
 }
 
@@ -377,14 +390,7 @@ impl RecordSink for Projection {
             return;
         }
         match record {
-            NormalizedRecord::MetricsEvent(event) => {
-                self.role = Some(match event.role {
-                    LocalRole::User => Role::User,
-                    LocalRole::Assistant => Role::Assistant,
-                    LocalRole::Tool => Role::Tool,
-                    LocalRole::System => Role::System,
-                });
-            }
+            NormalizedRecord::MetricsEvent(event) => self.role = Some(event.role),
             NormalizedRecord::TurnContent(turn) => self.message(*turn),
             NormalizedRecord::Unusable(reason) => {
                 self.record_oversized |= reason == PartialReason::Oversized;

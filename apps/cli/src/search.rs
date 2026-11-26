@@ -106,7 +106,25 @@ fn local_index_error(error: &rusqlite::Error) -> &'static str {
         Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
             "the local session index is busy; try again"
         }
+        Some(ErrorCode::OperationInterrupted) => {
+            "the local session index read exceeded the time limit; increase local_search_timeout_ms"
+        }
         _ => "could not read the local session source index",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_the_local_index_deadline() {
+        let interrupted = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+            None,
+        );
+        assert!(local_index_error(&interrupted).contains("exceeded the time limit"));
+        assert!(local_index_error(&interrupted).contains("local_search_timeout_ms"));
     }
 }
 

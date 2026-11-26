@@ -207,7 +207,7 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     assert_eq!(result["session_id"], "example-shared");
     assert!(result.get("workspace_id").is_none());
     assert!(result.get("revision").is_none());
-    assert!(result.get("environment_key").is_none());
+    assert_eq!(result["environment_key"], "native");
     assert_eq!(result["document"]["header"]["title"], "Example migration");
     assert_eq!(result["document"]["header"]["agent"]["name"], "claude-code");
     assert_eq!(result["document"]["coverage"]["source"], "partial");
@@ -248,22 +248,112 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     assert!(String::from_utf8_lossy(&unsupported.stderr).contains("format is not supported"));
     assert!(unsupported.stdout.is_empty());
 
-    for (id, agent, environment) in [
-        ("EXAMPLE-shared", "claude-code", "native"),
-        ("example-shared", "CLAUDE-code", "native"),
-        ("example-shared", "claude-code", "Native"),
-        ("example-shared", "claude-code", "wsl:example"),
-    ] {
-        let output = fixture.get(id, &["--agent", agent, "--environment", environment]);
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("was not found"));
-    }
-
     fs::remove_file(&path).unwrap();
     let missing = get(&["--agent", "claude-code", "--environment", "native"]);
     assert!(String::from_utf8_lossy(&missing.stderr).contains("missing or unreadable"));
     assert!(missing.stdout.is_empty());
+}
+
+#[test]
+fn local_get_requires_an_exact_unambiguous_identity() {
+    let fixture = Fixture::new();
+    fixture.create_database();
+    let assert_error = |id: &str, args: &[&str], expected: &str| {
+        let output = fixture.get(id, args);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("antiburn: {expected}\n")
+        );
+    };
+    for (id, selectors) in [
+        ("example-shar", &[][..]),
+        ("EXAMPLE-shared", &[]),
+        ("Example migration", &[]),
+        ("example-shared' OR 1 = 1 --", &[]),
+        ("example-shared", &["--agent", "PI"]),
+        ("example-shared", &["--environment", "NATIVE"]),
+        (
+            "example-shared",
+            &["--agent", "codex", "--environment", "wsl:example"],
+        ),
+    ] {
+        assert_error(
+            id,
+            selectors,
+            &format!("session ID {id:?} was not found in the local Antiburn database"),
+        );
+    }
+    for selectors in [&[][..], &["--agent", "pi"], &["--environment", "native"]] {
+        assert_error(
+            "example-shared",
+            selectors,
+            "session ID \"example-shared\" matches multiple local Antiburn sessions; use --agent and --environment to select one",
+        );
+    }
+}
+
+#[test]
+fn local_get_does_not_label_unattributed_text_as_user_text() {
+    for (agent, format, contents) in [
+        (
+            "claude-code",
+            "claude_jsonl",
+            concat!(
+                r#"{"type":"user","sessionId":"plain-id","uuid":"first","parentUuid":null,"message":{"role":"user","content":"Synthetic request."}}"#,
+                "\n",
+                r#"{"type":"user","sessionId":"plain-id","uuid":"second","parentUuid":"first","isMeta":true,"message":{"role":"user","content":"Synthetic context."}}"#,
+                "\n",
+            ),
+        ),
+        (
+            "codex",
+            "codex_rollout_jsonl",
+            concat!(
+                r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"plain-id"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic request."}]}}"#,
+                "\n",
+                r#"{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","metadata":{"inherited_user_message":true},"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic context."}]}}"#,
+                "\n",
+            ),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.create_database();
+        let path = fixture.root.path().join("plain-id.jsonl");
+        fs::write(&path, contents).unwrap();
+        Connection::open(&fixture.database)
+            .unwrap()
+            .execute(
+                "UPDATE session SET agent=?1, source_label=?2, source_format=?3 WHERE session_id='plain-id'",
+                [agent, path.to_str().unwrap(), &json!(format).to_string()],
+            )
+            .unwrap();
+        let output = fixture.get("plain-id", &["--json"]);
+        assert!(
+            output.status.success(),
+            "{agent}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let messages = document["document"]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "{agent}");
+        for (message, role, text) in [
+            (&messages[0], "user", "Synthetic request."),
+            (&messages[1], "unknown", "Synthetic context."),
+        ] {
+            assert_eq!(message["role"], role, "{agent}: {text}");
+            assert_eq!(message["parts"][0]["text"], text, "{agent}: {role}");
+        }
+        let output = fixture.get("plain-id", &[]);
+        assert!(output.status.success(), "{agent}: {:?}", output.stderr);
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("User: \"Synthetic request.\""));
+        assert!(text.contains("Unknown: \"Synthetic context.\""));
+        assert!(!text.contains("User: \"Synthetic context.\""));
+    }
 }
 
 #[test]
@@ -403,7 +493,7 @@ fn opencode_v2_fixture(path: &std::path::Path) -> Connection {
            CREATE TABLE event_sequence (aggregate_id TEXT PRIMARY KEY NOT NULL, seq INTEGER NOT NULL);
            INSERT INTO session_v2 (id, parent_id) VALUES ('plain-id', NULL), ('child', 'plain-id');
            INSERT INTO session_message (id, session_id, type, seq, data) VALUES
-               ('request', 'plain-id', 'user', 0, '{"time":{"created":1},"text":"Synthetic request."}'),
+               ('request', 'plain-id', 'user', 0, '{"time":{"created":1},"text":"Synthetic request.","skills":[{"id":"guide","name":"guide","text":"Synthetic context."}]}'),
                ('reply', 'plain-id', 'assistant', 1,
                 '{"time":{"created":2},"model":{"id":"synthetic-model","providerID":"synthetic"},"content":[{"type":"text","text":"Synthetic reply."}]}'),
                ('child-reply', 'child', 'assistant', 0,
@@ -463,10 +553,13 @@ fn local_get_reads_only_the_indexed_opencode_v2_session() {
     assert_eq!(envelope["document"]["header"]["agent"]["name"], "opencode");
     assert_eq!(envelope["document"]["coverage"]["source"], "partial");
     let messages = envelope["document"]["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0]["role"], "user");
     assert_eq!(messages[0]["parts"][0]["text"], "Synthetic request.");
-    assert_eq!(messages[1]["parts"][0]["text"], "Synthetic reply.");
-    let clipped = &messages[1]["parts"][1];
+    assert_eq!(messages[1]["role"], "unknown");
+    assert_eq!(messages[1]["parts"][0]["text"], "Synthetic context.");
+    assert_eq!(messages[2]["parts"][0]["text"], "Synthetic reply.");
+    let clipped = &messages[2]["parts"][1];
     assert_eq!(clipped["content_state"], "partial");
     assert_eq!(
         clipped["text"].as_str().unwrap().len() + "Synthetic reply.".len(),
