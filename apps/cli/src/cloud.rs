@@ -44,7 +44,7 @@ impl CloudClient {
         if workspace_id.is_nil() {
             return Err("the Cloud device connection did not return a workspace".into());
         }
-        let token = connection.access_token;
+        let token = connection.read_token;
         if token.is_empty()
             || token.len() > 16_384
             || token.bytes().any(|byte| !byte.is_ascii_graphic())

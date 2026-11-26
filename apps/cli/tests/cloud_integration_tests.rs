@@ -22,7 +22,7 @@ const SESSION: &str = "be5fdb34-fd2d-4aad-a1ac-9369a4ca5a15";
 const OTHER: &str = "2f22d7cc-0b57-4080-a61a-0bd01e6a56bd";
 const THIRD: &str = "ba31b6f6-6541-4767-91ab-b22b68c760dd";
 const REVISION: &str = "e352e672-d152-4e97-a063-428bdeefb26a";
-const KEY: &str = "synthetic-device-access-token";
+const KEY: &str = "synthetic-device-read-token";
 const CURSOR: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ROUTE_PREFIX: &str = "/v1/workspaces";
 
@@ -64,6 +64,17 @@ impl Fixture {
     }
 
     fn run_connected(&self, command: &mut Command) -> Output {
+        self.run_with_broker_reply(
+            command,
+            json!({
+                "origin": self.origin,
+                "read_token": KEY,
+                "personal_workspace_id": WORKSPACE
+            }),
+        )
+    }
+
+    fn run_with_broker_reply(&self, command: &mut Command, body: Value) -> Output {
         let path = self
             .root
             .path()
@@ -83,12 +94,7 @@ impl Fixture {
                                 .unwrap();
                             let mut request = String::new();
                             BufReader::new(&stream).read_line(&mut request).unwrap();
-                            assert_eq!(request, "device-session-v1\n");
-                            let body = json!({
-                                "origin": self.origin,
-                                "access_token": KEY,
-                                "personal_workspace_id": WORKSPACE
-                            });
+                            assert_eq!(request, "device-read-session-v1\n");
                             writeln!(stream, "{body}").unwrap();
                             break;
                         }
@@ -173,6 +179,27 @@ impl Fixture {
         }
         database
     }
+}
+
+#[test]
+fn rejects_a_legacy_broker_reply_with_full_device_proof() {
+    let fixture = Fixture::new("http://127.0.0.1:1");
+    let output = fixture.run_with_broker_reply(
+        fixture
+            .command()
+            .args(["search", "test", "--source", "cloud"]),
+        json!({
+            "origin": fixture.origin,
+            "access_token": "synthetic-full-device-bearer",
+            "personal_workspace_id": WORKSPACE
+        }),
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "antiburn: could not read the local device connection"
+    );
 }
 
 fn insert_receipt(db: &Connection, id: &str, origin: &str, observed: bool) {
