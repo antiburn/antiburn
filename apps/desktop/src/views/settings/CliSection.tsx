@@ -38,7 +38,7 @@ const cliStore = createExternalStore<{ state: CliInstallState | null; error: str
 })
 
 type TestResult = { key: string; sha256: string; error: string | null }
-type Completion = { key: string; message: string }
+type Completion = { key: string; message: string; failed?: boolean }
 
 function statusKey(state: CliInstallState | null, error: string | null) {
   return JSON.stringify([state, error])
@@ -137,9 +137,24 @@ export function CliSection() {
           key: statusKey(repaired, null),
           message: "Repair complete. Run Test to verify.",
         })
+      } else {
+        setDetailsOpen(true)
+        setCompletion({
+          key: statusKey(repaired, null),
+          message: "Repair failed. See the diagnostic below.",
+          failed: true,
+        })
       }
     } catch (error) {
-      cliStore.set({ ...cliStore.getSnapshot(), error: String(error) })
+      setDetailsOpen(true)
+      const current = cliStore.getSnapshot().state
+      const diagnostic = String(error)
+      cliStore.set({ state: current, error: diagnostic })
+      setCompletion({
+        key: statusKey(current, diagnostic),
+        message: "Repair failed. See the diagnostic below.",
+        failed: true,
+      })
     } finally {
       operationPending.current = false
       setBusy(null)
@@ -287,7 +302,12 @@ export function CliSection() {
                     )}
                   </div>
                   {!busy && completion?.key === key && (
-                    <p role="status">{completion.message}</p>
+                    <p
+                      role="status"
+                      className={completion.failed ? "text-system-orange" : undefined}
+                    >
+                      {completion.message}
+                    </p>
                   )}
                   {result && !result.error && <p>Tests CLI startup only.</p>}
                 </div>

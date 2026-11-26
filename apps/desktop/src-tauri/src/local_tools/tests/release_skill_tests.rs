@@ -232,7 +232,7 @@ fn successful_startup_and_repair_reconcile_the_skill_under_the_runtime_lock() {
     let cli = antiburn_cli_runtime::Installation {
         root: f.data.join("cli"),
         terminal: f.home.join(".local/bin/antiburn-cli"),
-        payload,
+        payload: Some(payload.clone()),
         target: antiburn_cli_runtime::TARGET.into(),
     };
     assert!(!f.home.join(".claude").exists());
@@ -242,7 +242,7 @@ fn successful_startup_and_repair_reconcile_the_skill_under_the_runtime_lock() {
 
     let bytes = b"synthetic CLI payload";
     let name = antiburn_cli_runtime::file_name();
-    fs::write(cli.payload.join(name), bytes).unwrap();
+    fs::write(payload.join(name), bytes).unwrap();
     let manifest = antiburn_cli_runtime::Manifest {
         schema: 1,
         target: cli.target.clone(),
@@ -255,7 +255,7 @@ fn successful_startup_and_repair_reconcile_the_skill_under_the_runtime_lock() {
         delivery_protocols: vec!["delivery-v1".into()],
     };
     fs::write(
-        cli.payload.join("manifest.json"),
+        payload.join("manifest.json"),
         serde_json::to_vec(&manifest).unwrap(),
     )
     .unwrap();

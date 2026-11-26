@@ -136,22 +136,36 @@ describe("CLI Settings", () => {
     expect(repairButton().querySelector(".motion-safe\\:animate-spin")).toBeNull()
   })
 
-  it("does not show repair success for rejected or diagnostic results", async () => {
-    await ready()
-    vi.mocked(repairCliInstallation).mockRejectedValueOnce(new Error("repair denied"))
-    fireEvent.click(repairButton())
-    expect(await screen.findByRole("alert")).toHaveTextContent("repair denied")
-    expect(screen.queryByText(/Repair complete/)).not.toBeInTheDocument()
-    vi.mocked(repairCliInstallation).mockResolvedValueOnce({
-      ...state,
-      diagnostic: "repair incomplete",
-    })
-    fireEvent.click(repairButton())
-    await waitFor(() =>
-      expect(screen.getByRole("alert")).toHaveTextContent("repair incomplete"),
-    )
-    expect(screen.queryByText(/Repair complete/)).not.toBeInTheDocument()
-  })
+  it.each(["rejected", "diagnostic"])(
+    "reopens closed technical details when Repair returns a %s failure",
+    async (kind) => {
+      let finish!: () => void
+      const diagnostic = "repair did not finish"
+      vi.mocked(repairCliInstallation).mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            finish = () =>
+              kind === "rejected"
+                ? reject(new Error(diagnostic))
+                : resolve({ ...state, diagnostic })
+          }),
+      )
+      await ready()
+      fireEvent.click(repairButton())
+      expect(screen.getByRole("button", { name: "Repairing…" })).toBeDisabled()
+      const details = screen.getByRole("button", { name: "Technical details" })
+      fireEvent.click(details)
+      expect(details).toHaveAttribute("aria-expanded", "false")
+      await act(async () => finish())
+      expect(details).toHaveAttribute("aria-expanded", "true")
+      expect(screen.getByRole("alert")).toHaveTextContent(diagnostic)
+      expect(screen.getByText("Repair failed. See the diagnostic below.")).toHaveAttribute(
+        "role",
+        "status",
+      )
+      expect(screen.queryByText(/Repair complete/)).not.toBeInTheDocument()
+    },
+  )
 
   it("clears successful test and copy feedback when diagnostics change", async () => {
     await ready()

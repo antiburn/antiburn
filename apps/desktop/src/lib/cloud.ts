@@ -648,7 +648,8 @@ export const desktopCloudPort: CloudPort = {
     (await cloudBuildEnabled())
       ? listen<CloudSnapshot>("cloud:changed", (event) => listener(event.payload))
       : () => {},
-  begin: (accessUpdate) => cloudCommand("cloud_begin", { accessUpdate }),
+  begin: (accessUpdate) =>
+    cloudCommand("cloud_begin", accessUpdate ? { accessUpdate } : undefined),
   cancel: () => cloudCommand("cloud_cancel"),
   save: (value, binding, foldersEdited = true) =>
     cloudCommand("cloud_save_draft", { value, binding, foldersEdited }),

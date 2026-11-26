@@ -126,6 +126,13 @@ it("opens the dashboard without passing a URL or account proof", async () => {
   expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("cloud_open_dashboard")
 })
 
+it("passes an access update only when starting a scoped reapproval", async () => {
+  await desktopCloudPort.begin()
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_begin")
+  await desktopCloudPort.begin("team_join")
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_begin", { accessUpdate: "team_join" })
+})
+
 it("sends Team join input only to the feature-gated Desktop command", async () => {
   const binding = { accountId: "synthetic-account", destinationId: "synthetic-personal" }
   const action = {

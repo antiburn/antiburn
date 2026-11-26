@@ -269,17 +269,27 @@ it("joins in Settings and refreshes the destinations without changing sync", asy
   expect(ongoing.setEnabled).not.toHaveBeenCalled()
 })
 
-it("keeps the old connection signed in and explains that Team joining needs reapproval", async () => {
+it("requests Team access without signing out the current connection", async () => {
   const { port, emit } = cloudProjectFixture()
   emit({ dashboardAvailable: true, teamJoinAllowed: false })
   const signOut = vi.spyOn(port, "signOut")
-  const signIn = vi.spyOn(port, "begin")
+  const current = await port.read()
+  const begin = vi.spyOn(port, "begin").mockResolvedValueOnce({
+    ...current,
+    accessUpdate: "waiting",
+  })
   render(<Account session={new CloudSession(port, false, true)} />)
-  expect(await screen.findByText(/To join a Team, sign out and sign in again/)).toBeVisible()
-  expect(screen.getByText("Signed in as Example")).toBeVisible()
+  const updateAccess = await screen.findByRole("button", {
+    name: "Update device access to join a Team",
+  })
+  expect(screen.getByText("Approve this device to join a Team.")).toBeVisible()
   expect(screen.queryByRole("button", { name: "Join a Team" })).toBeNull()
+  expect(begin).not.toHaveBeenCalled()
+  fireEvent.click(updateAccess)
+  expect(await screen.findByRole("button", { name: "Cancel access update" })).toBeVisible()
+  expect(begin).toHaveBeenCalledExactlyOnceWith("team_join")
+  expect(screen.getByText("Signed in as Example")).toBeVisible()
   expect(signOut).not.toHaveBeenCalled()
-  expect(signIn).not.toHaveBeenCalled()
 })
 
 it("canceling the reset confirmation does not call a native cleanup action", async () => {
