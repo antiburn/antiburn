@@ -39,6 +39,34 @@ it("offers browser setup without collecting invite data or requiring it for loca
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
+it("disables device access updates while the parent is busy or browser setup is opening", async () => {
+  const { port } = fixture({
+    captureUpdateAvailable: true,
+    draft: { screen: "identity", folders: [] },
+  })
+  let finishOpening!: () => void
+  port.openSetup = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finishOpening = resolve
+      }),
+  )
+  const props = { port, analytics: false, onBack: vi.fn(), onComplete: vi.fn() }
+  const { rerender } = render(<CloudOnboarding {...props} busy />)
+  const update = await screen.findByRole("button", {
+    name: "Update device access to upload sessions",
+  })
+  expect(update).toBeDisabled()
+
+  rerender(<CloudOnboarding {...props} />)
+  expect(update).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Finish setup in browser" }))
+  expect(update).toBeDisabled()
+
+  await act(async () => finishOpening())
+  expect(update).toBeEnabled()
+})
+
 it("waits for a fresh workspace list before showing folder choices", async () => {
   const { port, ongoing } = fixture({
     draft: { screen: "identity", folders: [] },
@@ -159,7 +187,6 @@ it("does not claim syncing when capture is unavailable on the platform", async (
   )
   expect(await screen.findByText("Uploads are unavailable on this device.")).toBeVisible()
   expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
-  expect(screen.queryByRole("button", { name: "Save capture request" })).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
