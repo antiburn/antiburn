@@ -20,6 +20,26 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-27
+
+### Added
+
+- Search locally indexed sessions from the command line with `antiburn search`.
+- On macOS, Antiburn installs its Claude Code skill alongside the bundled CLI.
+- Right-click the HUD to reveal the **Hide HUD** button.
+
+### Changed
+
+- Browse older sessions by scrolling. The Sessions view loads more entries
+  as you reach the end of the list.
+
+### Fixed
+
+- Reduce CPU spikes during the first session scan and keep Sessions responsive
+  while background work updates the local database.
+- Retry interrupted Insights evidence work so session details can recover
+  when evidence becomes available.
+
 ### Removed
 
 - Removed SSH remote host syncing, host settings, and Source filters. Upgrade
