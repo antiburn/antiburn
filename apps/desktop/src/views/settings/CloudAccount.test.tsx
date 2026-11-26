@@ -3,13 +3,11 @@ import { useSyncExternalStore } from "react"
 import { expect, it, vi } from "vitest"
 import {
   emptyCloudSnapshot,
-  desktopCloudPort,
   type CloudSnapshot,
   type CloudWorkspaceRecovery,
 } from "../../lib/cloud"
 import { CloudSession } from "../../onboarding/CloudSession"
 import { CloudAccount } from "./CloudAccount"
-import { SettingsTargetFocus } from "./SettingsTargetFocus"
 import {
   cloudProjectFixture,
   localToolsFixture,
@@ -44,14 +42,10 @@ function fixture(initial?: CloudSnapshot) {
     value = { ...value, draft }
     return value
   })
-  const prepareSync = vi.fn(async () => {})
-  const start = vi.fn(async () => ({ status: "upload_unavailable" as const }))
-  const reconcile = vi.fn(async () => ({ status: "upload_unavailable" as const }))
-  const pick = vi.fn(async () => ["/Example/opencode/opencode.db"])
+  const { port, ongoing } = cloudProjectFixture()
   const session = new CloudSession(
     {
-      ...desktopCloudPort,
-      ongoing: undefined,
+      ...port,
       read: async () => value,
       watch: async (listener) => {
         publish = listener
@@ -66,10 +60,6 @@ function fixture(initial?: CloudSnapshot) {
       signOut,
       cancel,
       save,
-      prepareSync,
-      start,
-      reconcile,
-      pick,
     },
     false,
     true,
@@ -80,10 +70,7 @@ function fixture(initial?: CloudSnapshot) {
     signOut,
     cancel,
     save,
-    prepareSync,
-    start,
-    reconcile,
-    pick,
+    ongoing,
     emit: (next: CloudSnapshot) => publish(next),
     emitWorkspace: (next: CloudWorkspaceRecovery) => publishWorkspace(next),
   }
@@ -391,44 +378,6 @@ it("uses legacy cleanup events only for the signed-in account", async () => {
   ).toBeEnabled()
 })
 
-it("requires source selection and sends account-bound folder changes from Settings", async () => {
-  const { session, save } = fixture({
-    ...emptyCloudSnapshot,
-    authEnabled: true,
-    status: "signed_in",
-    identity: { id: "synthetic-account", login: "Example" },
-    destination: { id: "synthetic-personal", name: "Personal", kind: "personal" },
-    draft: {
-      screen: "folders",
-      folders: [{ path: "/Example/Project", selected: false }],
-    },
-  })
-  const container = document.createElement("div")
-  document.body.append(container)
-  render(<Account session={session} />, { container })
-  const source = await screen.findByRole("switch", {
-    name: "Select /Example/Project for Cloud capture",
-  })
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  const row = screen.getByText("Cloud folders").closest<HTMLElement>("[data-settings-control]")!
-  row.scrollIntoView = vi.fn()
-  new SettingsTargetFocus().attach(container, "sessions", "cloudFolders", 1)()
-  expect(source).toHaveFocus()
-  expect(source).not.toBeChecked()
-  expect(save).not.toHaveBeenCalled()
-  fireEvent.click(source)
-  await waitFor(() =>
-    expect(screen.getByRole("switch", { name: /Select \/Example\/Project/ })).toBeChecked(),
-  )
-  expect(save).toHaveBeenCalledWith(
-    { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
-    { accountId: "synthetic-account", destinationId: "synthetic-personal" },
-    true,
-  )
-  expect(screen.queryByText(/It does not sign out your browser/)).not.toBeInTheDocument()
-  expect(row).toHaveAttribute("data-settings-control", "cloudFolders")
-})
-
 it("keeps revocation available when folder setup cannot load", async () => {
   const { session, signOut } = fixture({
     ...emptyCloudSnapshot,
@@ -447,104 +396,20 @@ it("keeps revocation available when folder setup cannot load", async () => {
   await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
 })
 
-const desktopCapture: CloudSnapshot = {
-  ...emptyCloudSnapshot,
-  authEnabled: true,
-  captureEnabled: true,
-  status: "signed_in",
-  identity: { id: "synthetic-account", login: "Example" },
-  destination: { id: "personal", name: "Personal", kind: "personal" },
-  draft: {
-    screen: "complete",
-    folders: [{ path: "/Example/claude/projects/project", selected: true }],
-  },
-}
-
-it("saves a desktop capture request from Settings after onboarding without claiming upload", async () => {
-  const { session, prepareSync, start } = fixture(desktopCapture)
-  render(<Account session={session} />)
-  const save = await screen.findByRole("button", { name: "Save capture request" })
-  expect(save).toBeEnabled()
-  expect(
-    screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
-  ).not.toBeInTheDocument()
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  expect(save).toBeEnabled()
-  fireEvent.click(save)
-  await waitFor(() => expect(start).toHaveBeenCalledOnce())
-  expect(prepareSync).toHaveBeenCalledOnce()
-  expect(
-    await screen.findByText("Capture request saved on this device. Upload unavailable."),
-  ).toBeVisible()
-  expect(screen.queryByText(/Sessions syncing/)).not.toBeInTheDocument()
-})
-
 it.each([
-  { draft: { screen: "complete" as const, folders: [] } },
   { destination: null },
   { destination: { id: "team", name: "Team", kind: "team" as const } },
   { status: "reauth_required" as const },
   { setupError: "Could not read Cloud setup." },
-])(
-  "disables desktop saves without selected sources and current personal context: %j",
-  async (patch) => {
-    const { session, prepareSync } = fixture({ ...desktopCapture, ...patch })
-    render(<Account session={session} />)
-    const save = await screen.findByRole("button", { name: "Save capture request" })
-    expect(save).toBeDisabled()
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-    fireEvent.click(save)
-    expect(prepareSync).not.toHaveBeenCalled()
-  },
-)
-
-it("does not save or authorize a request when source selection changes", async () => {
-  const { session, start } = fixture(desktopCapture)
+])("does not grant folder sync without current Personal authority: %j", async (patch) => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  emit(patch)
+  const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  const save = await screen.findByRole("button", { name: "Save capture request" })
-  expect(save).toBeEnabled()
-  fireEvent.click(screen.getByRole("switch"))
-  await waitFor(() => expect(save).toBeDisabled())
-  expect(start).not.toHaveBeenCalled()
-})
-
-it("uses an already discovered OpenCode source without a Settings picker", async () => {
-  const { session, pick, save, prepareSync } = fixture({
-    ...desktopCapture,
-    draft: {
-      screen: "complete",
-      folders: [
-        {
-          path: "/Example/opencode/opencode.db",
-          sourceKind: "opencode_sqlite_v2",
-          selected: true,
-        },
-      ],
-    },
-  })
-  render(<Account session={session} />)
-  const source = await screen.findByRole("switch", {
-    name: "Select /Example/opencode/opencode.db for Cloud capture",
-  })
-  expect(source).toBeChecked()
-  expect(pick).not.toHaveBeenCalled()
-  expect(save).not.toHaveBeenCalled()
-  expect(screen.queryByRole("button", { name: /Choose OpenCode/ })).not.toBeInTheDocument()
-  expect(screen.getByText("OpenCode V2: /Example/opencode/opencode.db")).toBeVisible()
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  expect(prepareSync).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole("button", { name: "Save capture request" }))
-  await waitFor(() => expect(prepareSync).toHaveBeenCalledOnce())
-  expect(prepareSync).toHaveBeenCalledWith(
-    expect.any(Array),
-    expect.any(String),
-    expect.objectContaining({
-      version: "native-full-content-v2",
-      fullContent: true,
-      attachments: false,
-      selectedSources: [
-        { sourceKind: "opencode_sqlite_v2", path: "/Example/opencode/opencode.db" },
-      ],
-    }),
-  )
+  await waitFor(() => expect(session.getSnapshot().loaded).toBe(true))
+  const start = screen.queryByRole("button", { name: "Start syncing" })
+  if (start) expect(start).toHaveAttribute("aria-disabled", "true")
+  await act(async () => session.startPendingProjects(session.getSnapshot(), false))
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
 })

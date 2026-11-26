@@ -2,10 +2,7 @@ import {
   CLOUD_BUSY_MESSAGE,
   cloudProjectSelectionKey,
   cloudSourceKey,
-  cloudSourceKind,
-  type CaptureConsent,
   type CloudDestinationBinding,
-  type CloudFolder,
   type CloudOngoingStatus,
   type CloudProjectChoices,
   type CloudProjectGroup,
@@ -44,8 +41,6 @@ export interface CloudViewSnapshot {
   /** Settings upload changes report errors with the folder controls, not sign-in. */
   uploadActionError?: string | null
   loaded: boolean
-  /** Retry the saved request's listing even after a transient warning clears. */
-  sourceListingNeedsRetry: boolean
   /** Desktop project discovery with local defaults. No selection write happens on load. */
   projects?: {
     groups: CloudProjectGroup[]
@@ -573,33 +568,24 @@ export function cloudProjectSourceKey(cloud: CloudSnapshot) {
   )
 }
 
-/** Build the view update for a desktop account event. The session owns request IDs and timers. */
+/** Build the view update for a desktop account event. The session owns the timers. */
 export function accountViewPatch(
   previous: CloudViewSnapshot,
   value: CloudSnapshot,
   options: {
     resetProjects: boolean
     contextChanged: boolean
-    ongoing: boolean
     projectSyncState: "pending" | "started" | undefined
-    preparedRequestId: string | null
   },
 ): Partial<CloudViewSnapshot> {
-  const { resetProjects, contextChanged, ongoing, projectSyncState, preparedRequestId } =
-    options
-  const retryInvalidated =
-    contextChanged ||
-    (value.pendingSync &&
-      (value.pendingSync.requestId !== preparedRequestId ||
-        value.pendingSync.result.status === "cancelled"))
+  const { resetProjects, contextChanged, projectSyncState } = options
   const screen = value.identity
     ? value.draft.screen === "handoff"
       ? "identity"
       : value.draft.screen
     : "handoff"
-  const complete = ongoing
-    ? projectSyncState === "started" || (projectSyncState !== "pending" && value.syncEnabled)
-    : !!value.pendingSync
+  const complete =
+    projectSyncState === "started" || (projectSyncState !== "pending" && value.syncEnabled)
   return {
     cloud: value,
     ...(resetProjects
@@ -625,12 +611,7 @@ export function accountViewPatch(
     ...(previous.accountReadFailed || previous.error === CLOUD_BUSY_MESSAGE
       ? { error: null }
       : {}),
-    ...(retryInvalidated ? { sourceListingNeedsRetry: false } : {}),
-    ...(!ongoing && value.identity && value.pendingSync
-      ? { sync: value.pendingSync.result }
-      : contextChanged
-        ? { sync: { status: "unavailable" as const } }
-        : {}),
+    ...(contextChanged ? { sync: { status: "unavailable" as const } } : {}),
   }
 }
 
@@ -875,30 +856,4 @@ export function projectSyncChoices(
       choicesForStart[group.id] = false
   }
   return { choicesForStart, explicitOnly }
-}
-
-/** Build the legacy request for the exact selected roots and destination. */
-export function legacyCaptureConsent(
-  binding: CloudDestinationBinding,
-  selected: CloudFolder[],
-): CaptureConsent {
-  return {
-    ...binding,
-    fullContent: true,
-    attachments: false,
-    ...(selected.some((folder) => cloudSourceKind(folder) === "opencode_sqlite_v2")
-      ? {
-          version: "native-full-content-v2" as const,
-          selectedSources: selected
-            .map((folder) => ({ sourceKind: cloudSourceKind(folder), path: folder.path }))
-            .sort(
-              (a, b) =>
-                a.sourceKind.localeCompare(b.sourceKind) || a.path.localeCompare(b.path),
-            ),
-        }
-      : {
-          version: "native-full-content-v1" as const,
-          selectedRoots: selected.map((folder) => folder.path).sort(),
-        }),
-  }
 }

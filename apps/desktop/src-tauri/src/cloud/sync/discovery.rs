@@ -12,9 +12,11 @@ use crate::{
     },
 };
 use antiburn_cloud_capture::{
-    Candidate, CaptureSourceKind, Limits, ProjectSelection, discover_claude, discover_claude_page,
-    discover_opencode, discover_opencode_page,
+    Candidate, CaptureSourceKind, Limits, ProjectSelection, discover_claude_page,
+    discover_opencode_page,
 };
+#[cfg(all(test, unix))]
+use antiburn_cloud_capture::{discover_claude, discover_opencode};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -582,7 +584,8 @@ pub(in crate::cloud) fn discover_root_page(
     }
 }
 
-/// List one source root for project selection. Reject results beyond the budget.
+/// Compare paged scheduler discovery with a bounded root listing in tests.
+#[cfg(all(test, unix))]
 pub(super) fn discover_root(
     kind: SourceKind,
     path: &str,

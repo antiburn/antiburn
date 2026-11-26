@@ -53,9 +53,6 @@ import { personalCloudDestination } from "../../lib/cloudDestination"
 import {
   CLOUD_BUSY_MESSAGE,
   cloudDisplayPath,
-  cloudSourceKey,
-  cloudSourceKind,
-  cloudSourceLabel,
   type CloudOngoingStatus,
   type CloudProjectGroup,
   type CloudWorkspaceRecovery,
@@ -304,8 +301,7 @@ export function CloudAccount({
   const canRefreshWorkspaces =
     value.cloud.status === "signed_in" &&
     !!value.cloud.identity &&
-    personalCloudDestination(value.cloud.destination ?? null) &&
-    session.projectSyncSupported
+    personalCloudDestination(value.cloud.destination ?? null)
   const accountMessage = readFailed
     ? "Could not check Cloud sign-in."
     : value.error
@@ -322,7 +318,6 @@ export function CloudAccount({
   if (!value.loaded)
     return <CloudSettingsLoading account uploadControl={!!children} folderRowId={folderRowId} />
   const loadingSyncStatus =
-    session.projectSyncSupported &&
     value.cloud.status === "signed_in" &&
     personalCloudDestination(value.cloud.destination ?? null) &&
     !value.ongoing &&
@@ -539,89 +534,13 @@ export function CloudAccount({
           uploadControl={!!children}
           folderRowId={folderRowId}
         />
-      ) : session.projectSyncSupported ? (
+      ) : (
         <CloudProjectsAccount
           session={session}
           value={value}
           folderRowId={folderRowId}
           uploadSwitchRowId={uploadSwitchRowId}
         />
-      ) : (
-        <>
-          <SettingsRow
-            searchId="cloudFolders"
-            description={value.cloud.setupError ?? undefined}
-          >
-            {value.cloud.identity && (
-              <div className="mt-3 flex flex-col gap-3">
-                {value.cloud.draft.folders.map((folder) => (
-                  <div
-                    key={cloudSourceKey(folder)}
-                    className="flex items-center justify-between gap-3"
-                  >
-                    <span className="min-w-0 break-all type-callout text-label">
-                      {cloudSourceLabel(folder)}: {folder.path}
-                    </span>
-                    {value.busy || value.cloud.setupError ? (
-                      <FolderUploadState>
-                        {folder.selected ? "Selected" : "Not selected"}
-                      </FolderUploadState>
-                    ) : (
-                      <ToggleSwitch
-                        aria-label={`Select ${folder.path} for Cloud capture`}
-                        checked={folder.selected}
-                        onCheckedChange={(selected) =>
-                          void session.selectFolder(
-                            folder.path,
-                            selected,
-                            cloudSourceKind(folder),
-                          )
-                        }
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </SettingsRow>
-          {value.cloud.identity && (
-            <>
-              {value.cloud.captureEnabled && (
-                <div className="flex flex-col items-start gap-2 px-4 pb-3">
-                  <button
-                    className="ui-push-button"
-                    disabled={
-                      value.busy ||
-                      !value.loaded ||
-                      value.cloud.status !== "signed_in" ||
-                      !personalCloudDestination(value.cloud.destination ?? null) ||
-                      !!value.cloud.setupError ||
-                      value.sync.status === "cancelled" ||
-                      !value.cloud.draft.folders.some((folder) => folder.selected)
-                    }
-                    aria-description={`Save a full-session capture request for ${value.cloud.identity.login} in ${value.cloud.destination?.name ?? "the selected destination"}. This does not upload content.`}
-                    onClick={() => void session.startSync(value)}
-                  >
-                    {value.sourceListingNeedsRetry
-                      ? "Retry source listing"
-                      : "Save capture request"}
-                  </button>
-                  <p className="type-footnote text-label-secondary" role="status">
-                    {value.sync.status === "upload_unavailable"
-                      ? "Capture request saved on this device. Upload unavailable."
-                      : value.sync.status === "starting"
-                        ? "Saving capture request. Upload unavailable."
-                        : value.sync.status === "ambiguous"
-                          ? "Could not confirm the capture request. Try Save capture request again. Upload unavailable."
-                          : value.sync.status === "cancelled"
-                            ? "Capture request cancelled. Upload unavailable."
-                            : "Upload unavailable."}
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-        </>
       )}
     </>
   )

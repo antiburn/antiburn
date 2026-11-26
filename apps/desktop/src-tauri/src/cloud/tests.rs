@@ -104,7 +104,7 @@ fn cloud_snapshot_fences_account_changes_after_blocking_store_reads() {
         .split_once("\n}")
         .unwrap()
         .0;
-    let read = snapshot.find(".current_cloud_capture_request(").unwrap();
+    let read = snapshot.find(".cloud_sync_policy_for_origins(").unwrap();
     let fence = snapshot.find("let current = current();").unwrap();
     let identity = snapshot.find("identity: session.map(").unwrap();
     assert!(read < fence && fence < identity);
@@ -113,7 +113,6 @@ fn cloud_snapshot_fences_account_changes_after_blocking_store_reads() {
         .find("session.filter(|_| current && engine.session().is_some())")
         .unwrap();
     assert!(read < expiry && expiry < identity);
-    assert!(snapshot.contains("pending_sync.filter(|_| current && session.is_some())"));
     assert!(snapshot.contains("if !current || session.is_none()"));
     assert!(snapshot.contains("engine.status == AuthStatus::SignedIn && session.is_none()"));
 }
@@ -1661,7 +1660,6 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         local_reset_available: false,
         remote_revocation_unconfirmed: false,
         setup_error: None,
-        pending_sync: None,
         draft: Draft::default(),
     };
     let encoded = serde_json::to_string(&value).unwrap();

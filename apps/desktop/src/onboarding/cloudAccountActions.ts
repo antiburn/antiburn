@@ -5,7 +5,6 @@ import { projectBinding, type CloudViewSnapshot } from "./cloudSessionState"
 export function createCloudAccountActions(
   session: {
     getSnapshot(): CloudViewSnapshot
-    readonly projectSyncSupported: boolean
     retryFolderScope(fresh?: boolean): Promise<unknown> | undefined
   },
   getPort: () => CloudPort,
@@ -44,8 +43,7 @@ export function createCloudAccountActions(
           after.grantExpiresAt !== before.grantExpiresAt
         )
           throw new Error("team_join_account_changed")
-        if (result.status === "joined" && session.projectSyncSupported)
-          void session.retryFolderScope(true)
+        if (result.status === "joined") void session.retryFolderScope(true)
         return result
       } finally {
         if (isClaim) pendingClaims--

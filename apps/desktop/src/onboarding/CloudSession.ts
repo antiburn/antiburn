@@ -8,7 +8,6 @@ import {
   type CloudPort,
   type CloudScreen,
   type CloudSnapshot,
-  type CloudSourceKind,
   type SyncResult,
   type CloudProjectGroup,
   type CloudProjectChoices,
@@ -31,12 +30,6 @@ import type { ProjectPages } from "./cloudProjectPages"
 import { CloudProjectReader } from "./cloudProjectReader"
 import { retryCloudRead } from "./cloudReadRetry"
 import { createCloudAccountActions } from "./cloudAccountActions"
-import {
-  addDraftFolders,
-  editDraftFolder,
-  startSavedRequest,
-  type SavedRequestState,
-} from "./cloudSavedRequest"
 import {
   cloudFolderReadChanged,
   savedUploadStatusBecameUnavailable,
@@ -104,7 +97,6 @@ export class CloudSession {
     busy: false,
     error: null,
     loaded: false,
-    sourceListingNeedsRetry: false,
   }
   private listeners = new Set<() => void>()
   private stop: (() => void) | undefined
@@ -131,7 +123,6 @@ export class CloudSession {
   private active = false
   private visible = true
   private viewed: CloudScreen | null = null
-  private readonly savedRequest: SavedRequestState = { id: null, preparedId: null }
   private syncInFlight = false
   private consentRevision = 0
   private folderMoveScope = { authority: 0, account: 0 }
@@ -171,10 +162,6 @@ export class CloudSession {
   }
   /** Return the stable snapshot expected by useSyncExternalStore. */
   getSnapshot = () => this.snapshot
-  /** Distinguish current desktop ongoing sync from legacy saved-request fixtures. */
-  get projectSyncSupported() {
-    return this.port.ongoing !== undefined
-  }
   readonly accountActions = createCloudAccountActions(this, () => this.port)
   /** Observe snapshots without starting reads. The host owns the active subscription. */
   subscribeSnapshot = (listener: () => void) => {
@@ -294,9 +281,7 @@ export class CloudSession {
     const patch = accountViewPatch(this.snapshot, value, {
       resetProjects,
       contextChanged,
-      ongoing: !!this.port.ongoing,
       projectSyncState: this.projectSyncState,
-      preparedRequestId: this.savedRequest.preparedId,
     })
     if (!resetProjects && (sourcesChanged || setupFailed) && this.snapshot.projects)
       patch.projects = {
@@ -309,14 +294,8 @@ export class CloudSession {
         hasMore: sourcesChanged ? false : this.snapshot.projects.hasMore,
       }
     if (contextChanged) {
-      this.savedRequest.id = null
-      this.savedRequest.preparedId = null
       this.folderMoveScope = advanceFolderMoveScope(this.folderMoveScope, previous, value)
       this.consentRevision++
-    }
-    if (!this.port.ongoing && value.identity && value.pendingSync) {
-      this.savedRequest.id = value.pendingSync.requestId
-      this.savedRequest.preparedId = value.pendingSync.requestId
     }
     this.publish(patch)
   }
@@ -424,9 +403,7 @@ export class CloudSession {
       if (current()) this.localToolsLoading = false
     }
   }
-  /** Attach events before independent account/tool reads. Restore saved IDs
-   * without starting a request; neither status path blocks the other.
-   */
+  /** Attach events before independent account and tool reads. */
   load = async () => {
     const generation = this.generation
     this.accountRead?.abort()
@@ -457,7 +434,7 @@ export class CloudSession {
         }
         this.stop = stop
       }
-      if (this.port.ongoing && !this.stopOngoing) {
+      if (!this.stopOngoing) {
         const stop = await this.port.ongoing.watch((status) => {
           if (this.active && generation === this.generation) this.receiveOngoing(status, true)
         })
@@ -490,39 +467,20 @@ export class CloudSession {
           })
       }
       readRevision = this.revision
-      const value = await (this.port.ongoing
-        ? retryCloudRead(
-            () => this.projectReader.request(this.port.read, signal),
-            signal,
-            (value) => value.status === "signed_in" && !value.destination,
-          )
-        : this.projectReader.request(this.port.read, signal))
+      const value = await retryCloudRead(
+        () => this.projectReader.request(this.port.read, signal),
+        signal,
+        (value) => value.status === "signed_in" && !value.destination,
+      )
       if (signal.aborted || !currentLoad()) return
       clearTimeout(timeout)
       accountReadFinished = true
-      const appliedRead = readRevision === this.revision
-      if (appliedRead) this.receive(value)
-      if (!this.port.ongoing && appliedRead && value.identity && value.pendingSync) {
-        this.savedRequest.id = value.pendingSync.requestId
-        this.publish({
-          screen: "complete",
-          busy: false,
-          sync: value.pendingSync.result,
-        })
-        const reconcileRevision = this.revision
-        const sync = await this.port.reconcile(this.savedRequest.id)
-        if (!currentLoad()) return
-        if (reconcileRevision !== this.revision) {
-          this.publish({ busy: false })
-          return
-        }
-        this.publish({ sync, screen: "complete" })
-      }
+      if (readRevision === this.revision) this.receive(value)
       this.publish({ busy: false })
-      if (this.port.ongoing && this.snapshot.cloud.identity) await this.loadProjects()
+      if (this.snapshot.cloud.identity) await this.loadProjects()
     } catch (error) {
       if ((signal.aborted && signal.reason !== accountTimeout) || !currentLoad()) return
-      if (this.port.ongoing && readRevision !== undefined && readRevision !== this.revision) {
+      if (readRevision !== undefined && readRevision !== this.revision) {
         this.publish({ busy: false })
         if (this.snapshot.cloud.status === "signed_in") await this.loadProjects()
         return
@@ -946,7 +904,7 @@ export class CloudSession {
 
   /** Ask desktop to scan the exact saved policy shown in Settings. */
   private backfillSync = async (context: CloudViewSnapshot, teamId?: string) => {
-    const backfill = this.port.ongoing?.backfill
+    const backfill = this.port.ongoing.backfill
     const target = backfillTarget(context, this.snapshot, this.projectBinding(true), teamId)
     if (!backfill || !target || this.syncInFlight) return "stopped" as const
     return this.changeSyncControl(() => backfill(target.binding, target.revision), {
@@ -1113,74 +1071,12 @@ export class CloudSession {
     await this.run(action, () =>
       this.saveDraft({ ...this.snapshot.cloud.draft, screen }, false),
     )
-    if (screen === "folders" && this.port.ongoing && !this.snapshot.projects?.loaded)
-      await this.loadProjects()
+    if (screen === "folders" && !this.snapshot.projects?.loaded) await this.loadProjects()
   }
-  /** Discard picker results after account changes and clear consent before source edits. */
-  addFolders = async (sourceKind: CloudSourceKind = "claude_jsonl") => {
-    const generation = this.generation
-    const account = this.snapshot.cloud.identity?.id
-    const destination = this.snapshot.cloud.destination?.id
-    await this.run("add_folder", async () => {
-      const paths = await this.port.pick(sourceKind)
-      if (
-        !this.active ||
-        generation !== this.generation ||
-        account !== this.snapshot.cloud.identity?.id ||
-        destination !== this.snapshot.cloud.destination?.id
-      )
-        return this.snapshot.cloud
-      const folders = addDraftFolders(this.snapshot.cloud.draft.folders, paths, sourceKind)
-      if (!folders) return this.snapshot.cloud
-      this.invalidateContentConfirmation()
-      return this.saveDraft({ ...this.snapshot.cloud.draft, folders })
-    })
-    if (this.port.ongoing) await this.loadProjects()
-  }
-  /** Clear consent immediately, before a delayed preference save can complete. */
-  selectFolder = (
-    path: string,
-    selected: boolean,
-    sourceKind: CloudSourceKind = "claude_jsonl",
-  ) => {
-    this.invalidateContentConfirmation()
-    return this.run("select_folder", () =>
-      this.saveDraft({
-        ...this.snapshot.cloud.draft,
-        folders: editDraftFolder(this.snapshot.cloud.draft.folders, path, sourceKind, selected),
-      }),
-    )
-  }
-  /** Remove a draft choice, not any saved request, source, or spool entry. */
-  removeFolder = (path: string, sourceKind: CloudSourceKind = "claude_jsonl") => {
-    this.invalidateContentConfirmation()
-    return this.run(null, () =>
-      this.saveDraft({
-        ...this.snapshot.cloud.draft,
-        folders: editDraftFolder(this.snapshot.cloud.draft.folders, path, sourceKind),
-      }),
-    )
-  }
-  /** Handle an explicit Start or Update click for the rendered context. Loading
-   * rows or changing a selection never calls this method. Retry keeps saved IDs.
-   */
+  /** Confirm the rendered folder choices only after an explicit Start click. */
   startSync = async (context: CloudViewSnapshot = this.snapshot) => {
     if (!this.isCurrentConfirmation(context)) return
-    if (this.port.ongoing) return this.startProjectSync()
-    return startSavedRequest({
-      port: this.port,
-      request: this.savedRequest,
-      getSnapshot: this.getSnapshot,
-      generation: () => (this.active ? this.generation : undefined),
-      revision: () => this.revision,
-      consentRevision: () => this.consentRevision,
-      syncInFlight: this.syncInFlight,
-      setSyncInFlight: (value) => {
-        this.syncInFlight = value
-      },
-      publish: (patch) => this.publish(patch),
-      analytics: this.analytics,
-    })
+    return this.startProjectSync()
   }
   private isCurrentConfirmation(context: CloudViewSnapshot) {
     return (

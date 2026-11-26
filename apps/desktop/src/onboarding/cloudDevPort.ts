@@ -5,7 +5,6 @@ import {
   type CloudPort,
   type CloudSnapshot,
   type CloudStatus,
-  type SyncResult,
   type CloudOngoingStatus,
   type DesktopCloudProjectGroup,
 } from "../lib/cloud"
@@ -43,16 +42,6 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
   const signedIn =
     completion || ["identity", "folders", "empty", "unavailable"].includes(scenario)
   const identity = { id: "cloud-dev-account", login: "example", avatar }
-  const result = (status: string): SyncResult => {
-    if (["accepted", "syncing", "complete", "partial"].includes(status))
-      return {
-        status: status as "accepted" | "syncing" | "complete" | "partial",
-        operationId: "cloud-dev-operation",
-        completed: status === "complete" ? 2 : status === "accepted" ? 0 : 1,
-        total: 2,
-      }
-    return { status: status as "failed" | "ambiguous" | "cancelled" }
-  }
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
     authEnabled: scenario !== "marketing",
@@ -157,18 +146,6 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
     }, delay)
     timers.add(timer)
   }
-  const progress = (requestId: string) => {
-    for (const [delay, status] of [
-      [1500, "syncing"],
-      [3500, "complete"],
-    ] as const) {
-      if (scenario === "walkthrough" && status === "complete") continue
-      later(() => {
-        value = { ...value, pendingSync: { requestId, result: result(status) } }
-        publish()
-      }, delay)
-    }
-  }
   const ongoingProgress = () => {
     later(() => {
       ongoing = { ...ongoing, status: "syncing", queuedCount: 2 }
@@ -268,7 +245,7 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
     begin: async () => {
       clear()
       if (scenario === "marketing") return value
-      value = { ...value, status: "waiting", identity: null, pendingSync: null }
+      value = { ...value, status: "waiting", identity: null }
       later(() => {
         value = {
           ...value,
@@ -286,12 +263,12 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
       return value
     },
     save: async (draft) => {
-      value = { ...value, draft, pendingSync: null }
+      value = { ...value, draft }
       return value
     },
     signOut: async () => {
       clear()
-      value = { ...value, status: "signed_out", identity: null, pendingSync: null }
+      value = { ...value, status: "signed_out", identity: null }
       return value
     },
     resetLocal: async () => {
@@ -300,14 +277,12 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
         ...value,
         status: "signed_out",
         identity: null,
-        pendingSync: null,
         revocationPending: false,
         localResetAvailable: false,
         remoteRevocationUnconfirmed: true,
       }
       return value
     },
-    pick: async () => ["/Example/New folder"],
     localTools: {
       read: async () => {
         const phase =
@@ -328,26 +303,6 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
         }
       },
       watch: async () => () => {},
-    },
-    prepareSync: async () => {},
-    start: async (_folders, requestId) => {
-      clear()
-      const accepted = result("accepted")
-      value = { ...value, pendingSync: { requestId, result: accepted } }
-      progress(requestId)
-      return accepted
-    },
-    reconcile: async (requestId) => {
-      clear()
-      value = { ...value, pendingSync: { requestId, result: result("accepted") } }
-      progress(requestId)
-      return value.pendingSync!.result
-    },
-    cancelSync: async (requestId) => {
-      clear()
-      const cancelled = { status: "cancelled" } as const
-      value = { ...value, pendingSync: { requestId, result: cancelled } }
-      return cancelled
     },
   }
 }

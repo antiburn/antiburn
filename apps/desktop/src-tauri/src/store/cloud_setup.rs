@@ -6,7 +6,8 @@ use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
 impl Store {
-    /// Create feature-owned tables in one checked transaction on admitted blocking work.
+    /// Upgrade feature-owned tables in one transaction on admitted blocking work.
+    /// Retired request tables and their rows stay intact but do not grant sync.
     /// Call before Cloud table access; failure can retry without marking setup ready.
     pub(crate) fn initialize_cloud_setup(&self) -> Result<()> {
         let mut connection = self.lock();
@@ -252,6 +253,60 @@ mod tests {
                 .as_deref(),
             Some("saved")
         );
+    }
+
+    #[test]
+    fn cloud_setup_upgrade_preserves_retired_request_rows_and_paused_policy() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        let request = r#"{"consent_version":"native-full-content-v1","sources":[]}"#;
+        let policy = r#"{"paused":true}"#;
+        {
+            let connection = store.lock();
+            connection
+                .execute(
+                    "INSERT INTO cloud_capture_request VALUES ('legacy', 'account', 'personal', 1, ?1)",
+                    [request],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO cloud_source_scope VALUES ('account', '/Example/Source', 'legacy-scope')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO cloud_sync_policy VALUES ('account', 'personal', ?1)",
+                    [policy],
+                )
+                .unwrap();
+            connection
+                .execute_batch("DROP TABLE cloud_device_upload;")
+                .unwrap();
+        }
+        drop(store);
+
+        let store = Store::open(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        let connection = store.lock();
+        let (saved_request, saved_policy, scope_id, enabled): (String, String, String, bool) = connection
+            .query_row(
+                "SELECT request.record_json, policy.record_json, scope.source_scope_id, upload.enabled
+                 FROM cloud_capture_request request
+                 JOIN cloud_sync_policy policy USING (account_id, destination_id)
+                 JOIN cloud_source_scope scope USING (account_id)
+                 JOIN cloud_device_upload upload ON upload.id = 1
+                 WHERE request.request_id = 'legacy' AND scope.root_path = '/Example/Source'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(saved_request, request);
+        assert_eq!(saved_policy, policy);
+        assert_eq!(scope_id, "legacy-scope");
+        assert!(!enabled);
     }
 
     #[test]

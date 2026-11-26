@@ -35,8 +35,6 @@ it("uses Start as explicit grouped consent without saving row defaults", async (
   fireEvent.click(start)
   expect(await screen.findByText("Background sync enabled")).toBeVisible()
   expect(ongoing.enable).toHaveBeenCalledOnce()
-  expect(port.prepareSync).not.toHaveBeenCalled()
-  expect(port.start).not.toHaveBeenCalled()
   expect(screen.getByText("Local tools unavailable")).toBeVisible()
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: /Retry|Remove/ })).not.toBeInTheDocument()

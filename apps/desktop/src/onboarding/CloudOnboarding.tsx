@@ -1,25 +1,8 @@
-import { ToggleSwitch } from "../components/ui/ToggleSwitch"
 import { useId, useState, useSyncExternalStore, type CSSProperties } from "react"
-import {
-  ArrowUp,
-  ArrowUpRight,
-  Check,
-  Cloud,
-  Folder,
-  Info,
-  Plus,
-  UserRound,
-} from "lucide-react"
+import { ArrowUp, ArrowUpRight, Check, Cloud, Info, Plus, UserRound } from "lucide-react"
 import appIcon from "../assets/app-icon.png"
 import { DeviceAccessUpdate } from "./DeviceAccessUpdate"
-import {
-  cloudSourceKey,
-  cloudSourceKind,
-  cloudSourceLabel,
-  desktopCloudPort,
-  type CloudPort,
-  type CloudTeamJoinAction,
-} from "../lib/cloud"
+import type { CloudPort, CloudTeamJoinAction } from "../lib/cloud"
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import {
   CloudSession,
@@ -52,7 +35,7 @@ export interface CloudOnboardingProps {
 const focusHeading = (node: HTMLHeadingElement | null) => node?.focus()
 export { CloudProjectFolders } from "./CloudOnboardingFolders"
 /** Observe one CloudSession. Completion can stay local without content consent;
- * leaving browser approval cancels only that attempt, not saved source requests.
+ * leaving browser approval cancels only that attempt, not upload consent.
  */
 export function CloudOnboarding({
   onBack,
@@ -87,22 +70,15 @@ export function CloudOnboarding({
       setClaimPending(false)
     }
   }
-  const grouped = !!(port ?? desktopCloudPort).ongoing
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.authEnabled && value.cloud.status === "returned"
   const cleanupPending = cloudAccountCleanupPending(value.cloud)
-  const accepted = "operationId" in value.sync
-  const captureEnabled = !grouped && value.cloud.captureEnabled === true
-  const captureSaved = value.sync.status === "upload_unavailable"
   const ongoing = value.lastTeamSync ?? value.ongoing
-  const syncReady = grouped
-    ? ongoing?.storageKnown === true && ["ready", "syncing"].includes(ongoing.status)
-    : ["accepted", "syncing"].includes(value.sync.status)
-  const syncing = grouped
-    ? syncReady && (ongoing?.status === "syncing" || (ongoing?.queuedCount ?? 0) > 0)
-    : syncReady
-  const syncUncertain = ["ambiguous", "failed", "cancelled"].includes(value.sync.status)
+  const syncReady =
+    ongoing?.storageKnown === true && ["ready", "syncing"].includes(ongoing.status)
+  const syncing =
+    syncReady && (ongoing?.status === "syncing" || (ongoing?.queuedCount ?? 0) > 0)
   const destination = value.cloud.destination
   const personalDestination = destination?.kind === "personal" ? destination : undefined
   const workspaces = projects?.workspaces ?? (personalDestination ? [personalDestination] : [])
@@ -140,9 +116,7 @@ export function CloudOnboarding({
       !savedDestinations.has(group.id) &&
       (folderChoices?.[group.id] ?? !hasWorkspaceChoice),
   )
-  const selectedFolders = grouped
-    ? (selectedProjects?.length ?? 0)
-    : value.cloud.draft.folders.filter((folder) => folder.selected).length
+  const selectedFolders = selectedProjects?.length ?? 0
   const needsWorkspaceChoice =
     hasWorkspaceChoice && selectedProjects?.some((group) => !projects?.targets?.[group.id])
   const selectedWorkspaceIds = [
@@ -182,34 +156,28 @@ export function CloudOnboarding({
       : hasWorkspaceChoice
         ? "Each folder uploads only to its selected workspace."
         : null
-  const showWorkspaceNote = grouped && projects?.loaded && !projects.error
+  const showWorkspaceNote = projects?.loaded && !projects.error
   const folderMessage =
     error ??
     value.error ??
-    (grouped
-      ? projects?.loading
-        ? ""
-        : projects?.scopeInvalid
-          ? (projects.error ?? "")
-          : projects?.error ||
-              (value.cloud.setupError && value.cloud.setupError !== cloudCaptureUnsupported)
-            ? "Antiburn could not check your session folders. You can continue locally."
-            : !value.cloud.captureEnabled
-              ? "Uploads are unavailable on this device."
-              : projects?.needsChoiceReview
-                ? "Review your folders before starting sync."
-                : projects?.loaded &&
-                    !projects.loading &&
-                    !projects.hasMore &&
-                    !projects.partial &&
-                    projects.groups.some((group) => group.captureSupported === false)
-                  ? "Could not check uploads for some folders."
-                  : ""
-      : captureEnabled
-        ? "Upload unavailable. You can save a capture request on this device."
-        : value.cloud.syncEnabled
-          ? ""
-          : "Cloud sync is coming soon. Nothing will upload.")
+    (projects?.loading
+      ? ""
+      : projects?.scopeInvalid
+        ? (projects.error ?? "")
+        : projects?.error ||
+            (value.cloud.setupError && value.cloud.setupError !== cloudCaptureUnsupported)
+          ? "Antiburn could not check your session folders. You can continue locally."
+          : !value.cloud.captureEnabled
+            ? "Uploads are unavailable on this device."
+            : projects?.needsChoiceReview
+              ? "Review your folders before starting sync."
+              : projects?.loaded &&
+                  !projects.loading &&
+                  !projects.hasMore &&
+                  !projects.partial &&
+                  projects.groups.some((group) => group.captureSupported === false)
+                ? "Could not check uploads for some folders."
+                : "")
   const projectListComplete =
     projects?.loaded &&
     !projects.loading &&
@@ -412,30 +380,23 @@ export function CloudOnboarding({
       ) : value.screen === "folders" ? (
         <section className="cloud-folder-content min-h-0 flex-1 overflow-hidden pb-0!">
           <h1 className="type-cloud-folder-title" tabIndex={-1} ref={focusHeading}>
-            {captureEnabled ? "Choose sources for " : "Choose what to sync to "}
-            <span className="text-brand">antiburn cloud</span>
+            Choose what to sync to <span className="text-brand">antiburn cloud</span>
           </h1>
           <p id="cloud-sync-description" className="type-onboarding-body text-onboarding-muted">
-            {grouped
-              ? `Sync full sessions from approved folders.${selectedProjects?.some((group) => group.repositoryWide) ? " Matching Git checkouts are included." : ""}`
-              : captureEnabled
-                ? "Choose the folders where Claude saves sessions, or choose an OpenCode V2 database."
-                : "Choose folders to sync their existing and future coding sessions across your devices."}
+            {`Sync full sessions from approved folders.${selectedProjects?.some((group) => group.repositoryWide) ? " Matching Git checkouts are included." : ""}`}
           </p>
           <div className="flex flex-wrap items-center justify-between gap-2 type-callout text-onboarding-muted">
             <span id="cloud-sync-selection">
               {selectedFolders} {selectedFolders === 1 ? "folder" : "folders"} selected
             </span>
-            {(grouped || (value.cloud.identity && destination)) && (
-              <span
-                id="cloud-sync-destination"
-                className="min-w-0 wrap-anywhere rounded-control bg-surface-card px-2 py-1 type-footnote"
-                aria-live="polite"
-              >
-                {grouped ? workspaceSummary : destination?.name}
-                {value.cloud.identity && ` · ${value.cloud.identity.login}`}
-              </span>
-            )}
+            <span
+              id="cloud-sync-destination"
+              className="min-w-0 wrap-anywhere rounded-control bg-surface-card px-2 py-1 type-footnote"
+              aria-live="polite"
+            >
+              {workspaceSummary}
+              {value.cloud.identity && ` · ${value.cloud.identity.login}`}
+            </span>
           </div>
           {showWorkspaceNote && workspaceNote && (
             <p
@@ -446,93 +407,44 @@ export function CloudOnboarding({
               {workspaceNote}
             </p>
           )}
-          {grouped ? (
-            projects && (projects.groups.length > 0 || projectListComplete) ? (
-              <CloudProjectFolders
-                id={foldersId}
-                groups={projects.groups}
-                choices={folderChoices ?? {}}
-                disabled={
-                  disabled ||
-                  !projects.loaded ||
-                  projects.loading ||
-                  !!projects.error ||
-                  !!value.cloud.setupError ||
-                  !personalDestination
-                }
-                homeDirectory={value.homeDirectory}
-                workspaces={workspaces}
-                destinationId={personalDestination?.id}
-                targets={projects.targets}
-                savedDestinations={savedDestinations}
-                onSelect={(id, selected, workspace) =>
-                  session.selectProject(
-                    id,
-                    selected,
-                    selected ? (workspace ?? personalDestination?.id) : undefined,
-                  )
-                }
-              />
-            ) : (
-              <div
-                id={foldersId}
-                tabIndex={-1}
-                className="cloud-folder-list min-h-0! max-h-none! flex-1"
-              >
-                <p className="cloud-empty type-body text-onboarding-muted">
-                  {emptyProjectMessage}
-                </p>
-              </div>
-            )
+          {projects && (projects.groups.length > 0 || projectListComplete) ? (
+            <CloudProjectFolders
+              id={foldersId}
+              groups={projects.groups}
+              choices={folderChoices ?? {}}
+              disabled={
+                disabled ||
+                !projects.loaded ||
+                projects.loading ||
+                !!projects.error ||
+                !!value.cloud.setupError ||
+                !personalDestination
+              }
+              homeDirectory={value.homeDirectory}
+              workspaces={workspaces}
+              destinationId={personalDestination?.id}
+              targets={projects.targets}
+              savedDestinations={savedDestinations}
+              onSelect={(id, selected, workspace) =>
+                session.selectProject(
+                  id,
+                  selected,
+                  selected ? (workspace ?? personalDestination?.id) : undefined,
+                )
+              }
+            />
           ) : (
             <div
+              id={foldersId}
+              tabIndex={-1}
               className="cloud-folder-list min-h-0! max-h-none! flex-1"
-              aria-label="Cloud folders"
             >
-              {value.cloud.draft.folders.length ? (
-                value.cloud.draft.folders.map((folder) => (
-                  <div key={cloudSourceKey(folder)} className="cloud-folder-row">
-                    <div className="cloud-folder-label">
-                      <Folder size={18} aria-hidden />
-                      <span>
-                        <strong className="type-title-3 font-medium!">
-                          {folder.path.split(/[\\/]/).filter(Boolean).at(-1) ?? folder.path}
-                        </strong>
-                        <small className="type-callout text-onboarding-muted">
-                          {captureEnabled && `${cloudSourceLabel(folder)}: `}
-                          {folder.path}
-                        </small>
-                      </span>
-                    </div>
-                    <span className="cloud-folder-count type-callout text-onboarding-muted">
-                      {folder.sessionCount == null
-                        ? "Count unavailable"
-                        : `${folder.sessionCount}${folder.sessionCountIsPartial ? " recent" : ""} sessions`}
-                    </span>
-                    <ToggleSwitch
-                      aria-label={`${captureEnabled ? "Select" : "Sync"} ${folder.path}`}
-                      checked={folder.selected}
-                      disabled={disabled}
-                      onCheckedChange={(selected) =>
-                        void session.selectFolder(
-                          folder.path,
-                          selected,
-                          cloudSourceKind(folder),
-                        )
-                      }
-                    />
-                  </div>
-                ))
-              ) : (
-                <p className="cloud-empty type-body text-onboarding-muted">
-                  {captureEnabled
-                    ? "No sources added. Add a Claude source directory or OpenCode V2 database to save a capture request."
-                    : "No folders added. Add a folder to choose what to sync."}
-                </p>
-              )}
+              <p className="cloud-empty type-body text-onboarding-muted">
+                {emptyProjectMessage}
+              </p>
             </div>
           )}
-          {grouped && projects?.hasMore && (
+          {projects?.hasMore && (
             <button
               className="onboarding-secondary cloud-add"
               aria-disabled={
@@ -555,28 +467,6 @@ export function CloudOnboarding({
             >
               Load more folders
             </button>
-          )}
-          {!grouped && (
-            <>
-              <button
-                className="onboarding-secondary cloud-add"
-                disabled={disabled}
-                onClick={() => void session.addFolders()}
-              >
-                <Plus size={16} aria-hidden />
-                {captureEnabled ? "Add Claude sources…" : "Add a folder…"}
-              </button>
-              {captureEnabled && (
-                <button
-                  className="onboarding-secondary cloud-add"
-                  disabled={disabled}
-                  onClick={() => void session.addFolders("opencode_sqlite_v2")}
-                >
-                  <Plus size={16} aria-hidden />
-                  Add OpenCode databases…
-                </button>
-              )}
-            </>
           )}
           {folderMessage && (
             <div
@@ -602,7 +492,7 @@ export function CloudOnboarding({
                 : "Loading more folders…"}
             </p>
           )}
-          {grouped && value.sync.status === "starting" && (
+          {value.sync.status === "starting" && (
             <p className="type-callout text-onboarding-muted" role="status">
               Confirming folder sync…
             </p>
@@ -652,34 +542,13 @@ export function CloudOnboarding({
           </section>
           <section className="onboarding-copy cloud-ready-copy">
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
-              {grouped
-                ? syncReady
-                  ? "Sessions sync in the background"
-                  : "Continue using Antiburn locally"
-                : captureEnabled
-                  ? captureSaved
-                    ? "Capture request saved"
-                    : value.sync.status === "starting"
-                      ? "Saving capture request"
-                      : "Continue using Antiburn locally"
-                  : value.cloud.syncEnabled
-                    ? "Sessions sync in the background"
-                    : "Continue using Antiburn locally"}
+              {syncReady
+                ? "Sessions sync in the background"
+                : "Continue using Antiburn locally"}
             </h1>
             <p className="type-onboarding-body">
-              {grouped ? (
-                "Manage Cloud uploads in Settings. You can pause uploads and review saved work there."
-              ) : captureEnabled ? (
-                "Upload is unavailable. Saving a request does not confirm that any content was read or captured."
-              ) : !value.cloud.syncEnabled ? (
-                (value.cloud.setupError ??
-                "Cloud uploads are unavailable. Continue using Antiburn locally.")
-              ) : (
-                <>
-                  Continue using Antiburn while your sessions sync. Manage Cloud uploads in
-                  Settings.
-                </>
-              )}
+              Manage Cloud uploads in Settings. You can pause uploads and review saved work
+              there.
             </p>
           </section>
         </>
@@ -692,56 +561,22 @@ export function CloudOnboarding({
             <div className="cloud-outcomes" role="group" aria-label="Setup status">
               <div>
                 <span
-                  className={`cloud-sync-dot${syncing ? " is-syncing" : ""}${(grouped ? !syncReady : !accepted && !syncing) ? " is-inactive" : ""}`}
+                  className={`cloud-sync-dot${syncing ? " is-syncing" : ""}${!syncReady ? " is-inactive" : ""}`}
                   aria-hidden
                 />
                 <strong className="type-headline">
-                  {grouped
-                    ? ongoing && cloudUploadStatusUnknown(ongoing)
-                      ? cloudOngoingStatusMessage(ongoing)
-                      : value.sync.status === "starting"
-                        ? "Starting background sync"
-                        : value.sync.status === "ambiguous"
-                          ? "Cloud sync not confirmed"
-                          : ongoing
-                            ? cloudOngoingStatusMessage(ongoing)
-                            : "Cloud sync not confirmed"
-                    : captureEnabled
-                      ? "Upload unavailable"
-                      : accepted || syncing
-                        ? value.sync.status === "partial"
-                          ? "Sync needs attention"
-                          : value.sync.status === "complete"
-                            ? `Synced ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
-                            : `Syncing ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
-                        : syncUncertain
-                          ? "Sync status unavailable"
-                          : value.sync.status === "starting"
-                            ? "Starting background sync"
-                            : "Cloud sync not started"}
+                  {ongoing && cloudUploadStatusUnknown(ongoing)
+                    ? cloudOngoingStatusMessage(ongoing)
+                    : value.sync.status === "starting"
+                      ? "Starting background sync"
+                      : value.sync.status === "ambiguous"
+                        ? "Cloud sync not confirmed"
+                        : ongoing
+                          ? cloudOngoingStatusMessage(ongoing)
+                          : "Cloud sync not confirmed"}
                 </strong>
                 <span className="type-callout text-onboarding-muted">
-                  {grouped
-                    ? "Manage uploads in Settings"
-                    : captureEnabled
-                      ? captureSaved
-                        ? "Capture request saved on this device"
-                        : value.sync.status === "starting"
-                          ? "Saving capture request"
-                          : value.sync.status === "cancelled"
-                            ? "Capture request cancelled"
-                            : "Capture request not confirmed"
-                      : accepted || syncing
-                        ? value.sync.status === "partial"
-                          ? "Some items could not sync"
-                          : value.sync.status === "complete"
-                            ? "Selected items are up to date"
-                            : "Sessions upload in the background"
-                        : syncUncertain
-                          ? "Your folder selection is kept"
-                          : selectedFolders
-                            ? "Cloud sync has not started"
-                            : "No folders selected for Cloud sync"}
+                  Manage uploads in Settings
                 </span>
               </div>
               <div>
@@ -816,36 +651,31 @@ export function CloudOnboarding({
                   className="onboarding-primary"
                   disabled={
                     disabled ||
-                    !(grouped
-                      ? value.cloud.captureEnabled
-                      : captureEnabled || value.cloud.syncEnabled) ||
+                    !value.cloud.captureEnabled ||
                     value.cloud.status !== "signed_in" ||
                     !!value.cloud.setupError ||
                     !value.cloud.identity ||
                     value.cloud.destination?.kind !== "personal" ||
                     !value.cloud.destination.id ||
-                    (grouped
-                      ? !projects?.loaded ||
-                        cloudUploadStatusUnknown(value.ongoing) ||
-                        projects.loading ||
-                        !!projects.error ||
-                        needsWorkspaceChoice ||
-                        workspaceUnavailable ||
-                        selectedFolders === 0
-                      : !value.cloud.draft.folders.some((folder) => folder.selected))
+                    !projects?.loaded ||
+                    cloudUploadStatusUnknown(value.ongoing) ||
+                    projects.loading ||
+                    !!projects.error ||
+                    needsWorkspaceChoice ||
+                    workspaceUnavailable ||
+                    selectedFolders === 0
                   }
                   aria-describedby={[
                     "cloud-sync-description",
                     "cloud-sync-selection",
-                    (grouped || (value.cloud.identity && destination)) &&
-                      "cloud-sync-destination",
+                    "cloud-sync-destination",
                     showWorkspaceNote && workspaceNote && "cloud-workspace-note",
                   ]
                     .filter(Boolean)
                     .join(" ")}
                   onClick={() => void session.startSync(value)}
                 >
-                  {captureEnabled ? "Save capture request" : "Start syncing"}
+                  Start syncing
                 </button>
               </>
             )}

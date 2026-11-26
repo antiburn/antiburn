@@ -53,14 +53,14 @@ use repository_policy::{
 };
 
 use backfill_progress::{BackfillProgress, SourceProblem, UploadProgress};
-#[cfg(all(test, unix))]
-use discovery::discover_policy;
 #[cfg(all(test, unix, debug_assertions))]
 use discovery::legacy_file_observation;
 use discovery::{
-    DiscoveryCursor, Selection, check_retry_observation, discover_policy_page, discover_root,
+    DiscoveryCursor, Selection, check_retry_observation, discover_policy_page,
     reopen_waiting_source,
 };
+#[cfg(all(test, unix))]
+use discovery::{discover_policy, discover_root};
 pub(super) use discovery::{discover_root_page, metadata_limits, source_observation};
 use folder_move::{verify_project_move, verify_project_move_to_new_policy};
 use project_directories::{exact_project_directories, validate_project_directories};
@@ -245,15 +245,6 @@ impl Status {
 struct SavedFolder {
     group_id: String,
     path: String,
-}
-
-/// Recorded project choices. Counts refer to native candidates, not acceptance.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ProjectChoice {
-    #[serde(flatten)]
-    selection: ProjectSelection,
-    session_count: u32,
 }
 
 /// Memory-only scheduling hints. Durable policy, jobs, and spool entries remain
@@ -2884,80 +2875,6 @@ fn eligible_team(
                 .map(|generation| (generation, entry.workspace.name))
         })
         .ok_or_else(|| "The selected team workspace is not available.".into())
-}
-
-/// List bounded recorded project choices only after an explicit native source
-/// selection. This does not grant content consent or create upload jobs.
-#[tauri::command]
-pub(crate) async fn cloud_sync_projects(
-    app: tauri::AppHandle,
-    folders: Vec<Folder>,
-    binding: DestinationBinding,
-) -> Result<Vec<ProjectChoice>, String> {
-    let work = app.state::<Controller>().blocking.clone();
-    work.run(Priority::Normal, move || {
-        let controller = app.state::<Controller>();
-        let generation = controller.account_generation.load(Ordering::Acquire);
-        let current = || controller.account_generation.load(Ordering::Acquire) == generation;
-        let mut engine = controller
-            .engine
-            .lock()
-            .map_err(|_| "Cloud is unavailable.")?;
-        if engine.generation != generation {
-            return Err("Cloud account changed.".into());
-        }
-        let refreshed = engine.refresh(now(), current);
-        if let Err(error) = refreshed { engine.status = error.into(); }
-        super::emit_snapshot(&app, super::snapshot(&app, &engine));
-        refreshed.map_err(|_| "Connect to Cloud before choosing projects.")?;
-        if !engine
-            .session()
-            .is_some_and(|session| binding.matches(session))
-        {
-            return Err("Cloud account changed.".into());
-        }
-        let roots = selected_sources(&folders)?;
-        let mut projects = std::collections::BTreeMap::new();
-        let mut discovered = 0usize;
-        let mut cache = controller.project_cache.lock().map_err(|_| "Project discovery is unavailable.")?;
-        cache.begin_scan();
-        for root in roots {
-            if !current() {
-                return Err("Cloud account changed.".into());
-            }
-            let candidates = discover_root(
-                root.source_kind,
-                &root.path,
-                512usize.saturating_sub(discovered),
-            )?;
-            discovered += candidates.len();
-            for candidate in candidates {
-                if !current() { return Err("Cloud account changed.".into()); }
-                let evidence = cache.evidence(&binding.account_id, &binding.destination_id, &root,
-                    &candidate, &metadata_limits())?.ok_or("Project metadata is still loading. Retry discovery.")?;
-                if !evidence.scan_complete() { return Err("Some project metadata is unreadable. Restore access or use a supported source.".into()); }
-                for project_path in evidence.project_paths().iter().filter_map(|path| path.to_str()) {
-                    let selection = ProjectSelection {
-                        source_kind: root.source_kind,
-                        source_path: root.path.clone(),
-                        project_path: project_path.to_owned(),
-                    };
-                    *projects.entry(selection).or_insert(0u32) += 1;
-                }
-            }
-        }
-        if !current() || engine.session().is_none() {
-            return Err("Cloud account changed.".into());
-        }
-        Ok(projects
-            .into_iter()
-            .map(|(selection, session_count)| ProjectChoice {
-                selection,
-                session_count,
-            })
-            .collect())
-    })
-    .await
 }
 
 /// Persist separate ongoing content consent. The policy binds only selected

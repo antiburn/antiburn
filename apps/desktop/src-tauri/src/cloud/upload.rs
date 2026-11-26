@@ -70,7 +70,7 @@ pub(super) fn api_request(
     route: Route,
     body: &impl Serialize,
 ) -> Result<ApiResponse, TransportError> {
-    if !super::capture::valid_request_id(&identity.capture_id) {
+    if !super::capture::valid_capture_id(&identity.capture_id) {
         return Err(TransportError::Rejected);
     }
     let bytes = serde_json::to_vec(body).map_err(|_| TransportError::Rejected)?;

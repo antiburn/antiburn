@@ -458,7 +458,7 @@ describe("SessionsStepSettings Cloud preference", () => {
     expect(screen.queryByText(/Saved preference only/)).not.toBeInTheDocument()
     fireEvent.click(learnMore)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_begin"))
-    expect(invoke.mock.calls.some(([command]) => command === "cloud_start_sync")).toBe(false)
+    expect(invoke.mock.calls.some(([command]) => command === "cloud_enable_sync")).toBe(false)
     expect(invoke.mock.calls.some(([command]) => command === "set_settings")).toBe(false)
   })
 

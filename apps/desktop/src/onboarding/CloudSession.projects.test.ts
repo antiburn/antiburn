@@ -1,11 +1,9 @@
 import { expect, it, vi } from "vitest"
-import { emptyCloudSnapshot, desktopCloudPort, type CloudSnapshot } from "../lib/cloud"
 import { CloudSession } from "./CloudSession"
 import {
   cloudProjectFixture,
   ongoingStatus,
   projectGroup,
-  localToolsFixture,
 } from "./__tests__/cloudProjectFixtures"
 
 it("requests a full scan only for the current saved folder policy", async () => {
@@ -76,32 +74,12 @@ it("checks a saved Team even when the Personal scan request fails", async () => 
   }
 })
 
-it("does not use an older rendered selection to authorize a legacy provider-source request", async () => {
-  const value: CloudSnapshot = {
-    ...emptyCloudSnapshot,
-    authEnabled: true,
-    captureEnabled: true,
-    status: "signed_in",
-    identity: { id: "synthetic-account", login: "Example" },
-    destination: { id: "synthetic-personal", name: "Personal", kind: "personal" },
-    draft: {
-      screen: "complete",
-      folders: [{ path: "/Example/claude/projects/project", selected: true }],
-    },
-  }
-  const port = {
-    ...desktopCloudPort,
-    ongoing: undefined,
-    read: vi.fn(async () => value),
-    watch: vi.fn(async () => () => {}),
-    localTools: localToolsFixture().port,
-    prepareSync: vi.fn(async () => {}),
-    start: vi.fn(async () => ({ status: "upload_unavailable" as const })),
-  }
+it("does not use an older rendered selection to authorize folder sync", async () => {
+  const { port, ongoing } = cloudProjectFixture()
   const session = new CloudSession(port, false, true)
   const stop = session.subscribe(vi.fn())
   try {
-    await vi.waitFor(() => expect(session.getSnapshot().loaded).toBe(true))
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     const rendered = {
       ...session.getSnapshot(),
       projects: {
@@ -117,8 +95,7 @@ it("does not use an older rendered selection to authorize a legacy provider-sour
       },
     }
     await session.startSync(rendered)
-    expect(port.prepareSync).not.toHaveBeenCalled()
-    expect(port.start).not.toHaveBeenCalled()
+    expect(ongoing.enable).not.toHaveBeenCalled()
   } finally {
     stop()
   }
@@ -439,8 +416,6 @@ it("starts desktop ongoing sync with exact current members and matching folders 
       ongoing: true,
       attachments: false,
     })
-    expect(port.prepareSync).not.toHaveBeenCalled()
-    expect(port.start).not.toHaveBeenCalled()
     expect(session.getSnapshot()).toMatchObject({
       screen: "complete",
       busy: false,
@@ -824,14 +799,8 @@ it("does not let recurring desktop snapshots restart the verified identity delay
   }
 })
 
-it("does not resume legacy saved requests or let them replace ongoing preparation", async () => {
+it("does not let an unchanged account event replace an active folder confirmation", async () => {
   const { port, ongoing, emit } = cloudProjectFixture()
-  const legacy = {
-    requestId: "legacy-request",
-    result: { status: "upload_unavailable" as const },
-  }
-  emit({ pendingSync: legacy })
-  port.reconcile = vi.fn(async () => ({ status: "upload_unavailable" as const }))
   let finish!: (value: ReturnType<typeof ongoingStatus>) => void
   ongoing.enable.mockImplementationOnce(
     () =>
@@ -844,9 +813,9 @@ it("does not resume legacy saved requests or let them replace ongoing preparatio
   try {
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     expect(session.getSnapshot().screen).toBe("folders")
-    expect(port.reconcile).not.toHaveBeenCalled()
+    expect(ongoing.enable).not.toHaveBeenCalled()
     const pending = session.startSync()
-    emit({ pendingSync: legacy })
+    emit({})
     expect(session.getSnapshot()).toMatchObject({
       screen: "folders",
       sync: { status: "starting" },

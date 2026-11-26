@@ -26,8 +26,7 @@ On supported Unix platforms, Desktop can capture and upload supported native
 sessions after you enable upload for a folder. Enabling a folder is the upload
 decision. There is no second content prompt. Workspace sign-in and browser
 approval are separate and do not enable folders. A desktop scheduler runs
-independently of onboarding or Settings. Discovery and legacy saved requests
-do not start it.
+independently of onboarding or Settings. Discovery does not start it.
 
 Local analysis needs no Cloud account or content consent. Model-based Burn Checks
 use their own configured connection and **Run checks** setting. They can send
@@ -42,7 +41,7 @@ environment variable nor the `distribution` feature enables it. The standard
 desktop debug launcher selects it explicitly. Production build commands do not.
 
 The standard debug launchers use a separate app identifier and data directory.
-Settings, source selections, saved requests, auth state, and retry files remain
+Settings, folder consent, auth state, and retry files remain
 separate from the release app. Source selections can be reused within one profile;
 this does not move credentials between service origins.
 
@@ -810,20 +809,12 @@ setup while preserving ownership checks. Read-only status calls do not install
 or repair tools. See the [CLI contract](../cli-installation.md#debug-cli-and-skill)
 for profile and platform limits.
 
-### Legacy saved source requests
+### Retired saved source requests
 
-`cloud_prepare_sync`, `cloud_start_sync`, and `cloud_reconcile_sync` retain the
-discovery-only saved-request contract. They do not create an ongoing policy or
-start desktop capture/upload. **Save capture request** on that compatibility path
-still reports **Upload unavailable**. Older `native-full-content-v1` and
-`native-full-content-v2` confirmations cannot become `desktop-project-sync-v1`
-consent.
-
-Legacy Claude and typed-provider requests retain their serialized consent,
-source scopes, capture IDs, and locators. Reading or reconciling a completed or
-cancelled selection does not rediscover it or convert its records. Unknown saved
-provider kinds fail without rewriting data. Cancellation does not remove
-unrelated captures or remote content.
+Desktop no longer opens or runs one-time source requests. SQLite upgrades keep
+the old request rows and source scopes unchanged. Desktop does not convert
+their consent into folder sync permission. Approve folders in the current
+workspace to enable uploads.
 
 ## Validation
 

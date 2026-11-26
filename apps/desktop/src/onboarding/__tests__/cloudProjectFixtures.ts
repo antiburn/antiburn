@@ -191,8 +191,6 @@ export function cloudProjectFixture(): {
       return value
     }),
     localTools: localTools.port,
-    prepareSync: vi.fn(async () => {}),
-    start: vi.fn(async () => ({ status: "upload_unavailable" as const })),
   }
   return {
     port,

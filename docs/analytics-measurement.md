@@ -533,15 +533,13 @@ Authentication rejection and invalid responses both emit `failed`; do not count 
 outcome as a sync failure. Measure Start syncing among installations viewing folders
 and Done among installations viewing completion. **Continue locally** from
 handoff, identity, or folders uses `use_locally` on that screen. It does not
-imply content consent or a saved request. Start syncing opens completion
-immediately; background preparation, submission, and reconciliation do not block Done.
+imply content consent. Start syncing confirms the selected folders before
+opening completion. Background uploads do not block Done.
 There is no separate sync screen, Check status action, or Cancel sync action in
 onboarding. Background status updates do not create another screen view. Production
 sync outcomes are not recorded until the separately gated backend is implemented.
-Manual native capture preparation uses **Save capture request** with the existing
-`start_sync` action value. Count it as intent, not a stored-request or upload
-outcome. Its screen label is the screen where the action occurred, including
-completion for an explicit source-listing retry. The displayed **Upload unavailable** state emits no success event.
+**Start syncing** emits `start_sync`. Count it as intent, not saved folder
+consent or an upload outcome.
 Settings preparation is an intentional measurement gap until a separate closed
 outcome contract is reviewed. Keep request IDs, source scopes, roots, account
 details, and content out of analytics.
