@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
-import { emptyCloudSnapshot, type CloudSnapshot, type CloudTeamJoinResult } from "../lib/cloud"
+import { emptyCloudSnapshot, type CloudSnapshot, type CloudWorkspace } from "../lib/cloud"
 import { CloudOnboarding } from "./CloudOnboarding"
 import { cloudProjectFixture, ongoingStatus } from "./__tests__/cloudProjectFixtures"
 
@@ -18,70 +18,138 @@ function fixture(patch: Partial<CloudSnapshot> = {}) {
   return fixture
 }
 
-it("offers Team joining after sign-in without requiring it to continue", async () => {
+it("offers browser setup without collecting invite data or requiring it for local completion", async () => {
   const { port, ongoing } = fixture({
-    dashboardAvailable: true,
-    teamJoinAllowed: true,
     draft: { screen: "identity", folders: [] },
   })
-  const join = vi.fn()
-  port.teamJoin = join
+  const openSetup = vi.fn().mockRejectedValueOnce(new Error("Browser unavailable."))
+  openSetup.mockResolvedValue(undefined)
+  port.openSetup = openSetup
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Join a Team" }))
-  expect(screen.getByRole("textbox", { name: "Team invite link" })).toHaveFocus()
-  expect(screen.getByRole("button", { name: "Continue Cloud setup" })).toBeEnabled()
+  const open = await screen.findByRole("button", { name: "Finish setup in browser" })
+  expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+  fireEvent.click(open)
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not open Cloud setup")
+  fireEvent.click(open)
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+  expect(openSetup).toHaveBeenCalledTimes(2)
   fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
   expect(done).toHaveBeenCalledOnce()
-  expect(join).not.toHaveBeenCalled()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
-it("keeps onboarding on the Team join until its pending claim is confirmed", async () => {
+it("waits for a fresh workspace list before showing folder choices", async () => {
   const { port, ongoing } = fixture({
-    dashboardAvailable: true,
-    teamJoinAllowed: true,
     draft: { screen: "identity", folders: [] },
   })
-  let resolveClaim!: (result: CloudTeamJoinResult) => void
-  const claim = new Promise<CloudTeamJoinResult>((resolve) => {
-    resolveClaim = resolve
+  const personal: CloudWorkspace = {
+    id: "synthetic-personal",
+    name: "Personal",
+    kind: "personal",
+  }
+  const team: CloudWorkspace = { id: "synthetic-team", name: "Example Team", kind: "team" }
+  let resolveWorkspaces!: (result: CloudWorkspace[]) => void
+  const response = new Promise<CloudWorkspace[]>((resolve) => {
+    resolveWorkspaces = resolve
   })
-  const teamName = "Example Studio"
-  port.teamJoin = vi
-    .fn<NonNullable<typeof port.teamJoin>>()
-    .mockResolvedValueOnce({ status: "started", attemptId: "example-attempt" })
-    .mockResolvedValueOnce({
-      status: "ready",
-      attemptId: "example-attempt",
-      teamName,
-      email: "member@example.com",
-      emailId: "example-email",
-    })
-    .mockReturnValueOnce(claim)
-  const save = vi.spyOn(port, "save")
+  port.openSetup = vi.fn().mockResolvedValue(undefined)
+  const workspaces = vi.fn<NonNullable<typeof port.workspaces>>().mockResolvedValue([personal])
+  port.workspaces = workspaces
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  const next = await screen.findByRole("button", { name: "Continue" })
+  await waitFor(() => expect(workspaces).toHaveBeenCalledOnce())
+
+  workspaces.mockResolvedValue([personal, team]).mockReturnValueOnce(response)
+  vi.useFakeTimers()
+  try {
+    fireEvent.click(next)
+    await act(() => vi.advanceTimersByTimeAsync(16_000))
+    expect(next).toBeDisabled()
+    expect(port.save).not.toHaveBeenCalled()
+    expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+
+  await act(async () => resolveWorkspaces([personal, team]))
+  expect(await screen.findByRole("button", { name: "Start syncing" })).toBeVisible()
+  expect(
+    await screen.findByRole("option", { name: "Team workspace: Example Team" }),
+  ).toBeInTheDocument()
+  expect(workspaces).toHaveBeenLastCalledWith({
+    accountId: "synthetic-account",
+    destinationId: personal.id,
+  })
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("lets the user retry the workspace check or continue locally", async () => {
+  const { port } = fixture({ draft: { screen: "identity", folders: [] } })
+  port.openSetup = vi.fn()
+  port.workspaces = vi.fn().mockRejectedValue(new Error("Could not verify Cloud workspaces."))
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Join a Team" }))
-  fireEvent.change(screen.getByRole("textbox", { name: "Team invite link" }), {
-    target: { value: `https://dashboard.example/join#token=${"a".repeat(43)}` },
+  const next = await screen.findByRole("button", { name: "Continue" })
+  fireEvent.click(next)
+  expect(await screen.findByRole("alert")).toHaveTextContent("Try again")
+  expect(next).toBeEnabled()
+  expect(port.save).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
+  expect(done).toHaveBeenCalledOnce()
+})
+
+it("offers sign-in instead of retrying an unauthorized workspace check", async () => {
+  const { port, emit } = fixture({ draft: { screen: "identity", folders: [] } })
+  port.openSetup = vi.fn()
+  const workspaces = vi
+    .fn<NonNullable<typeof port.workspaces>>()
+    .mockResolvedValue([{ id: "synthetic-personal", name: "Personal", kind: "personal" }])
+  port.workspaces = workspaces
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  const next = await screen.findByRole("button", { name: "Continue" })
+  await waitFor(() => expect(workspaces).toHaveBeenCalledOnce())
+  workspaces.mockImplementationOnce(async () => {
+    emit({ status: "reauth_required", identity: null, destination: null })
+    throw new Error("Cloud workspace sign-in required.")
   })
-  fireEvent.click(screen.getByRole("button", { name: "Check invite" }))
-  fireEvent.click(await screen.findByRole("button", { name: "Join Team" }))
+  fireEvent.click(next)
+  expect(await screen.findByText("Sign in again to use Antiburn Cloud.")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
+  expect(workspaces).toHaveBeenCalledTimes(2)
+  expect(port.save).not.toHaveBeenCalled()
+})
 
-  for (const name of ["Continue locally", "Continue Cloud setup"]) {
-    const control = screen.getByRole("button", { name })
-    expect(control).toBeDisabled()
-    fireEvent.click(control)
+it("ignores a workspace list from a replaced grant", async () => {
+  const { port, emit } = fixture({ draft: { screen: "identity", folders: [] }, grantId: "old" })
+  const personal: CloudWorkspace = {
+    id: "synthetic-personal",
+    name: "Personal",
+    kind: "personal",
   }
-  expect(done).not.toHaveBeenCalled()
-  expect(save).not.toHaveBeenCalled()
+  port.openSetup = vi.fn()
+  const workspaces = vi.fn<NonNullable<typeof port.workspaces>>().mockResolvedValue([personal])
+  port.workspaces = workspaces
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  const next = await screen.findByRole("button", { name: "Continue" })
+  await waitFor(() => expect(workspaces).toHaveBeenCalledOnce())
 
-  await act(async () => resolveClaim({ status: "joined", teamName, inSetup: false }))
-  expect(await screen.findByText("You joined Example Studio.")).toBeVisible()
-  expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
-  expect(screen.getByRole("button", { name: "Continue Cloud setup" })).toBeEnabled()
-  expect(ongoing.enable).not.toHaveBeenCalled()
+  let resolveWorkspaces!: (result: CloudWorkspace[]) => void
+  workspaces.mockReturnValueOnce(new Promise((resolve) => (resolveWorkspaces = resolve)))
+  fireEvent.click(next)
+  await waitFor(() => expect(workspaces).toHaveBeenCalledTimes(2))
+  act(() => emit({ grantId: "replacement" }))
+  await act(async () => resolveWorkspaces([personal]))
+
+  expect(port.save).not.toHaveBeenCalled()
+  expect(next).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
 })
 
 it("does not claim syncing when capture is unavailable on the platform", async () => {

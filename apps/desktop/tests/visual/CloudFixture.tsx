@@ -27,7 +27,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
   const partialSettingsFolders = params.has("partialSettingsFolders")
   const pagedSettingsFolders = params.has("pagedSettingsFolders")
   const joinedTeam = name === "settings-folders" && params.has("joinedTeam")
-  const teamJoin = name === "identity" && params.has("teamJoin")
+  const browserSetup = params.has("browserSetup")
   const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
   const firstPersonalSaveFailure =
     name === "settings-folders" && params.has("personalSaveFailure")
@@ -71,8 +71,6 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
     authEnabled: !["marketing", "marketing_failed"].includes(name),
-    dashboardAvailable: teamJoin,
-    teamJoinAllowed: teamJoin,
     syncEnabled:
       name === "settings-progress" ||
       name === "settings-reopened" ||
@@ -357,20 +355,20 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       : ongoing
   return {
     displayHome: async () => "/Users/avery",
-    ...(teamJoin && {
-      teamJoin: async (_binding, action) =>
-        action.action === "start"
-          ? { status: "started", attemptId: "11111111-2222-4333-8444-555555555555" }
-          : action.action === "claim"
-            ? { status: "joined", teamName, inSetup: false }
-            : {
-                status: "ready",
-                attemptId: "11111111-2222-4333-8444-555555555555",
-                teamName,
-                email: "member@example.com",
-                emailId: "22222222-2222-4333-8444-555555555555",
-              },
+    ...(browserSetup && {
+      openSetup: async () => {
+        document.body.dataset.browserSetupOpened = "true"
+      },
     }),
+    ...(browserSetup &&
+      name === "identity" && {
+        workspaces: async () => [
+          { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+          ...(document.body.dataset.browserSetupOpened === "true"
+            ? [{ id: "synthetic-team", name: teamName, kind: "team" as const }]
+            : []),
+        ],
+      }),
     ...(name === "settings-team-confirmation"
       ? {
           workspaces: async () => [

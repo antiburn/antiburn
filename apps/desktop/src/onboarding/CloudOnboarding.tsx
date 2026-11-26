@@ -2,7 +2,7 @@ import { useId, useState, useSyncExternalStore, type CSSProperties } from "react
 import { ArrowUp, ArrowUpRight, Check, Cloud, Info, Plus, UserRound } from "lucide-react"
 import appIcon from "../assets/app-icon.png"
 import { DeviceAccessUpdate } from "./DeviceAccessUpdate"
-import type { CloudPort, CloudTeamJoinAction } from "../lib/cloud"
+import type { CloudPort } from "../lib/cloud"
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import {
   CloudSession,
@@ -12,7 +12,6 @@ import {
   cloudUploadStatusUnknown,
 } from "./CloudSession"
 import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
-import { CloudTeamJoin } from "./CloudTeamJoin"
 import { changeFolderWithFocus } from "./cloudFolderFocus"
 import { cloudCaptureUnsupported, cloudDiscoveryRetryMessage } from "./cloudProjectScope"
 import { cloudAccountCleanupPending, cloudSignOutBeforeSignIn } from "./cloudSessionState"
@@ -52,23 +51,17 @@ export function CloudOnboarding({
     () => true,
   )
   const [session] = useState(() => new CloudSession(port, analytics, holdIdentity))
-  const [claimPending, setClaimPending] = useState(false)
+  const [openingSetup, setOpeningSetup] = useState(false)
+  const [setupOpenFailed, setSetupOpenFailed] = useState(false)
+  const [checkingWorkspaces, setCheckingWorkspaces] = useState(false)
   const foldersId = useId()
   const value = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
   )
-  const disabled = busy || value.busy || claimPending
-  const joinTeam = async (action: CloudTeamJoinAction) => {
-    if (action.action !== "claim") return session.accountActions.joinTeam(action)
-    setClaimPending(true)
-    try {
-      return await session.accountActions.joinTeam(action)
-    } finally {
-      setClaimPending(false)
-    }
-  }
+  const disabled = busy || value.busy || openingSetup
+  const browserSetup = session.canOpenSetup() && value.cloud.status === "signed_in"
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.authEnabled && value.cloud.status === "returned"
@@ -215,7 +208,7 @@ export function CloudOnboarding({
           ? "Unavailable for this setup."
           : "CLI and skill"
   const finish = async () => {
-    if (claimPending || busy || (value.screen !== "complete" && value.busy)) return
+    if (openingSetup || busy || (value.screen !== "complete" && value.busy)) return
     if (analytics)
       noteCloudAction(
         value.screen,
@@ -324,12 +317,35 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
-            {session.accountActions.canJoinTeam() && (
-              <CloudTeamJoin
-                key={`${value.cloud.identity?.id}:${value.cloud.grantId ?? value.cloud.grantExpiresAt}`}
-                send={joinTeam}
-                onboarding
-              />
+            {browserSetup && (
+              <>
+                <p className="type-onboarding-body text-onboarding-muted">
+                  Verify your work email in your browser to check for a workspace invite. Use
+                  the same GitHub account.
+                  {!value.cloud.setupError && " Then return here and continue."}
+                </p>
+                <button
+                  className="onboarding-secondary"
+                  aria-disabled={disabled || undefined}
+                  aria-busy={openingSetup || undefined}
+                  onClick={() => {
+                    if (disabled) return
+                    setOpeningSetup(true)
+                    setSetupOpenFailed(false)
+                    void session
+                      .openSetup()
+                      .catch(() => setSetupOpenFailed(true))
+                      .finally(() => setOpeningSetup(false))
+                  }}
+                >
+                  Finish setup in browser <ArrowUpRight size={16} aria-hidden />
+                </button>
+                {setupOpenFailed && (
+                  <p className="type-callout text-onboarding-muted" role="alert">
+                    Could not open Cloud setup in your browser. Try again.
+                  </p>
+                )}
+              </>
             )}
             <DeviceAccessUpdate
               value={value.cloud}
@@ -353,7 +369,7 @@ export function CloudOnboarding({
                 </button>
               </>
             )}
-            {value.error && (
+            {value.error && !browserSetup && (
               <>
                 <p className="type-callout text-onboarding-muted" role="alert">
                   {value.error}
@@ -553,7 +569,7 @@ export function CloudOnboarding({
         </>
       )}
       <footer
-        className={`onboarding-footer cloud-footer${value.screen === "identity" && session.accountActions.canJoinTeam() ? " flex!" : ""}`}
+        className={`onboarding-footer cloud-footer${value.screen === "identity" && browserSetup ? " flex!" : ""}`}
       >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
@@ -598,6 +614,11 @@ export function CloudOnboarding({
             </button>
           ) : null}
           <div className="onboarding-actions flex-wrap">
+            {value.screen === "identity" && checkingWorkspaces && (
+              <span className="type-footnote" role="status">
+                Checking Cloud workspaces…
+              </span>
+            )}
             {value.screen !== "folders" &&
               (error || (value.screen !== "complete" && value.error)) && (
                 <span className="type-footnote" role="alert">
@@ -630,20 +651,21 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
-            {value.screen === "identity" &&
-              session.accountActions.canJoinTeam() &&
-              !value.cloud.setupError &&
-              !value.error && (
-                <button
-                  className="onboarding-primary"
-                  disabled={disabled}
-                  onClick={() => {
-                    if (!disabled) void session.go("folders")
-                  }}
-                >
-                  Continue Cloud setup
-                </button>
-              )}
+            {value.screen === "identity" && browserSetup && !value.cloud.setupError && (
+              <button
+                className="onboarding-primary"
+                disabled={disabled}
+                aria-busy={checkingWorkspaces || undefined}
+                onClick={() => {
+                  setCheckingWorkspaces(true)
+                  void session
+                    .continueFromDashboard()
+                    .finally(() => setCheckingWorkspaces(false))
+                }}
+              >
+                Continue
+              </button>
+            )}
             {value.screen === "folders" && (
               <>
                 <button

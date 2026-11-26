@@ -19,7 +19,6 @@ mod repository_checkout;
 pub(crate) mod repository_origin;
 mod state;
 pub(crate) mod sync;
-pub(crate) mod team_join;
 #[cfg(test)]
 mod tests;
 mod upload;
@@ -77,7 +76,6 @@ pub(super) enum AccessUpdateStatus {
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessUpdate {
-    TeamJoin,
     SessionReads,
     Capture,
 }
@@ -86,7 +84,6 @@ impl AccessUpdate {
     fn actions(&self) -> &'static [auth::DeviceAction] {
         use auth::DeviceAction::*;
         match self {
-            Self::TeamJoin => &[WorkspaceJoin],
             Self::SessionReads => &[SessionList, SessionRead],
             Self::Capture => &[CaptureWrite],
         }
@@ -173,7 +170,6 @@ fn existing_folder_choices() -> bool {
 pub struct Snapshot {
     auth_enabled: bool,
     dashboard_available: bool,
-    team_join_allowed: bool,
     session_reads_allowed: bool,
     capture_update_available: bool,
     access_update: Option<AccessUpdateStatus>,
@@ -339,8 +335,6 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             .config
             .as_ref()
             .is_some_and(|config| config.dashboard.is_some()),
-        team_join_allowed: session
-            .is_some_and(|session| session.allows(auth::DeviceAction::WorkspaceJoin)),
         session_reads_allowed: session.is_some_and(|session| {
             session.allows(auth::DeviceAction::SessionList)
                 && session.allows(auth::DeviceAction::SessionRead)
@@ -551,49 +545,33 @@ pub async fn cloud_workspaces(
     .await
 }
 
-/// Continue Team admission for the signed-in Personal account on the bounded
-/// Cloud worker. Do not change connections, capture requests, or folder consent.
-#[tauri::command]
-pub async fn cloud_team_join(
-    app: tauri::AppHandle,
-    binding: DestinationBinding,
-    action: team_join::Action,
-) -> Result<team_join::Step, String> {
-    let controller = app.state::<Controller>();
-    let generation = controller.account_generation.load(Ordering::Acquire);
-    let work = controller.blocking.clone();
-    work.run(Priority::Normal, move || {
-        let controller = app.state::<Controller>();
-        let current = || controller.account_generation.load(Ordering::Acquire) == generation;
-        let mut engine = controller
-            .engine
-            .lock()
-            .map_err(|_| team_join::JoinError::Unavailable.ipc_code())?;
-        if !current() || engine.generation != generation {
-            return Err(team_join::JoinError::Cancelled.ipc_code());
-        }
-        let result = engine.team_join(&binding, action, &current);
-        emit_snapshot(&app, snapshot(&app, &engine));
-        result.map_err(team_join::JoinError::ipc_code)
-    })
-    .await
-}
-
 /// Open the configured browser dashboard without starting device approval.
-/// No renderer URL, credential, or browser result crosses this command.
+/// The renderer can choose only the dashboard root or the fixed API setup entry point.
 #[tauri::command]
-pub async fn cloud_open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn cloud_open_dashboard(
+    app: tauri::AppHandle,
+    setup: Option<bool>,
+) -> Result<(), String> {
     let work = app.state::<Controller>().blocking.clone();
     work.run(Priority::Normal, move || {
-        let dashboard = app
-            .state::<Controller>()
+        let controller = app.state::<Controller>();
+        let engine = controller
             .engine
             .lock()
-            .map_err(|_| "Cloud is unavailable.")?
+            .map_err(|_| "Cloud is unavailable.")?;
+        let dashboard = engine
             .config
             .as_ref()
-            .and_then(|config| config.dashboard.clone())
+            .and_then(|config| {
+                if setup == Some(true) {
+                    Some(&config.desktop_setup)
+                } else {
+                    config.dashboard.as_ref()
+                }
+            })
+            .cloned()
             .ok_or("The Cloud dashboard is not configured.")?;
+        drop(engine);
         app.opener()
             .open_url(dashboard.as_str(), None::<&str>)
             .map_err(|_| "Could not open the Cloud dashboard.".into())

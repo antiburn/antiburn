@@ -28,8 +28,7 @@ import {
 } from "./cloudProjectRoutes"
 import type { ProjectPages } from "./cloudProjectPages"
 import { CloudProjectReader } from "./cloudProjectReader"
-import { retryCloudRead } from "./cloudReadRetry"
-import { createCloudAccountActions } from "./cloudAccountActions"
+import { cloudReadScopeMessage, retryCloudRead } from "./cloudReadRetry"
 import {
   cloudFolderReadChanged,
   savedUploadStatusBecameUnavailable,
@@ -107,6 +106,7 @@ export class CloudSession {
   private localToolsEventGeneration = 0
   private localToolsStatusRevision = -1
   private accountRead: AbortController | undefined
+  private workspaceRead: AbortController | undefined
   private projectPages: ProjectPages | undefined
   private readonly projectReader: CloudProjectReader
   private projectChoices: CloudProjectChoices = {}
@@ -162,7 +162,6 @@ export class CloudSession {
   }
   /** Return the stable snapshot expected by useSyncExternalStore. */
   getSnapshot = () => this.snapshot
-  readonly accountActions = createCloudAccountActions(this, () => this.port)
   /** Observe snapshots without starting reads. The host owns the active subscription. */
   subscribeSnapshot = (listener: () => void) => {
     this.snapshotListeners.add(listener)
@@ -197,6 +196,7 @@ export class CloudSession {
         this.localToolsLoading = false
         this.projectReader.abort()
         this.accountRead?.abort()
+        this.workspaceRead?.abort()
         clearTimeout(this.timer)
         document.removeEventListener("visibilitychange", this.visibility)
         window.removeEventListener("focus", this.refreshIncompleteProjects)
@@ -308,7 +308,7 @@ export class CloudSession {
       !this.snapshot.busy &&
       this.snapshot.screen === "identity" &&
       !this.holdIdentity &&
-      !this.accountActions.canJoinTeam() &&
+      !this.canOpenSetup() &&
       !this.snapshot.cloud.setupError &&
       !this.snapshot.error
     if (handoff && this.identityTimer) return
@@ -655,7 +655,7 @@ export class CloudSession {
   loadProjects = (more = false, retryInBackground = true) =>
     this.projectReader.load(more, retryInBackground)
   /** Check folder access without blocking the rest of the account pane. */
-  retryFolderScope = (fresh = false) => this.projectReader.retryScope(fresh)
+  retryFolderScope = () => this.projectReader.retryScope()
   /** Extend the visible draft only after an explicit page request. */
   loadMoreProjects = () => this.loadProjects(true)
   /** Stage a local group choice for the current account. Only Start saves consent. */
@@ -957,6 +957,8 @@ export class CloudSession {
   private async run(
     action: Parameters<typeof noteCloudAction>[1] | null,
     task: () => Promise<CloudSnapshot>,
+    failureMessage: (error: unknown) => string | null = () =>
+      "Cloud could not complete that action. Try again.",
   ) {
     if (this.snapshot.busy) return false
     if (this.analytics && action) noteCloudAction(this.snapshot.screen, action)
@@ -975,9 +977,7 @@ export class CloudSession {
       if (this.active && generation === this.generation)
         this.publish({
           busy: false,
-          error: isCloudBusy(error)
-            ? CLOUD_BUSY_MESSAGE
-            : "Cloud could not complete that action. Try again.",
+          error: isCloudBusy(error) ? CLOUD_BUSY_MESSAGE : failureMessage(error),
         })
       return false
     }
@@ -1072,6 +1072,63 @@ export class CloudSession {
       this.saveDraft({ ...this.snapshot.cloud.draft, screen }, false),
     )
     if (screen === "folders" && !this.snapshot.projects?.loaded) await this.loadProjects()
+  }
+  /** Open the configured dashboard root without sending device proof. */
+  openDashboard = () =>
+    this.port.openDashboard?.() ??
+    Promise.reject(new Error("The Cloud dashboard is unavailable."))
+
+  /** Simulated ports may omit the browser setup handoff. */
+  canOpenSetup = () => !!this.port.openSetup
+
+  /** The browser owns email verification and workspace admission. */
+  openSetup = () =>
+    this.port.openSetup?.() ?? Promise.reject(new Error("Cloud setup is unavailable."))
+
+  /** Require a fresh destination list for the same device grant before showing folders. */
+  continueFromDashboard = async () => {
+    const { cloud } = this.snapshot
+    const binding = this.projectBinding()
+    if (!binding || this.snapshot.screen !== "identity") return
+    const generation = this.generation
+    await this.run(
+      "continue",
+      async () => {
+        this.projectReader.suspend()
+        // The native check can rotate the grant before reading destinations.
+        // Wait for its HTTP deadlines and the current read in the account lane.
+        const read = (this.workspaceRead = new AbortController())
+        const workspaces = await this.projectReader
+          .request(() => this.port.workspaces?.(binding) ?? Promise.resolve(null), read.signal)
+          .finally(() => {
+            if (this.workspaceRead === read) this.workspaceRead = undefined
+          })
+        const { cloud: current, screen } = this.snapshot
+        if (
+          !this.active ||
+          this.generation !== generation ||
+          screen !== "identity" ||
+          current.status !== "signed_in" ||
+          current.identity?.id !== binding.accountId ||
+          current.destination?.id !== binding.destinationId ||
+          current.grantId !== cloud.grantId ||
+          current.grantExpiresAt !== cloud.grantExpiresAt ||
+          !workspaces?.some(
+            ({ id, kind }) => id === binding.destinationId && kind === "personal",
+          )
+        )
+          throw new Error("Could not verify Cloud workspaces.")
+        if (this.projectPages && this.projectReader.canUseChoices)
+          this.publishProjectGroups(this.projectPages, workspaces)
+        return this.saveDraft({ ...current.draft, screen: "folders" }, false)
+      },
+      (error) =>
+        this.snapshot.cloud.status === "reauth_required"
+          ? null
+          : (cloudReadScopeMessage(error) ?? "Could not continue to Cloud folders. Try again."),
+    )
+    const view = this.getSnapshot()
+    if (view.screen === "folders" && !view.projects?.loaded) await this.loadProjects()
   }
   /** Confirm the rendered folder choices only after an explicit Start click. */
   startSync = async (context: CloudViewSnapshot = this.snapshot) => {

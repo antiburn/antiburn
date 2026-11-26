@@ -6,7 +6,6 @@
   "permissions": [
     "allow-cloud-status",
     "allow-cloud-workspaces",
-    "allow-cloud-team-join",
     "allow-cloud-open-dashboard",
     "allow-cloud-reset-workspace",
     "allow-cloud-begin",

@@ -2169,9 +2169,10 @@ subtitle states full-session scope. The account and destination share a compact
 chip; the selected group count sits above the list. Back, underlined Continue
 locally, and Start syncing are the folder footer's only content.
 Normal Settings shows the account, folder choices, and a short sync status.
-Show workspace names when they distinguish
-active destinations, not as a separate Personal status section. Team joins
-happen in the browser with a shared invite link. Do not show old remote sign-out warnings.
+Show workspace names when they distinguish active destinations, not as a
+separate Personal status section. After sign-in, onboarding offers browser
+workspace setup and waits for Continue. Check current destinations before
+showing folder choices. Do not show old remote sign-out warnings.
 The folder footer has one primary action: **Start syncing** for the first
 approval and **Sync now** after approval. A failure can change the action in
 place to **Try again**, **Review folders**, or **Check Cloud**. Do not add a

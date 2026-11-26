@@ -90,27 +90,21 @@ it("does not read or observe desktop tools in a browser preview", async () => {
 it("opens the dashboard without passing a URL or account proof", async () => {
   await desktopCloudPort.openDashboard?.()
   expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("cloud_open_dashboard")
+  await desktopCloudPort.openSetup?.()
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_open_dashboard", { setup: true })
 })
 
 it("passes an access update only when starting a scoped reapproval", async () => {
   await desktopCloudPort.begin()
   expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_begin")
-  await desktopCloudPort.begin("team_join")
-  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_begin", { accessUpdate: "team_join" })
-})
-
-it("sends Team join input only to the feature-gated Desktop command", async () => {
-  const binding = { accountId: "synthetic-account", destinationId: "synthetic-personal" }
-  const action = {
-    action: "start",
-    link: `https://dashboard.example/join#token=${"a".repeat(43)}`,
-  } as const
-  await desktopCloudPort.teamJoin?.(binding, action)
-  expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("cloud_team_join", { binding, action })
+  await desktopCloudPort.begin("session_reads")
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_begin", {
+    accessUpdate: "session_reads",
+  })
 })
 
 it.each(["browser", "ordinary build"])(
-  "does not invoke capture, Team join, or dashboard commands in %s",
+  "does not invoke capture or dashboard commands in %s",
   async (build) => {
     if (build === "browser") mocks.hasShell.mockReturnValue(false)
     else mocks.appInfo.mockResolvedValue({ cloudEnabled: false })
@@ -130,12 +124,7 @@ it.each(["browser", "ordinary build"])(
       groups: [],
     })
     await expect(desktopCloudPort.openDashboard?.()).rejects.toThrow("Cloud is unavailable.")
-    await expect(
-      desktopCloudPort.teamJoin?.(
-        { accountId: "synthetic-account", destinationId: "synthetic-personal" },
-        { action: "start", link: "synthetic" },
-      ),
-    ).rejects.toThrow("Cloud is unavailable")
+    await expect(desktopCloudPort.openSetup?.()).rejects.toThrow("Cloud is unavailable.")
     expect(mocks.invoke).not.toHaveBeenCalled()
   },
 )

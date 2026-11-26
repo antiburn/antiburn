@@ -398,8 +398,6 @@ export interface CloudSnapshot {
   authEnabled: boolean
   /** A configured system-browser dashboard can open without device approval. */
   dashboardAvailable?: boolean
-  /** The current device approval includes Team joining. */
-  teamJoinAllowed?: boolean
   sessionReadsAllowed?: boolean
   captureUpdateAvailable?: boolean
   accessUpdate?: "waiting" | "denied" | "failed" | null
@@ -419,7 +417,7 @@ export interface CloudSnapshot {
   draft: CloudDraft
 }
 /** Additional actions a signed-in device can request in the browser. */
-export type CloudAccessUpdate = "team_join" | "session_reads" | "capture"
+export type CloudAccessUpdate = "session_reads" | "capture"
 /** Cleanup state for a legacy Team connection. Upload failure alone does not allow reset. */
 export interface CloudWorkspaceRecovery {
   accountId: string
@@ -431,23 +429,6 @@ export interface CloudWorkspaceRecovery {
 /** State of one folder confirmation. Transfer status comes from CloudOngoingStatus. */
 export type SyncResult = { status: "unavailable" | "idle" | "starting" | "ambiguous" }
 
-/** The renderer supplies user input. Desktop chooses the API origin and owns proof. */
-export type CloudTeamJoinAction =
-  | { action: "start"; link: string }
-  | { action: "resume"; attemptId: string }
-  | { action: "selectEmail"; attemptId: string; address: string; resend?: true }
-  | { action: "claim"; attemptId: string; emailId: string }
-
-/** The current join step. Membership and upload permission are separate. */
-export type CloudTeamJoinResult =
-  | { status: "started"; attemptId: string }
-  | { status: "needsEmail"; attemptId: string; teamName: string; email?: string }
-  | { status: "verificationPending"; attemptId: string; teamName: string; email: string }
-  | { status: "ready"; attemptId: string; teamName: string; email: string; emailId: string }
-  | { status: "joined"; teamName: string; inSetup: boolean }
-  | { status: "removed" }
-  | { status: "billingInactive" | "billingStale" | "full" }
-
 /**
  * Desktop commands for setup and Settings.
  * Attach watch before read: commands, including reads, can emit state before
@@ -457,13 +438,10 @@ export type CloudTeamJoinResult =
 export interface CloudPort {
   /** Current desktop home for display only. Missing proof keeps raw paths visible. */
   displayHome?(): Promise<string | null>
-  /** Open the configured browser dashboard without connecting the device. */
+  /** Open the configured dashboard root without sending device proof. */
   openDashboard?(): Promise<void>
-  /** Join a Team for the current account without changing folder consent. */
-  teamJoin?(
-    binding: CloudDestinationBinding,
-    action: CloudTeamJoinAction,
-  ): Promise<CloudTeamJoinResult>
+  /** Open the browser setup route on the configured resource origin without device proof. */
+  openSetup?(): Promise<void>
   /** List verified destinations for this account. Listing does not grant folder consent. */
   workspaces?(binding: CloudDestinationBinding): Promise<CloudWorkspace[] | null>
   /** Clear an old Team connection locally. This does not close its remote grant. */
@@ -546,9 +524,9 @@ export const desktopCloudPort: CloudPort = {
     if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable.")
     await invoke("cloud_open_dashboard")
   },
-  teamJoin: async (binding, action) => {
-    if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable in this build.")
-    return invoke<CloudTeamJoinResult>("cloud_team_join", { binding, action })
+  openSetup: async () => {
+    if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable.")
+    await invoke("cloud_open_dashboard", { setup: true })
   },
   workspaces: async (binding) =>
     (await cloudBuildEnabled())

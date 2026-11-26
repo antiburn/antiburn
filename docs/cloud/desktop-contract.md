@@ -68,15 +68,14 @@ debug assertions defaults both origins to `https://api.antiburn.com` when
 neither variable is set. Set both variables to override that default with
 canonical HTTPS origins. The resource origin owns the device API routes.
 
-For **Join a Team** and **Open Cloud dashboard**, set the build-time
+For the **Open Cloud dashboard** shortcut in Settings, set the build-time
 `ANTIBURN_CLOUD_DASHBOARD` to the dashboard's canonical origin without a
 trailing slash. It must use HTTPS, or loopback HTTP in a build with debug
 assertions.
-Desktop uses this origin to check pasted Team invite links.
 **Open Cloud dashboard** opens the root of this origin in the system browser.
-Only the configured resource origin receives API requests and device proof.
-An invalid or missing dashboard origin hides both actions without changing
-device approval.
+An invalid or missing dashboard origin hides this shortcut. It does not
+change device approval or **Finish setup in browser**. Desktop opens setup
+through the configured resource origin.
 
 The explicit feature command also works for a debug build:
 
@@ -126,7 +125,6 @@ Desktop checks each action in the space-delimited `scope` field:
 - `capture:write` permits session uploads to workspaces that allow uploads.
 - `sessions:list` permits session search and metadata lists.
 - `sessions:read` permits reading complete session documents.
-- `workspaces:join` permits using a Team invite in Desktop.
 
 The service still checks current workspace access. Unknown action names do
 not enable or disable any known action. Desktop checks that the action set,
@@ -139,7 +137,7 @@ cannot restore the saved connection. To add missing actions, choose
 actions and the missing actions in the browser. It keeps the current grant
 until it verifies and securely saves the replacement, then requests revocation
 of the old grant. Denial or cancellation leaves the old grant connected. The
-update does not change folder settings or move a pending Team join to the new grant.
+update does not change folder settings.
 
 Device authentication requests use the configured API origin:
 
@@ -169,11 +167,13 @@ for each folder. With only Personal available, Desktop shows a folder switch.
 If workspace discovery is temporarily unavailable, Desktop retries while the
 folder pane is open. In Settings, choose **Check again** if Desktop could not
 read the account or verify its Personal workspace. This does not enable upload.
-A successful Team join in Desktop refreshes the workspace choices. A signed-in
-user can also select **Refresh workspaces** in **Settings > Sessions**. Refresh
-uses the same workspace list request. It does not issue a grant or change consent.
-A workspace list response of `401` asks the user to sign in again. A `403` tells
-the user that access is denied. Neither response starts folder discovery or
+Desktop checks for current destinations when the user selects **Continue**
+after sign-in. A signed-in user can also select **Refresh workspaces** in
+**Settings > Sessions**. Both actions use the same workspace list request.
+They do not issue a grant or change consent.
+A workspace list response of `401` clears cached access and asks the user to
+sign in again. It does not revoke the saved grant. A `403` tells the user that
+workspace access is denied without changing the connection. Neither response
 grants upload permission.
 
 One account approval covers Personal and current or future Teams where the
@@ -184,43 +184,25 @@ back to Personal. An old workspace grant does not become an account grant.
 Sign in again to use the account flow. Old refresh proof can only sign out the
 grant it belongs to.
 
-### Join a Team in Desktop
+### Browser workspace setup
 
-The browser handles GitHub sign-in and device approval. A signed-in user joins
-in Desktop with an invite link and a verified email. Desktop accepts
-`/join#token=…` and emailed `/join#token=…&proof=…` links at the configured
-dashboard origin. It never visits the invite link. Desktop sends only the token
-in a JSON body to the resource origin. It does not send or log the recipient
-proof. Desktop keeps invite input and attempt state in memory and excludes
-them from diagnostics and analytics.
+After the loopback listener validates an initial approval callback, the
+browser can select **Continue setup in browser**. Desktop exchanges the
+approval code without waiting for this action. If the browser page is closed,
+**Finish setup in browser** opens the same route after sign-in. The action is
+available in onboarding and in **Settings > Sessions**.
 
-To use emailed proof, open the original link in the browser and choose
-**Verify email for Desktop** on the same account. This step verifies the
-address, not Team membership. Enter the verified address in Desktop, then
-choose **Join Team** to claim membership.
+Both actions open `GET /v1/devices/setup` on the configured resource origin.
+The service redirects the browser to `/desktop/setup` on its dashboard. The
+loopback page does not send its URL as the referrer. Neither action sends
+device proof, an email address, an invite token, or a redirect parameter.
 
-| Request | JSON body |
-| --- | --- |
-| `POST /v1/devices/team-join-attempts` | `{token}` |
-| `POST /v1/devices/team-join-attempts/{attempt_id}/resume` | None |
-| `PUT /v1/devices/team-join-attempts/{attempt_id}/email` | `{address}`, or `{address,resend:true}` to request another email |
-| `POST /v1/devices/team-join-attempts/{attempt_id}/claim` | `{email_id}` |
-
-Every request uses the current access bearer with `workspaces:join`. Desktop
-sends no cookies or `Origin` header. It does not follow redirects or retry
-automatically. The bearer identifies the user and device connection. It does
-not admit the user by itself. The service checks the invite, current email
-proof, and eligibility at claim.
-
-Start returns only `attempt_id`. An attempt ID is a UUID, not access
-proof. Only the device grant that started an attempt can resume it. If you
-reconnect, paste the invite link again. Resume, email selection, and claim can
-return `needs_email`,
-`verification_pending`, `ready`, `joined`, `removed`, `billing_inactive`,
-`billing_stale`, or `full`. Desktop uses the `email_id` from `ready` when it
-claims membership. `joined` returns `team_name` and `in_setup`. If the Team is
-still in setup, the owner must open it before it can
-accept uploads. Joining does not approve folders or turn on sync.
+The dashboard verifies the work email and offers a matching workspace invite.
+Device approval does not wait for email verification or workspace admission.
+Desktop does not accept a browser assertion about membership. After the user
+returns and selects **Continue**, Desktop checks the current destinations with
+its existing device grant before it shows folder choices. This flow does not
+approve folders or turn on sync.
 
 ## Credential and logout safety
 

@@ -192,6 +192,7 @@ struct FakeTransport {
     on_revoke: Option<Arc<dyn Fn() + Send + Sync>>,
     returned_session: Mutex<Option<Session>>,
     returned_workspaces: Mutex<Option<Vec<Workspace>>>,
+    workspace_failure: Mutex<Option<Failure>>,
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
     token_grant: Mutex<Option<String>>,
@@ -276,6 +277,9 @@ impl Transport for Arc<FakeTransport> {
         Ok(())
     }
     fn workspaces(&self, _: &Config, _: &str) -> Result<Vec<EligibleWorkspace>, Failure> {
+        if let Some(failure) = *self.workspace_failure.lock().unwrap() {
+            return Err(failure);
+        }
         Ok(self
             .returned_workspaces
             .lock()
@@ -290,6 +294,49 @@ impl Transport for Arc<FakeTransport> {
             })
             .collect())
     }
+}
+
+#[test]
+fn cloud_workspace_unauthorized_closes_cached_access_without_revoking_the_grant() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let original = fixture.vault.read().unwrap().unwrap();
+    let binding = DestinationBinding {
+        account_id: session().user.id,
+        destination_id: session().workspace.id,
+    };
+    for failure in [Failure::Offline, Failure::Rejected, Failure::ReauthRequired] {
+        *fixture.transport.workspace_failure.lock().unwrap() = Some(failure);
+        assert_eq!(
+            fixture
+                .engine
+                .eligible_workspaces(&binding, &|| true)
+                .unwrap_err(),
+            failure
+        );
+        let unauthorized = failure == Failure::ReauthRequired;
+        assert_eq!(fixture.engine.session().is_none(), unauthorized);
+        assert_eq!(
+            fixture.engine.status == AuthStatus::ReauthRequired,
+            unauthorized
+        );
+    }
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        fixture.vault.read().unwrap().unwrap().refresh_token,
+        original.refresh_token
+    );
+    assert!(fixture.transport.revoked.lock().unwrap().is_empty());
+
+    *fixture.transport.workspace_failure.lock().unwrap() = None;
+    fixture
+        .engine
+        .eligible_workspaces(&binding, &|| true)
+        .unwrap();
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+    let active = fixture.engine.session().unwrap();
+    assert_eq!(active.grant_id, session().grant_id);
+    assert_eq!(active.scope, session().scope);
 }
 
 #[test]
@@ -496,6 +543,13 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
     assert_eq!(
         config().authorization.as_str(),
         "https://api.example/devices/authorize/account"
+    );
+    assert_eq!(
+        Config::parse("https://issuer.example", "https://api.example")
+            .unwrap()
+            .desktop_setup
+            .as_str(),
+        "https://api.example/v1/devices/setup"
     );
     assert_eq!(
         config().session.as_str(),
@@ -1135,18 +1189,25 @@ fn cloud_sign_in_keeps_known_actions_when_a_new_action_is_present() {
     fixture.sign_in();
     let session = fixture.engine.session().unwrap();
     assert!(session.allows(auth::DeviceAction::CaptureWrite));
-    assert!(session.allows(auth::DeviceAction::WorkspaceJoin));
     assert!(!session.allows(auth::DeviceAction::SessionRead));
 }
 
-fn begin_team_access_update(fixture: &mut Fixture) -> auth::Attempt {
+fn begin_session_access_update(fixture: &mut Fixture) -> auth::Attempt {
     let (url, _listener, attempt) = fixture
         .engine
-        .begin_access_update(102, 1, &[auth::DeviceAction::WorkspaceJoin], || true)
+        .begin_access_update(
+            102,
+            1,
+            &[
+                auth::DeviceAction::SessionList,
+                auth::DeviceAction::SessionRead,
+            ],
+            || true,
+        )
         .unwrap();
     let url = url::Url::parse(&url).unwrap();
     let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
-    assert_eq!(query["scope"], "capture:write workspaces:join");
+    assert_eq!(query["scope"], auth::CAPTURE_AND_SESSION_SCOPE);
     assert_eq!(query["account_id"], "synthetic-user");
     assert_eq!(
         fixture.engine.session().unwrap().grant_id,
@@ -1155,7 +1216,7 @@ fn begin_team_access_update(fixture: &mut Fixture) -> auth::Attempt {
     attempt
 }
 
-fn return_team_access_update(
+fn return_session_access_update(
     fixture: &mut Fixture,
     attempt: &auth::Attempt,
 ) -> Result<(), Failure> {
@@ -1167,9 +1228,9 @@ fn return_team_access_update(
     )
 }
 
-fn offer_team_access_update(fixture: &Fixture, account_id: &str) {
+fn offer_session_access_update(fixture: &Fixture, account_id: &str) {
     let grant_id = "replacement-grant";
-    let scope = "capture:write workspaces:join";
+    let scope = auth::CAPTURE_AND_SESSION_SCOPE;
     *fixture.transport.token_grant.lock().unwrap() = Some(grant_id.into());
     *fixture.transport.token_scope.lock().unwrap() = Some(scope);
     let mut replacement = session();
@@ -1183,15 +1244,15 @@ fn offer_team_access_update(fixture: &Fixture, account_id: &str) {
 fn successful_access_update_commits_and_only_then_revokes_the_prior_grant() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
-    let attempt = begin_team_access_update(&mut fixture);
-    offer_team_access_update(&fixture, "synthetic-user");
-    return_team_access_update(&mut fixture, &attempt).unwrap();
+    let attempt = begin_session_access_update(&mut fixture);
+    offer_session_access_update(&fixture, "synthetic-user");
+    return_session_access_update(&mut fixture, &attempt).unwrap();
     assert!(
         fixture
             .engine
             .session()
             .unwrap()
-            .allows(auth::DeviceAction::WorkspaceJoin)
+            .allows(auth::DeviceAction::SessionRead)
     );
     assert_eq!(
         *fixture.transport.revoked.lock().unwrap(),
@@ -1215,7 +1276,7 @@ fn rejected_or_uncertain_access_update_keeps_the_previous_connection() {
     for failure in ["denied", "cancelled", "wrong account", "save uncertainty"] {
         let mut fixture = Fixture::new();
         fixture.sign_in();
-        let attempt = begin_team_access_update(&mut fixture);
+        let attempt = begin_session_access_update(&mut fixture);
         match failure {
             "denied" => fixture
                 .engine
@@ -1224,25 +1285,25 @@ fn rejected_or_uncertain_access_update_keeps_the_previous_connection() {
             "cancelled" => {
                 fixture.engine.cancel(1).unwrap();
                 assert_eq!(
-                    return_team_access_update(&mut fixture, &attempt),
+                    return_session_access_update(&mut fixture, &attempt),
                     Err(Failure::Cancelled)
                 );
             }
             "wrong account" => {
-                offer_team_access_update(&fixture, "other-account");
+                offer_session_access_update(&fixture, "other-account");
                 assert_eq!(
-                    return_team_access_update(&mut fixture, &attempt),
+                    return_session_access_update(&mut fixture, &attempt),
                     Err(Failure::InvalidResponse)
                 );
             }
             "save uncertainty" => {
-                offer_team_access_update(&fixture, "synthetic-user");
+                offer_session_access_update(&fixture, "synthetic-user");
                 fixture
                     .vault
                     .fail_after_staging
                     .store(true, Ordering::Release);
                 assert_eq!(
-                    return_team_access_update(&mut fixture, &attempt),
+                    return_session_access_update(&mut fixture, &attempt),
                     Err(Failure::CredentialFailed)
                 );
             }
@@ -1643,7 +1704,6 @@ fn cloud_snapshot_does_not_include_native_secrets() {
     let value = Snapshot {
         auth_enabled: true,
         dashboard_available: true,
-        team_join_allowed: true,
         session_reads_allowed: true,
         capture_update_available: false,
         access_update: None,
@@ -1673,27 +1733,6 @@ fn cloud_snapshot_does_not_include_native_secrets() {
     ] {
         assert!(!encoded.contains(field));
     }
-}
-
-#[test]
-fn cloud_team_join_requires_reapproval_but_keeps_the_existing_grant() {
-    let mut fixture = Fixture::new();
-    fixture.engine.config.as_mut().unwrap().dashboard =
-        Some("https://dashboard.example".parse().unwrap());
-    fixture.sign_in();
-    let binding = DestinationBinding {
-        account_id: session().user.id,
-        destination_id: session().workspace.id,
-    };
-    let action = team_join::Action::Start {
-        link: "not a link".into(),
-    };
-    assert!(matches!(
-        fixture.engine.team_join(&binding, action, &|| true),
-        Err(team_join::JoinError::ReapprovalRequired)
-    ));
-    assert_eq!(fixture.engine.session().unwrap().scope, auth::CAPTURE_SCOPE);
-    assert!(fixture.transport.revoked.lock().unwrap().is_empty());
 }
 
 #[test]

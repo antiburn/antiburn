@@ -963,7 +963,6 @@ mod tests {
         "cloud_sign_out",
         "cloud_status",
         "cloud_sync_status",
-        "cloud_team_join",
         "cloud_workspaces",
     ];
 

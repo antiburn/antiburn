@@ -11,7 +11,6 @@ import {
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
 import { canRetryTeamUploads } from "../../onboarding/cloudTeamRetry"
-import { CloudTeamJoin } from "../../onboarding/CloudTeamJoin"
 import { DeviceAccessUpdate } from "../../onboarding/DeviceAccessUpdate"
 import { changeFolderWithFocus } from "../../onboarding/cloudFolderFocus"
 import {
@@ -279,8 +278,8 @@ export function CloudAccount({
   const [confirmReset, setConfirmReset] = useState(false)
   const [retryingSignInRead, setRetryingSignInRead] = useState(false)
   const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false)
-  const [openingDashboard, setOpeningDashboard] = useState(false)
-  const [dashboardOpenFailed, setDashboardOpenFailed] = useState(false)
+  const [openingBrowser, setOpeningBrowser] = useState(false)
+  const [browserOpenError, setBrowserOpenError] = useState<string | null>(null)
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed =
@@ -302,6 +301,20 @@ export function CloudAccount({
     value.cloud.status === "signed_in" &&
     !!value.cloud.identity &&
     personalCloudDestination(value.cloud.destination ?? null)
+  const browserActions = [
+    {
+      label: "Finish setup in browser",
+      available: session.canOpenSetup(),
+      open: session.openSetup,
+      error: "Could not open Cloud setup in your browser. Try again.",
+    },
+    {
+      label: "Open Cloud dashboard",
+      available: value.cloud.dashboardAvailable,
+      open: session.openDashboard,
+      error: "Could not open the Cloud dashboard. Try again.",
+    },
+  ]
   const accountMessage = readFailed
     ? "Could not check Cloud sign-in."
     : value.error
@@ -368,29 +381,32 @@ export function CloudAccount({
                   Refresh workspaces
                 </button>
               )}
-              {canRefreshWorkspaces && value.cloud.dashboardAvailable && (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded-control border-0 bg-transparent p-0 underline underline-offset-2 hover:text-label aria-disabled:opacity-50"
-                  aria-disabled={openingDashboard || undefined}
-                  onClick={() => {
-                    if (openingDashboard) return
-                    setOpeningDashboard(true)
-                    setDashboardOpenFailed(false)
-                    void session.accountActions
-                      .openDashboard()
-                      .catch(() => setDashboardOpenFailed(true))
-                      .finally(() => setOpeningDashboard(false))
-                  }}
-                >
-                  Open Cloud dashboard <ArrowUpRight size={13} aria-hidden="true" />
-                </button>
-              )}
+              {canRefreshWorkspaces &&
+                browserActions
+                  .filter(({ available }) => available)
+                  .map(({ label, open, error }) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-control border-0 bg-transparent p-0 underline underline-offset-2 hover:text-label aria-disabled:opacity-50"
+                      aria-disabled={openingBrowser || undefined}
+                      onClick={() => {
+                        if (openingBrowser) return
+                        setOpeningBrowser(true)
+                        setBrowserOpenError(null)
+                        void open()
+                          .catch(() => setBrowserOpenError(error))
+                          .finally(() => setOpeningBrowser(false))
+                      }}
+                    >
+                      {label} <ArrowUpRight size={13} aria-hidden="true" />
+                    </button>
+                  ))}
             </div>
           )}
-          {canRefreshWorkspaces && value.cloud.dashboardAvailable && dashboardOpenFailed && (
+          {canRefreshWorkspaces && browserOpenError && (
             <p className="type-footnote text-system-red-text" role="alert">
-              Could not open the Cloud dashboard. Try again.
+              {browserOpenError}
             </p>
           )}
           {accountMessage && (
@@ -456,14 +472,6 @@ export function CloudAccount({
           </button>
         )}
       </div>
-      {session.accountActions.canJoinTeam() && (
-        <div className="border-t border-separator px-4 py-3">
-          <CloudTeamJoin
-            key={`${value.cloud.identity?.id}:${value.cloud.grantId ?? value.cloud.grantExpiresAt}`}
-            send={session.accountActions.joinTeam}
-          />
-        </div>
-      )}
       {value.cloud.status === "signed_in" && (
         <DeviceAccessUpdate
           value={value.cloud}

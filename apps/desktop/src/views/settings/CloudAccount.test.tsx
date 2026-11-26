@@ -215,50 +215,24 @@ it("opens the configured dashboard without changing the desktop account", async 
   expect(screen.getByText("Signed in as Example")).toBeVisible()
 })
 
-it("joins in Settings and refreshes the destinations without changing sync", async () => {
-  const { port, emit, ongoing } = cloudProjectFixture()
-  const personal = { id: "synthetic-personal", name: "Personal", kind: "personal" } as const
-  const team = { id: "synthetic-team", name: "Example Studio", kind: "team" } as const
-  const link = `https://dashboard.example/join#token=${"a".repeat(43)}`
-  emit({ dashboardAvailable: true, teamJoinAllowed: true })
-  const workspaces = vi.fn<NonNullable<typeof port.workspaces>>().mockResolvedValue([personal])
-  port.workspaces = workspaces
-  const teamJoin = vi
-    .fn<NonNullable<typeof port.teamJoin>>()
-    .mockImplementation(async (_binding, action) => {
-      if (action.action === "start")
-        return { status: "started", attemptId: "synthetic-join-attempt" }
-      workspaces.mockResolvedValue([personal, team])
-      return { status: "joined", teamName: team.name, inSetup: false }
-    })
-  port.teamJoin = teamJoin
+it("offers browser workspace setup in Settings even without the dashboard shortcut", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const openSetup = vi.fn().mockResolvedValue(undefined)
+  port.openSetup = openSetup
   const signIn = vi.spyOn(port, "begin")
-  const session = new CloudSession(port, false, true)
-  render(<Account session={session} />)
-  await screen.findByText("1 workspace")
+  render(<Account session={new CloudSession(port, false, true)} />)
 
-  fireEvent.click(screen.getByRole("button", { name: "Join a Team" }))
-  fireEvent.change(screen.getByRole("textbox", { name: "Team invite link" }), {
-    target: { value: link },
-  })
-  fireEvent.click(screen.getByRole("button", { name: "Check invite" }))
-
-  expect(await screen.findByText("You joined Example Studio.")).toBeVisible()
-  expect(await screen.findByText("2 workspaces")).toBeVisible()
-  expect(teamJoin).toHaveBeenCalledWith(
-    { accountId: "synthetic-account", destinationId: personal.id },
-    { action: "start", link },
-  )
+  fireEvent.click(await screen.findByRole("button", { name: "Finish setup in browser" }))
+  expect(openSetup).toHaveBeenCalledExactlyOnceWith()
+  expect(screen.queryByRole("button", { name: "Open Cloud dashboard" })).toBeNull()
   expect(signIn).not.toHaveBeenCalled()
   expect(port.save).not.toHaveBeenCalled()
   expect(ongoing.enable).not.toHaveBeenCalled()
-  expect(ongoing.setProject).not.toHaveBeenCalled()
-  expect(ongoing.setEnabled).not.toHaveBeenCalled()
 })
 
-it("requests Team access without signing out the current connection", async () => {
+it("requests session access without signing out the current connection", async () => {
   const { port, emit } = cloudProjectFixture()
-  emit({ dashboardAvailable: true, teamJoinAllowed: false })
+  emit({ sessionReadsAllowed: false })
   const signOut = vi.spyOn(port, "signOut")
   const current = await port.read()
   const begin = vi.spyOn(port, "begin").mockResolvedValueOnce({
@@ -267,14 +241,13 @@ it("requests Team access without signing out the current connection", async () =
   })
   render(<Account session={new CloudSession(port, false, true)} />)
   const updateAccess = await screen.findByRole("button", {
-    name: "Update device access to join a Team",
+    name: "Update device access to search and read Cloud sessions",
   })
-  expect(screen.getByText("Approve this device to join a Team.")).toBeVisible()
-  expect(screen.queryByRole("button", { name: "Join a Team" })).toBeNull()
+  expect(screen.getByText(/approve this device to search and read/i)).toBeVisible()
   expect(begin).not.toHaveBeenCalled()
   fireEvent.click(updateAccess)
   expect(await screen.findByRole("button", { name: "Cancel access update" })).toBeVisible()
-  expect(begin).toHaveBeenCalledExactlyOnceWith("team_join")
+  expect(begin).toHaveBeenCalledExactlyOnceWith("session_reads")
   expect(screen.getByText("Signed in as Example")).toBeVisible()
   expect(signOut).not.toHaveBeenCalled()
 })

@@ -31,12 +31,6 @@ export function DeviceAccessUpdate({ value, busy, update, cancel, onboarding }: 
   }
   const options = [
     {
-      action: "team_join",
-      show: value.dashboardAvailable && value.teamJoinAllowed === false,
-      description: "Approve this device to join a Team.",
-      label: "Update device access to join a Team",
-    },
-    {
       action: "session_reads",
       show: !onboarding && value.sessionReadsAllowed === false,
       description: "Approve this device to search and read Cloud sessions in the CLI.",

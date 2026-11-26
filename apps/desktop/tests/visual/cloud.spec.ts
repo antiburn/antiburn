@@ -34,25 +34,28 @@ async function expectWarningAboveFooter(warning: Locator, footer: Locator) {
   expect(message.y + message.height).toBeLessThanOrEqual(bounds.y)
 }
 
-test("Team join works by keyboard inside onboarding", async ({ page }) => {
+test("browser setup and return work by keyboard inside onboarding", async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 480 })
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
-  await page.goto("/tests/visual/?surface=cloud&cloud=identity&theme=dark&teamJoin")
-  const open = page.getByRole("button", { name: "Join a Team" })
-  await expect(open).toBeVisible()
+  await page.goto("/tests/visual/?surface=cloud&cloud=identity&theme=dark&browserSetup")
+  const open = page.getByRole("button", { name: "Finish setup in browser" })
+  await expect(open).toBeEnabled({ timeout: 15_000 })
   await open.focus()
   await page.keyboard.press("Enter")
-  const link = page.getByRole("textbox", { name: "Team invite link" })
-  await expect(link).toBeFocused()
-  await link.fill(`https://dashboard.example/join#token=${"a".repeat(43)}`)
+  await expect(page.locator("body")).toHaveAttribute("data-browser-setup-opened", "true")
+  await expect(page.getByRole("textbox")).toHaveCount(0)
+  const next = page.getByRole("button", { name: "Continue", exact: true })
+  await expect(next).toBeInViewport()
+  const local = page.getByRole("button", { name: "Continue locally" })
+  await expect(local).toBeInViewport()
+  await capture(page, "dark-onboarding-browser-setup")
+  await page.keyboard.press("Tab")
+  await expect(local).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(next).toBeFocused()
   await page.keyboard.press("Enter")
-  const join = page.getByRole("button", { name: "Join Team", exact: true })
-  await expect(join).toBeFocused()
-  await capture(page, "dark-onboarding-team-join-review")
-  await page.keyboard.press("Enter")
-  await expect(page.getByRole("status")).toContainText("You joined Example Team")
-  await expect(page.getByRole("button", { name: "Continue Cloud setup" })).toBeInViewport()
-  await expect(page.getByRole("button", { name: "Continue locally" })).toBeInViewport()
+  await expect(page.getByRole("button", { name: "Start syncing", exact: true })).toBeVisible()
+  await expect(page.getByText(/No sync destination selected/)).toBeVisible()
 })
 
 for (const theme of ["light", "dark"] as const) {
@@ -518,12 +521,19 @@ test("folder discovery retries and saved verification stay automatic in Sessions
   await expect(page.getByRole("progressbar")).toHaveCount(0)
 })
 
-test("Settings refresh makes a newly eligible team available without selecting it", async ({
+test("Settings opens browser setup and refreshes a newly eligible team without selecting it", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 375, height: 780 })
-  await page.goto("/tests/visual/?surface=cloud&cloud=settings-folders&joinedTeam=1")
+  await page.goto(
+    "/tests/visual/?surface=cloud&cloud=settings-folders&joinedTeam=1&browserSetup",
+  )
   await expect(page.getByText("1 workspace", { exact: true })).toBeVisible({ timeout: 15_000 })
+  const setup = page.getByRole("button", { name: "Finish setup in browser" })
+  await setup.focus()
+  await page.keyboard.press("Enter")
+  await expect(page.locator("body")).toHaveAttribute("data-browser-setup-opened", "true")
+  await capture(page, "settings-browser-setup")
   const refresh = page.getByRole("button", { name: "Refresh workspaces", exact: true })
   await refresh.focus()
   await page.evaluate(() => {

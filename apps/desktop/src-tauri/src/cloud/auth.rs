@@ -47,7 +47,6 @@ pub(super) enum DeviceAction {
     CaptureWrite,
     SessionList,
     SessionRead,
-    WorkspaceJoin,
 }
 
 impl DeviceAction {
@@ -56,7 +55,6 @@ impl DeviceAction {
             Self::CaptureWrite => "capture:write",
             Self::SessionList => "sessions:list",
             Self::SessionRead => "sessions:read",
-            Self::WorkspaceJoin => "workspaces:join",
         }
     }
 }
@@ -91,12 +89,13 @@ pub struct Config {
     pub issuer: String,
     pub resource: String,
     pub authorization: Url,
+    /// Browser entry point for email verification and workspace setup. No device proof.
+    pub desktop_setup: Url,
     pub token: Url,
     pub session: Url,
     pub workspaces: Url,
     pub revocation: Url,
-    pub team_join_attempts: Url,
-    /// Browser entry point and trust check for pasted links. Never send proof to it.
+    /// Canonical browser dashboard origin. Never send device proof to it.
     pub dashboard: Option<Url>,
 }
 
@@ -136,11 +135,11 @@ impl Config {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
             authorization: resource_url.join("devices/authorize/account").ok()?,
+            desktop_setup: resource_url.join("v1/devices/setup").ok()?,
             token: resource_url.join("v1/devices/token").ok()?,
             revocation: resource_url.join("v1/devices/grants/current/revoke").ok()?,
             session: resource_url.join("v1/devices/grants/current").ok()?,
             workspaces: resource_url.join("v1/captures/destinations").ok()?,
-            team_join_attempts: resource_url.join(super::team_join::ATTEMPTS_PATH).ok()?,
             dashboard: None,
         })
     }

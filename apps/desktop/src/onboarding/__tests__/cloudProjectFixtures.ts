@@ -192,6 +192,7 @@ export function cloudProjectFixture(): {
     }),
     localTools: localTools.port,
   }
+  delete port.openSetup
   return {
     port,
     ongoing,

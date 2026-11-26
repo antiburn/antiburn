@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { CloudSession } from "../../onboarding/CloudSession"
 import { cloudProjectFixture } from "../../onboarding/__tests__/cloudProjectFixtures"
-import type { CloudTeamJoinResult } from "../../lib/cloud"
 import { SettingsWindowSession } from "./SettingsWindowSession"
 
 const appInfo = vi.hoisted(() => vi.fn())
@@ -163,60 +162,6 @@ describe("SettingsWindowSession", () => {
     } finally {
       stopPane()
       unsubscribe()
-    }
-  })
-
-  it("only blocks switches away from Sessions while a Team claim is pending", async () => {
-    appInfo.mockResolvedValue({ cloudEnabled: true })
-    takeSettingsPane.mockResolvedValue("sessions")
-    let requestPane: ((request: string) => void) | undefined
-    onSettingsPaneRequest.mockImplementation(async (handler: (request: string) => void) => {
-      requestPane = handler
-      return () => {}
-    })
-    const { port, emit } = cloudProjectFixture()
-    emit({ dashboardAvailable: true, teamJoinAllowed: true })
-    port.watchWorkspace = async () => () => {}
-    let finishRequest: ((result: CloudTeamJoinResult) => void) | undefined
-    port.teamJoin = () =>
-      new Promise((resolve) => {
-        finishRequest = resolve
-      })
-    const folders = new CloudSession(port, false, true, "automatic")
-    const session = new SettingsWindowSession(folders)
-    const stop = session.subscribe(() => {})
-    try {
-      await vi.waitFor(() => {
-        expect(session.getSnapshot().pane).toBe("sessions")
-        expect(folders.accountActions.canJoinTeam()).toBe(true)
-      })
-      const attemptId = "example-attempt"
-      const resume = folders.accountActions.joinTeam({ action: "resume", attemptId })
-      session.setPane("privacy")
-      expect(session.getSnapshot().pane).toBe("privacy")
-      finishRequest?.({ status: "removed" })
-      await resume
-      session.setPane("sessions")
-
-      const claim = folders.accountActions.joinTeam({
-        action: "claim",
-        attemptId,
-        emailId: "example-email",
-      })
-      session.setPane("privacy")
-      requestPane?.("privacy#analytics")
-      expect(session.getSnapshot().pane).toBe("sessions")
-      expect(session.getSnapshot().control).toBeNull()
-
-      requestPane?.("sessions#recentDays")
-      expect(session.getSnapshot().control).toBe("recentDays")
-
-      finishRequest?.({ status: "joined", teamName: "Example Studio", inSetup: false })
-      await expect(claim).resolves.toMatchObject({ status: "joined" })
-      requestPane?.("privacy#analytics")
-      expect(session.getSnapshot()).toMatchObject({ pane: "privacy", control: "analytics" })
-    } finally {
-      stop()
     }
   })
 

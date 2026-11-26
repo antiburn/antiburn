@@ -8,7 +8,6 @@ macro_rules! with_app_commands {
             #[cfg(feature = "cloud")]
             cloud::cloud_workspaces => "cloud_workspaces",
             #[cfg(feature = "cloud")]
-            cloud::cloud_team_join => "cloud_team_join",
             #[cfg(feature = "cloud")]
             cloud::cloud_open_dashboard => "cloud_open_dashboard",
             #[cfg(feature = "cloud")]
