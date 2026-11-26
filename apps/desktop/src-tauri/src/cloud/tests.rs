@@ -1241,6 +1241,165 @@ fn offer_session_access_update(fixture: &Fixture, account_id: &str) {
 }
 
 #[test]
+fn rejected_browser_starts_leave_the_live_access_update_current() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let generation = AtomicU64::new(0);
+    let first = claim_browser_attempt(&fixture.engine, &generation, 0, true).unwrap();
+    let actions = [
+        auth::DeviceAction::SessionList,
+        auth::DeviceAction::SessionRead,
+    ];
+    let (_, listener, attempt) = fixture
+        .engine
+        .begin_access_update(102, first, &actions, || true)
+        .unwrap();
+    assert!(launch_account_browser(&mut fixture.engine, &attempt, || true, || Ok(())).unwrap());
+
+    for access_update in [true, false] {
+        assert!(claim_browser_attempt(&fixture.engine, &generation, first, access_update).is_err());
+        assert_eq!(generation.load(Ordering::Acquire), first);
+    }
+    assert!(matches!(
+        fixture
+            .engine
+            .begin_access_update(103, first + 1, &actions, || true),
+        Err(Failure::Unavailable)
+    ));
+    assert_eq!(
+        fixture.engine.attempt.as_ref().unwrap().callback,
+        listener.callback()
+    );
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+
+    offer_session_access_update(&fixture, "synthetic-user");
+    fixture
+        .engine
+        .callback(
+            &attempt,
+            auth::Callback::Code("synthetic-replacement".into()),
+            103,
+            || generation.load(Ordering::Acquire) == first,
+        )
+        .unwrap();
+    assert_eq!(
+        fixture.engine.session().unwrap().grant_id,
+        "replacement-grant"
+    );
+}
+
+#[test]
+fn rejected_local_reset_leaves_the_access_update_current() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let attempt = begin_session_access_update(&mut fixture);
+    assert!(launch_account_browser(&mut fixture.engine, &attempt, || true, || Ok(())).unwrap());
+    let account = AtomicU64::new(0);
+    let browser = AtomicU64::new(attempt.generation);
+
+    assert_eq!(
+        reset_local_account(&mut fixture.engine, &account, &browser, 0),
+        Err(Failure::Unavailable)
+    );
+    assert_eq!(account.load(Ordering::Acquire), 0);
+    assert_eq!(fixture.engine.generation, 0);
+    assert_eq!(browser.load(Ordering::Acquire), attempt.generation);
+    assert!(matches!(
+        fixture.engine.access_update,
+        Some(AccessUpdateStatus::Waiting)
+    ));
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+
+    offer_session_access_update(&fixture, "synthetic-user");
+    fixture
+        .engine
+        .callback(
+            &attempt,
+            auth::Callback::Code("synthetic-replacement".into()),
+            103,
+            || account.load(Ordering::Acquire) == 0 && browser.load(Ordering::Acquire) == 1,
+        )
+        .unwrap();
+    assert_eq!(
+        fixture.engine.session().unwrap().grant_id,
+        "replacement-grant"
+    );
+}
+
+#[test]
+fn successful_local_reset_fences_late_work() {
+    let mut fixture = Fixture::new();
+    fixture
+        .engine
+        .state
+        .lock()
+        .unwrap()
+        .replace(
+            state::Phase::SignedOut,
+            state::Cleanup::Revoke {
+                prior_unconfirmed: false,
+            },
+        )
+        .unwrap();
+    let account = AtomicU64::new(0);
+    let browser = AtomicU64::new(0);
+    assert_eq!(
+        reset_local_account(&mut fixture.engine, &account, &browser, 0),
+        Ok(true)
+    );
+    assert_eq!(account.load(Ordering::Acquire), 1);
+    assert_eq!(fixture.engine.generation, 1);
+    assert_eq!(browser.load(Ordering::Acquire), 1);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.remote_logout_unconfirmed());
+}
+
+#[test]
+fn access_update_preflight_records_uncertainty_only_for_current_code() {
+    for unreadable_state in [false, true] {
+        for (code, current) in [(true, true), (false, true), (true, false)] {
+            let mut fixture = Fixture::new();
+            fixture.sign_in();
+            let attempt = begin_session_access_update(&mut fixture);
+            assert!(
+                launch_account_browser(&mut fixture.engine, &attempt, || true, || Ok(())).unwrap()
+            );
+            let started_at = if unreadable_state {
+                std::fs::write(
+                    fixture.directory.path().join("cloud-auth-state-v2"),
+                    b"{torn",
+                )
+                .unwrap();
+                103
+            } else {
+                attempt.expires_at
+            };
+            let callback = if code {
+                auth::Callback::Code("synthetic-replacement".into())
+            } else {
+                auth::Callback::Cancelled
+            };
+            let error = if unreadable_state && current {
+                Failure::CredentialFailed
+            } else {
+                Failure::Cancelled
+            };
+            assert_eq!(
+                fixture
+                    .engine
+                    .callback(&attempt, callback, started_at, || current),
+                Err(error)
+            );
+            assert_eq!(fixture.engine.attempt.is_none(), current);
+            assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+            assert_eq!(fixture.engine.remote_logout_unconfirmed(), code && current);
+            fixture.restart();
+            assert_eq!(fixture.engine.remote_logout_unconfirmed(), code && current);
+        }
+    }
+}
+
+#[test]
 fn successful_access_update_commits_and_only_then_revokes_the_prior_grant() {
     let mut fixture = Fixture::new();
     let marker = fixture.directory.path().join("cloud-auth-state-v2");
@@ -1278,7 +1437,7 @@ fn successful_access_update_commits_and_only_then_revokes_the_prior_grant() {
 
     fixture.restart();
     fixture.engine.refresh(104, || true).unwrap();
-    assert!(fixture.engine.remote_logout_unconfirmed());
+    assert!(!fixture.engine.remote_logout_unconfirmed());
     assert_eq!(
         fixture.transport.seen.lock().unwrap().last().unwrap(),
         "synthetic-refresh-1"
@@ -1287,6 +1446,77 @@ fn successful_access_update_commits_and_only_then_revokes_the_prior_grant() {
         fixture.engine.session().unwrap().grant_id,
         "replacement-grant"
     );
+}
+
+#[test]
+fn access_update_preserves_older_revocation_warnings_and_failed_revokes() {
+    for (prior_marker, detached_warning, revoke_fails) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let mut fixture = Fixture::new();
+        if detached_warning {
+            let path = fixture.engine.state.remote_logout_warning_path();
+            fixture.transport = Arc::new(FakeTransport {
+                on_revoke: Some(Arc::new(move || {
+                    state::record_remote_logout_failure(&path).unwrap();
+                })),
+                ..FakeTransport::default()
+            });
+            fixture.engine.transport = Arc::new(fixture.transport.clone());
+        }
+        fixture.sign_in();
+        if prior_marker {
+            let mut guard = fixture.engine.state.lock().unwrap();
+            let mut record = guard.read().unwrap();
+            record.cleanup = state::Cleanup::RemoteUnconfirmed;
+            guard.write(&record).unwrap();
+        }
+        fixture
+            .transport
+            .fail_revoke
+            .store(revoke_fails, Ordering::Release);
+        let attempt = begin_session_access_update(&mut fixture);
+        offer_session_access_update(&fixture, "synthetic-user");
+        return_session_access_update(&mut fixture, &attempt).unwrap();
+        assert!(fixture.engine.remote_logout_unconfirmed());
+
+        fixture.restart();
+        fixture.engine.refresh(104, || true).unwrap();
+        assert!(fixture.engine.remote_logout_unconfirmed());
+    }
+}
+
+#[test]
+fn access_update_keeps_warning_when_clearing_the_marker_fails() {
+    let mut fixture = Fixture::new();
+    let marker = fixture.directory.path().join("cloud-auth-state-v2");
+    let committed = fixture.directory.path().join("committed-marker");
+    let blocked_marker = marker.clone();
+    let saved_marker = committed.clone();
+    fixture.transport = Arc::new(FakeTransport {
+        on_revoke: Some(Arc::new(move || {
+            std::fs::rename(&blocked_marker, &saved_marker).unwrap();
+            std::fs::create_dir(&blocked_marker).unwrap();
+        })),
+        ..FakeTransport::default()
+    });
+    fixture.engine.transport = Arc::new(fixture.transport.clone());
+    fixture.sign_in();
+    let attempt = begin_session_access_update(&mut fixture);
+    offer_session_access_update(&fixture, "synthetic-user");
+    return_session_access_update(&mut fixture, &attempt).unwrap();
+
+    std::fs::remove_dir(&marker).unwrap();
+    std::fs::rename(&committed, &marker).unwrap();
+    assert!(fixture.engine.remote_logout_unconfirmed());
+    assert!(state::remote_logout_unconfirmed(
+        &fixture.engine.state.remote_logout_warning_path()
+    ));
+    fixture.restart();
+    fixture.engine.refresh(104, || true).unwrap();
+    assert!(fixture.engine.remote_logout_unconfirmed());
 }
 
 #[test]
@@ -1897,12 +2127,12 @@ fn cloud_snapshot_does_not_include_native_secrets() {
     };
     let encoded = serde_json::to_string(&value).unwrap();
     assert!(encoded.contains("\"sessionReadUpdateAvailable\":false"));
+    assert!(encoded.contains("\"grantId\":\"synthetic-grant\""));
     for field in [
         "access_token",
         "refresh_token",
         "verifier",
         "state",
-        "grant_id",
         "device_id",
     ] {
         assert!(!encoded.contains(field));
@@ -1912,7 +2142,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
 #[test]
 fn cloud_cli_access_update_requires_a_supported_platform() {
     assert_eq!(AccessUpdate::SessionReads.platform_available(), cfg!(unix));
-    assert!(AccessUpdate::Capture.platform_available());
+    assert_eq!(AccessUpdate::Capture.platform_available(), cfg!(unix));
 }
 
 #[test]

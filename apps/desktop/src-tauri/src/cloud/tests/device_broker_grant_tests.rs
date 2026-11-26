@@ -111,7 +111,15 @@ fn never_falls_back_to_device_proof_when_read_token_is_unavailable() {
             engine.cli_device_session(&|| true),
             Err(error) if error == expected
         ));
-        worker.join().unwrap();
+        let request = worker.join().unwrap();
+        assert_eq!(
+            request.line,
+            "POST /v1/devices/grants/current/read-token HTTP/1.1"
+        );
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer synthetic-access")
+        );
     }
 }
 

@@ -81,9 +81,9 @@ pub enum AccessUpdate {
 }
 
 impl AccessUpdate {
-    /// The CLI uses a local socket broker, which only starts on Unix.
+    /// The CLI broker and Desktop capture require Unix.
     fn platform_available(&self) -> bool {
-        cfg!(unix) || !matches!(self, Self::SessionReads)
+        cfg!(unix)
     }
 
     fn actions(&self) -> &'static [auth::DeviceAction] {
@@ -601,7 +601,7 @@ pub async fn cloud_begin(
         .as_ref()
         .is_some_and(|update| !update.platform_available())
     {
-        return Err("Cloud CLI session reads are not supported on this platform.".into());
+        return Err("Cloud device access updates are not supported on this platform.".into());
     }
     let expected_generation = app
         .state::<Controller>()
@@ -610,20 +610,16 @@ pub async fn cloud_begin(
     let work = app.state::<Controller>().blocking.clone();
     work.run(Priority::Normal, move || {
         let controller = app.state::<Controller>();
-        let generation = expected_generation + 1;
-        controller
-            .attempt_generation
-            .compare_exchange(
-                expected_generation,
-                generation,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .map_err(|_| "Cloud sign-in was cancelled.".to_owned())?;
         let mut engine = controller
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
+        let generation = claim_browser_attempt(
+            &engine,
+            &controller.attempt_generation,
+            expected_generation,
+            access_update.is_some(),
+        )?;
         if controller.attempt_generation.load(Ordering::Acquire) != generation {
             return Err("Cloud sign-in was cancelled.".to_owned());
         }
@@ -666,7 +662,11 @@ pub async fn cloud_begin(
         let account_generation = if attempt.upgrade.is_some() {
             account_generation
         } else {
-            if !advance_account_generation(controller.inner(), &mut engine, account_generation) {
+            if !advance_account_generation(
+                &controller.account_generation,
+                &mut engine,
+                account_generation,
+            ) {
                 return Ok(snapshot(&app, &engine));
             }
             engine.generation
@@ -743,7 +743,7 @@ pub async fn cloud_begin(
                     };
                     if (replaced
                         && advance_account_generation(
-                            controller.inner(),
+                            &controller.account_generation,
                             &mut engine,
                             account_generation,
                         ))
@@ -763,9 +763,34 @@ pub async fn cloud_begin(
     .await
 }
 
-fn advance_account_generation(controller: &Controller, engine: &mut Engine, current: u64) -> bool {
-    if controller
-        .account_generation
+/// Reject overlaps with access updates before making a pending listener stale.
+/// The caller holds the engine lock across the generation claim and attempt start.
+fn claim_browser_attempt(
+    engine: &Engine,
+    attempt_generation: &AtomicU64,
+    expected: u64,
+    access_update: bool,
+) -> Result<u64, String> {
+    if engine
+        .attempt
+        .as_ref()
+        .is_some_and(|attempt| access_update || attempt.upgrade.is_some())
+    {
+        return Err("Cloud browser approval is already in progress.".into());
+    }
+    let generation = expected + 1;
+    attempt_generation
+        .compare_exchange(expected, generation, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Cloud sign-in was cancelled.".to_owned())?;
+    Ok(generation)
+}
+
+fn advance_account_generation(
+    account_generation: &AtomicU64,
+    engine: &mut Engine,
+    current: u64,
+) -> bool {
+    if account_generation
         .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
@@ -924,15 +949,13 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
 }
 
 /// Apply an explicitly confirmed reset only when no secure refresh proof remains.
-/// Invalidate late work immediately and preserve the remote-revocation warning.
+/// Fence late work only after the reset succeeds. Keep revocation uncertainty.
 #[tauri::command]
 pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    invalidate_pending(&app);
-    let generation = app
+    let expected = app
         .state::<Controller>()
         .account_generation
-        .fetch_add(1, Ordering::AcqRel)
-        + 1;
+        .load(Ordering::Acquire);
     let work = app.state::<Controller>().blocking.clone();
     work.run(Priority::Cleanup, move || {
         let controller = app.state::<Controller>();
@@ -940,19 +963,39 @@ pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
-        if !engine.allows_account_cleanup(
-            generation,
-            controller.account_generation.load(Ordering::Acquire),
-        ) {
-            return Ok(snapshot(&app, &engine));
+        if reset_local_account(
+            &mut engine,
+            &controller.account_generation,
+            &controller.attempt_generation,
+            expected,
+        )
+        .map_err(|_| "Could not reset Cloud sign-in.".to_owned())?
+        {
+            Ok(publish(&app, &engine))
+        } else {
+            Ok(snapshot(&app, &engine))
         }
-        if let Err(error) = engine.reset_local() {
-            engine.status = error.into();
-        }
-        engine.generation = generation;
-        Ok(publish(&app, &engine))
     })
     .await
+}
+
+/// Run under the engine lock. A rejected reset cannot stale an active listener
+/// or replace the current account generation.
+fn reset_local_account(
+    engine: &mut Engine,
+    account_generation: &AtomicU64,
+    attempt_generation: &AtomicU64,
+    expected: u64,
+) -> Result<bool, Failure> {
+    if engine.generation != expected || account_generation.load(Ordering::Acquire) != expected {
+        return Ok(false);
+    }
+    engine.reset_local()?;
+    if !advance_account_generation(account_generation, engine, expected) {
+        return Ok(false);
+    }
+    attempt_generation.fetch_add(1, Ordering::AcqRel);
+    Ok(true)
 }
 
 /// Save account-bound preferences in admitted blocking work. Counts are display

@@ -382,6 +382,7 @@ impl Engine {
     }
 
     /// Reuse browser approval without changing active credentials or folder settings.
+    /// Reject a start while another browser approval is pending.
     pub(super) fn begin_access_update(
         &mut self,
         now: i64,
@@ -389,6 +390,9 @@ impl Engine {
         actions: &[DeviceAction],
         current: impl Fn() -> bool,
     ) -> Result<(String, Listener, Attempt), Failure> {
+        if self.attempt.is_some() {
+            return Err(Failure::Unavailable);
+        }
         self.refresh(now, current)?;
         let session = self.session().ok_or(Failure::ReauthRequired)?;
         if self.cleanup_only || !actions.iter().any(|&action| !session.allows(action)) {
@@ -583,19 +587,33 @@ impl Engine {
         started_at: i64,
         current: impl Fn() -> bool,
     ) -> Result<(), Failure> {
-        let (mut guard, record) = self.read_state()?;
         if !current()
-            || started_at >= attempt.expires_at
-            || record.phase != Phase::Active
-            || record.epoch != attempt.epoch
-            || self
-                .attempt
-                .as_ref()
-                .is_none_or(|pending| pending.generation != attempt.generation)
+            || self.attempt.as_ref().is_none_or(|pending| {
+                pending.epoch != attempt.epoch || pending.generation != attempt.generation
+            })
         {
             return Err(Failure::Cancelled);
         }
+        let preflight = self.read_state().and_then(|(guard, record)| {
+            if started_at >= attempt.expires_at
+                || record.phase != Phase::Active
+                || record.epoch != attempt.epoch
+            {
+                return Err(Failure::Cancelled);
+            }
+            Ok((guard, record))
+        });
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        // The listener delivered its only callback after browser launch. Leave
+        // no pending attempt on failure so the user can start another update.
         self.attempt = None;
+        let (mut guard, record) = preflight.inspect_err(|_| {
+            if matches!(callback, Callback::Code(_)) {
+                self.mark_remote_logout_unconfirmed();
+            }
+        })?;
         let Callback::Code(code) = callback else {
             self.access_update = Some(AccessUpdateStatus::Denied);
             return Ok(());
@@ -650,7 +668,6 @@ impl Engine {
                 epoch: auth::random()?,
                 phase: Phase::Active,
                 // Persist uncertainty before trying to revoke the old grant.
-                // This flag cannot distinguish earlier grants.
                 cleanup: Cleanup::RemoteUnconfirmed,
             };
             saved.replacement = Some(ReplacementCredential {
@@ -687,7 +704,7 @@ impl Engine {
             }
             Ok((session, expires_at, replacement))
         })();
-        let (session, expires_at, replacement) = match result {
+        let (session, expires_at, mut replacement) = match result {
             Ok(value) => value,
             Err(error) => {
                 self.revoke_access_update_grant(&config, &tokens.refresh_token);
@@ -707,6 +724,18 @@ impl Engine {
             committed?;
             return Err(Failure::Cancelled);
         }
+        if self.revoke_access_update_grant(&config, &saved.refresh_token)
+            && current()
+            && record.cleanup != replacement.cleanup
+        {
+            // Restore only the previous marker cleanup under the same lock.
+            // Detached workers record their warnings separately.
+            replacement.cleanup = record.cleanup;
+            if guard.write(&replacement).is_err() {
+                replacement.cleanup = Cleanup::RemoteUnconfirmed;
+                self.mark_remote_logout_unconfirmed();
+            }
+        }
         self.access = Some(Access {
             token: tokens.access_token,
             expires_at,
@@ -716,16 +745,17 @@ impl Engine {
         self.status = AuthStatus::SignedIn;
         self.cleanup = replacement.cleanup;
         self.access_update = None;
-        self.revoke_access_update_grant(&config, &saved.refresh_token);
         Ok(())
     }
 
     /// Do not use the detached slot here. Explicit sign-out may need that slot
     /// for the active grant as soon as the access update returns.
-    fn revoke_access_update_grant(&self, config: &Config, proof: &str) {
+    fn revoke_access_update_grant(&self, config: &Config, proof: &str) -> bool {
         if self.transport.revoke(config, proof).is_err() {
             self.mark_remote_logout_unconfirmed();
+            return false;
         }
+        true
     }
 
     fn mark_remote_logout_unconfirmed(&self) {

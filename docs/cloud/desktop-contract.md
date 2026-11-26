@@ -134,15 +134,18 @@ Desktop requires the token and session bindings to match before it saves a
 refresh credential. A changed grant, account, scope, or fixed deadline
 cannot restore the saved connection. To add missing actions, choose
 **Update device access**. Desktop asks the same account to approve its current
-actions and the missing actions in the browser. It keeps the current grant
+actions and the missing actions in the browser. An access update cannot start
+while a browser approval is pending, and a new sign-in cannot replace a pending
+access update. Desktop keeps the current grant
 until it verifies and securely saves the replacement. It records unconfirmed
 revocation with the replacement epoch, then tries to revoke the old grant
 before returning from the callback. That request can take up to 15 seconds.
 It leaves the detached logout slot free for sign-out. Both proofs share one
 keyring entry until Desktop replaces or deletes the entry, for example during
 credential rotation or sign-out. Desktop does not queue a revocation retry.
-The revocation flag does not identify grants, so a confirmed revoke cannot
-safely clear it.
+After a confirmed revoke, Desktop restores the previous cleanup state for the
+same epoch without clearing earlier warnings. If that write fails, Desktop
+keeps revocation uncertainty.
 If Desktop cannot confirm rollback to the old epoch, it leaves both proofs
 in place. A later refresh selects the proof that matches the active epoch.
 
@@ -261,8 +264,9 @@ one-year deadline. Refresh does not extend that deadline.
 A single Cloud blocking-work permit admits synchronous keyring, SQLite, source,
 state-file, and short HTTP operations before they enter Tokio's blocking pool.
 Ordinary requests fail clearly as busy without starting work. Cleanup waits
-asynchronously for the permit. Sign-out, reset, and browser cancellation invalidate
-their account or browser generation before waiting. A busy connection attempt
+asynchronously for the permit. Sign-out and browser cancellation invalidate
+their account or browser generation before waiting. A local reset invalidates
+late work only after it succeeds. A busy connection attempt
 does not invalidate the pending browser attempt. An admitted connection attempt
 cannot replace a newer cancellation while it waits for a blocking worker.
 An awaiting caller cannot release a permit still owned by running work.
