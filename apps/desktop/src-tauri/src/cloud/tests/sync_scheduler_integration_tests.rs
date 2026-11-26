@@ -246,7 +246,7 @@ impl Service {
                             429,
                             serde_json::json!({
                                 "code":"unknown_limit", "retryable":true,
-                                "message":"Synthetic limit.", "requestId": "synthetic-request",
+                                "message":"Synthetic limit.", "request_id": "synthetic-request",
                             }),
                         )
                     } else if mode == RESERVE_CAPACITY
@@ -257,7 +257,7 @@ impl Service {
                             429,
                             serde_json::json!({
                                 "code": "capture_limit", "retryable": true,
-                                "message": "Capture capacity is full.", "requestId": "synthetic-request",
+                                "message": "Capture capacity is full.", "request_id": "synthetic-request",
                             }),
                         )
                     } else if mode == SUPPRESSED
@@ -271,13 +271,13 @@ impl Service {
                             serde_json::json!({
                                 "code": "source_suppressed", "retryable": false,
                                 "message": "This session was deleted from Cloud. It will not upload again automatically.",
-                                "requestId": "synthetic-request",
+                                "request_id": "synthetic-request",
                             }),
                         )
                     } else if mode == CONFLICT {
                         (
                             409,
-                            serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
+                            serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "request_id": "synthetic-request"}),
                         )
                     } else {
                         manifest = None;
@@ -292,7 +292,7 @@ impl Service {
                     conflicted_request = Some((line.clone(), body.clone()));
                     (
                         409,
-                        serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
+                        serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "request_id": "synthetic-request"}),
                     )
                 } else if line.contains("/manifest ") {
                     let incoming: CaptureManifest =
@@ -332,7 +332,7 @@ impl Service {
                 {
                     (
                         409,
-                        serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
+                        serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "request_id": "synthetic-request"}),
                     )
                 } else if status_request {
                     let saved = manifest.as_ref().unwrap();
@@ -384,7 +384,7 @@ impl Service {
                     } else {
                         (
                             409,
-                            serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
+                            serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "request_id": "synthetic-request"}),
                         )
                     }
                 } else if part_url_request && mode == PART_OFFLINE {
@@ -408,7 +408,7 @@ impl Service {
                     conflicted_request = Some((line.clone(), body.clone()));
                     (
                         409,
-                        serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
+                        serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "request_id": "synthetic-request"}),
                     )
                 } else if part_url_request {
                     let key: ChunkKey = serde_json::from_value(input["key"].clone()).unwrap();
@@ -460,7 +460,7 @@ impl Service {
                     } else if mode == STATUS_REPLAY_REJECTED {
                         (
                             409,
-                            serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "requestId": "synthetic-request"}),
+                            serde_json::json!({"code": "capture_conflict", "retryable": false, "message": "Conflict.", "request_id": "synthetic-request"}),
                         )
                     } else {
                         finalized = true;

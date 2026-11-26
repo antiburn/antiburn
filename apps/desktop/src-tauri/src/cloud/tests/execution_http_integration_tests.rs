@@ -323,21 +323,25 @@ fn cloud_execution_http_reserve_capacity_requires_the_flat_typed_error() {
     use antiburn_cloud_capture::TransportError;
     let valid = serde_json::json!({
         "code": "capture_limit", "message": "Any safe explanation.",
-        "retryable": true, "requestId": "synthetic-request",
+        "retryable": true, "request_id": "synthetic-request",
     });
     for (body, expected) in [
         (valid.clone(), TransportError::Backpressure),
+        (
+            serde_json::json!({"code":"capture_limit","message":"capacity","retryable":true,"requestId":"synthetic"}),
+            TransportError::Offline,
+        ),
         (serde_json::json!({"error": valid}), TransportError::Offline),
         (
             serde_json::json!({"message":"capture_limit", "retryable":true}),
             TransportError::Offline,
         ),
         (
-            serde_json::json!({"code":"capture_limit","message":null,"retryable":true,"requestId":"synthetic"}),
+            serde_json::json!({"code":"capture_limit","message":null,"retryable":true,"request_id":"synthetic"}),
             TransportError::Offline,
         ),
         (
-            serde_json::json!({"code":"capture_limit","message":"capacity","retryable":false,"requestId":"synthetic"}),
+            serde_json::json!({"code":"capture_limit","message":"capacity","retryable":false,"request_id":"synthetic"}),
             TransportError::Offline,
         ),
     ] {
@@ -832,10 +836,17 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
     let valid = serde_json::json!({
         "code": "source_suppressed", "retryable": false,
         "message": "This session was deleted from Cloud. It will not upload again automatically.",
-        "requestId": "synthetic-request",
+        "request_id": "synthetic-request",
     });
     for (body, expected) in [
         (valid.clone(), Failure::SourceSuppressed),
+        (
+            serde_json::json!({
+                "code": "source_suppressed", "retryable": false,
+                "message": "This session was deleted from Cloud.", "requestId": "synthetic-request",
+            }),
+            Failure::Conflict,
+        ),
         (
             {
                 let mut value = valid.clone();

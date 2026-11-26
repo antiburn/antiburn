@@ -543,7 +543,7 @@ fn api_error_is(body: &[u8], code: &str, retryable: bool) -> bool {
         retryable: bool,
         #[serde(rename = "message")]
         _message: String,
-        #[serde(rename = "requestId")]
+        #[serde(rename = "request_id")]
         _request_id: String,
     }
     serde_json::from_slice::<ApiError>(body)
