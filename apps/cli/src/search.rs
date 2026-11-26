@@ -113,21 +113,6 @@ fn local_index_error(error: &rusqlite::Error) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reports_the_local_index_deadline() {
-        let interrupted = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
-            None,
-        );
-        assert!(local_index_error(&interrupted).contains("exceeded the time limit"));
-        assert!(local_index_error(&interrupted).contains("local_search_timeout_ms"));
-    }
-}
-
 /// Read matches and optional accepted source keys from the same SQLite snapshot.
 #[cfg(feature = "cloud")]
 pub(crate) async fn lookup_with_receipts(
@@ -276,4 +261,19 @@ fn read_identity(row: &Row<'_>) -> rusqlite::Result<SessionIdentity> {
         agent: row.get(1)?,
         session_id: row.get(2)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_the_local_index_deadline() {
+        let interrupted = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+            None,
+        );
+        assert!(local_index_error(&interrupted).contains("exceeded the time limit"));
+        assert!(local_index_error(&interrupted).contains("local_search_timeout_ms"));
+    }
 }

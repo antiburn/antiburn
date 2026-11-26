@@ -259,14 +259,24 @@ fn read_snapshot(path: &Path) -> Result<(String, bool), String> {
     {
         return Err("the local session file changed during the read; try again".into());
     }
-    let tail_incomplete = bytes.last().is_some_and(|byte| *byte != b'\n');
-    if tail_incomplete {
-        bytes.truncate(
-            bytes
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(0, |index| index + 1),
-        );
+    let mut tail_incomplete = false;
+    if bytes.last().is_some_and(|byte| *byte != b'\n') {
+        let tail_start = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let tail = &bytes[tail_start..];
+        let is_object = tail.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{');
+        if is_object
+            && std::str::from_utf8(tail)
+                .is_ok_and(|tail| serde_json::from_str::<serde::de::IgnoredAny>(tail).is_ok())
+        {
+            // Some readers require a line separator even at the end of the snapshot.
+            bytes.push(b'\n');
+        } else {
+            tail_incomplete = true;
+            bytes.truncate(tail_start);
+        }
     }
     let content = String::from_utf8(bytes).map_err(|_| "the local session source is not UTF-8")?;
     Ok((content, tail_incomplete))

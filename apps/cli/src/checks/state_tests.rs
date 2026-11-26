@@ -3,7 +3,7 @@ use std::fs;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
-use super::return_new_findings;
+use super::{check_fingerprint, return_new_findings};
 use crate::checks::model::{
     CheckAssessment, CheckAssessmentSource, ChecksResponse, EvidenceRecord, SessionIdentity,
 };
@@ -115,6 +115,23 @@ fn persisted(status: &str, result: Option<Value>) -> CheckAssessment {
         })),
         result,
     }
+}
+
+#[test]
+fn preserves_the_legacy_fingerprint_for_persisted_numbers() {
+    let finding = persisted(
+        "completed",
+        Some(
+            serde_json::from_str(
+                r#"{"findings":[{"confidence":0.10,"count":18446744073709551615,"values":[-0,1e2]}]}"#,
+            )
+            .unwrap(),
+        ),
+    );
+    assert_eq!(
+        check_fingerprint(&finding).unwrap(),
+        "43fcdc8adc73796241eca0693a3e84436b1466b6570fd266c02718d943972887"
+    );
 }
 
 #[test]

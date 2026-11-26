@@ -390,24 +390,20 @@ impl SessionDocument {
 
     fn write_text(&self, output: &mut impl Write) -> io::Result<()> {
         let header = &self.document.header;
-        writeln!(
+        write_escaped_text(
             output,
-            "{}",
-            header
-                .title
-                .as_deref()
-                .unwrap_or("Untitled session")
-                .escape_debug()
+            header.title.as_deref().unwrap_or("Untitled session"),
         )?;
-        writeln!(
-            output,
-            "Session {} ({})",
-            self.session_id.escape_debug(),
-            self.source.label(),
-        )?;
-        writeln!(output, "Agent: {}", header.agent.name.escape_debug())?;
+        output.write_all(b"\nSession ")?;
+        write_escaped_text(output, &self.session_id)?;
+        writeln!(output, " ({})", self.source.label())?;
+        output.write_all(b"Agent: ")?;
+        write_escaped_text(output, &header.agent.name)?;
+        output.write_all(b"\n")?;
         if let Some(environment) = &self.environment_key {
-            writeln!(output, "Environment: {}", environment.escape_debug())?;
+            output.write_all(b"Environment: ")?;
+            write_escaped_text(output, environment)?;
+            output.write_all(b"\n")?;
         }
         if self.stale == Some(true) {
             output.write_all(b"Cloud returned an older publication.\n")?;
@@ -438,12 +434,25 @@ impl SessionDocument {
                 if matches!(part.kind.as_str(), "text" | "refusal")
                     && let Some(text) = &part.text
                 {
-                    writeln!(output, "{role}: \"{}\"", text.escape_debug())?;
+                    write!(output, "{role}: \"")?;
+                    write_escaped_text(output, text)?;
+                    output.write_all(b"\"\n")?;
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Keep debug escaping for terminal safety, but leave apostrophes literal.
+fn write_escaped_text(output: &mut impl Write, text: &str) -> io::Result<()> {
+    for (index, segment) in text.split('\'').enumerate() {
+        if index != 0 {
+            output.write_all(b"'")?;
+        }
+        write!(output, "{}", segment.escape_debug())?;
+    }
+    Ok(())
 }
 
 struct DocumentBytes(Vec<u8>);

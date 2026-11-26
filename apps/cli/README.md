@@ -158,6 +158,9 @@ limits return errors. A clipped or skipped record makes source coverage partial,
 but other readable messages still appear. If the source is still writing its
 first record, retry after it finishes. The document does not return child
 sessions or follow attachments.
+OpenCode V2 verifies the indexed fingerprint for the session and its children.
+Child data can cause this read to exceed a limit even though the document does
+not include that data.
 
 Local `get` labels unattributed text in a user slot as `unknown` in JSON and
 `Unknown` in text. A `user` label identifies a source slot, not verified

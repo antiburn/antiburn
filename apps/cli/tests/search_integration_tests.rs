@@ -167,11 +167,11 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     fixture.create_database();
     let path = fixture.root.path().join("example-shared.jsonl");
     let contents = concat!(
-        r#"{"type":"user","sessionId":"example-shared","uuid":"first","parentUuid":null,"message":{"role":"user","content":"Synthetic prompt \u001b[2J\u009b\u202e"}}"#,
+        r#"{"type":"user","sessionId":"example-shared","uuid":"first","parentUuid":null,"message":{"role":"user","content":"Don't print \"this\" or \\ \u001b[2J\u009b\u202e"}}"#,
         "\n",
         r#"{"type":"assistant","sessionId":"example-shared","uuid":"second","parentUuid":"first","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Synthetic private reasoning"},{"type":"text","text":"Synthetic reply"}]}}"#,
         "\n",
-        r#"{"type":"assistant","message":{"content":"Uncommitted tail"}}"#,
+        r#"{"type":"assistant","message":{"content":"Uncommitted tail"#,
     );
     fs::write(&path, contents).unwrap();
     let db = Connection::open(&fixture.database).unwrap();
@@ -216,7 +216,7 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     assert_eq!(result["document"]["messages"][0]["role"], "user");
     assert_eq!(
         result["document"]["messages"][0]["parts"][0]["text"],
-        "Synthetic prompt \x1b[2J\u{009b}\u{202e}"
+        "Don't print \"this\" or \\ \x1b[2J\u{009b}\u{202e}"
     );
     assert_eq!(
         result["document"]["messages"][1]["parts"][1]["text"],
@@ -235,6 +235,7 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     assert!(text.contains("Agent: claude-code\n"));
     assert!(text.contains("Environment: native\n"));
     assert!(text.contains("Source coverage: partial\n"));
+    assert!(text.contains(r#"User: "Don't print \"this\" or \\ \u{1b}[2J\u{9b}\u{202e}""#));
     assert!(text.contains("Assistant: \"Synthetic reply\""));
     assert!(!text.contains('\x1b'));
 
@@ -444,6 +445,31 @@ fn local_get_reports_jsonl_size_and_coverage_limits() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete record; try again"));
 
+    let complete = br#"{"type":"user","sessionId":"plain-id","uuid":"first","parentUuid":null,"message":{"role":"user","content":"Complete final record."}}"#;
+    fs::write(&path, complete).unwrap();
+    let output = fixture.get("plain-id", &["--json"]);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["document"]["coverage"]["source"], "unknown");
+    assert_eq!(
+        response["document"]["messages"][0]["parts"][0]["text"],
+        "Complete final record."
+    );
+
+    fs::write(
+        &path,
+        [complete.as_slice(), b"\n{\"message\":\"\xff\"}"].concat(),
+    )
+    .unwrap();
+    let output = fixture.get("plain-id", &["--json"]);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["document"]["coverage"]["source"], "partial");
+    assert_eq!(
+        response["document"]["messages"].as_array().unwrap().len(),
+        1
+    );
+
     let oversized = format!(
         "{{\"type\":\"user\",\"message\":{{\"content\":\"{}\"}}}}\n",
         "x".repeat(8 * 1024 * 1024)
@@ -458,6 +484,55 @@ fn local_get_reports_jsonl_size_and_coverage_limits() {
     let response: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["document"]["coverage"]["source"], "partial");
     assert_eq!(response["document"]["messages"], json!([]));
+}
+
+#[test]
+fn local_get_limits_index_rows_and_hides_non_display_titles() {
+    let fixture = Fixture::new();
+    fixture.create_database();
+    let path = fixture.root.path().join("plain-id.jsonl");
+    fs::write(
+        &path,
+        concat!(
+            r#"{"type":"user","sessionId":"plain-id","uuid":"first","parentUuid":null,"message":{"role":"user","content":"Synthetic request."}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let db = Connection::open(&fixture.database).unwrap();
+    let title = "x".repeat(80 * 1024);
+    db.execute(
+        "UPDATE session SET agent='claude-code', source_label=?1, source_format='\"claude_jsonl\"',
+                title=?2, title_source='userRename' WHERE session_id='plain-id'",
+        [path.to_str().unwrap(), &title],
+    )
+    .unwrap();
+    let output = fixture.get("plain-id", &["--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("could not read the local session source index")
+    );
+
+    let mut config: Value = serde_json::from_slice(&fs::read(&fixture.config).unwrap()).unwrap();
+    config["local_search_sqlite_length_limit_bytes"] = json!(128 * 1024);
+    fs::write(&fixture.config, config.to_string()).unwrap();
+    let read_title = || {
+        let output = fixture.get("plain-id", &["--json"]);
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        response["document"]["header"].get("title").cloned()
+    };
+    assert_eq!(read_title(), Some(json!(title)));
+    for source in ["firstMessage", "unknown"] {
+        db.execute(
+            "UPDATE session SET title_source=?1 WHERE session_id='plain-id'",
+            [source],
+        )
+        .unwrap();
+        assert_eq!(read_title(), None, "{source}");
+    }
 }
 
 #[test]
