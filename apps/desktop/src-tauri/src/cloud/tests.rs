@@ -1776,6 +1776,10 @@ fn rejected_or_uncertain_access_update_keeps_the_previous_connection() {
                     )
                     .unwrap()
                 );
+                assert!(matches!(
+                    fixture.engine.access_update,
+                    Some(AccessUpdateStatus::Failed)
+                ));
             }
             "wrong account" => {
                 offer_session_access_update(&fixture, "other-account");
@@ -2344,10 +2348,12 @@ fn cloud_browser_cancellation_during_access_update_refresh_does_not_revoke_the_a
         )
         .unwrap()
     );
+    assert!(fixture.engine.access_update.is_none());
     fixture
         .engine
         .cancel(attempt_generation.load(Ordering::Acquire))
         .unwrap();
+    assert!(fixture.engine.access_update.is_none());
     assert!(fixture.engine.session().is_some());
     assert_eq!(transport.revocations.load(Ordering::Acquire), 0);
     assert_eq!(

@@ -482,7 +482,7 @@ impl Engine {
         Ok((url.to_string(), listener, attempt))
     }
 
-    /// Clear only this pending attempt after the opener proves no browser handoff.
+    /// Clear only this pending attempt when no browser handoff occurred.
     /// Do not use this for an uncertain launch or a lost callback.
     pub fn abort_browser_launch(&mut self, attempt: &Attempt) -> Result<(), Failure> {
         if self.attempt.as_ref().is_none_or(|pending| {
@@ -492,7 +492,7 @@ impl Engine {
         }
         if attempt.upgrade.is_some() {
             self.attempt = None;
-            self.access_update = Some(AccessUpdateStatus::Failed);
+            self.access_update = None;
             return Ok(());
         }
         let (mut guard, record) = self.read_state()?;
