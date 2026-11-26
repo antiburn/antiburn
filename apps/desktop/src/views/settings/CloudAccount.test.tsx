@@ -3,13 +3,12 @@ import { useSyncExternalStore } from "react"
 import { expect, it, vi } from "vitest"
 import {
   emptyCloudSnapshot,
-  desktopCloudPort,
   type CloudSnapshot,
   type CloudWorkspaceRecovery,
 } from "../../lib/cloud"
 import { CloudSession } from "../../onboarding/CloudSession"
+import { cloudCaptureUnsupported } from "../../onboarding/cloudProjectScope"
 import { CloudAccount } from "./CloudAccount"
-import { SettingsTargetFocus } from "./SettingsTargetFocus"
 import {
   cloudProjectFixture,
   localToolsFixture,
@@ -44,14 +43,10 @@ function fixture(initial?: CloudSnapshot) {
     value = { ...value, draft }
     return value
   })
-  const prepareSync = vi.fn(async () => {})
-  const start = vi.fn(async () => ({ status: "upload_unavailable" as const }))
-  const reconcile = vi.fn(async () => ({ status: "upload_unavailable" as const }))
-  const pick = vi.fn(async () => ["/Example/opencode/opencode.db"])
+  const { port, ongoing } = cloudProjectFixture()
   const session = new CloudSession(
     {
-      ...desktopCloudPort,
-      ongoing: undefined,
+      ...port,
       read: async () => value,
       watch: async (listener) => {
         publish = listener
@@ -66,10 +61,6 @@ function fixture(initial?: CloudSnapshot) {
       signOut,
       cancel,
       save,
-      prepareSync,
-      start,
-      reconcile,
-      pick,
     },
     false,
     true,
@@ -80,10 +71,7 @@ function fixture(initial?: CloudSnapshot) {
     signOut,
     cancel,
     save,
-    prepareSync,
-    start,
-    reconcile,
-    pick,
+    ongoing,
     emit: (next: CloudSnapshot) => publish(next),
     emitWorkspace: (next: CloudWorkspaceRecovery) => publishWorkspace(next),
   }
@@ -138,32 +126,187 @@ it("requires an explicit local reset without warning about an earlier Cloud conn
   expect(screen.queryByText(/Cloud has not confirmed an earlier sign-out/)).toBeNull()
 })
 
-it("shows only the current sign-in blocker after an unconfirmed invitation", async () => {
+it("requires cleanup before signing in again when the connection requires it", async () => {
   const { session, emit } = fixture({
     ...emptyCloudSnapshot,
     authEnabled: true,
-    invitationEnabled: true,
     status: "signed_in",
     identity: { id: "synthetic-account", login: "Example" },
   })
   render(<Account session={session} />)
   await screen.findByText("Signed in as Example")
-  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
-  const warning = /Check your Cloud workspaces before trying again/
-  expect(screen.queryByText(warning)).toBeNull()
   act(() =>
     emit({
       ...emptyCloudSnapshot,
       authEnabled: true,
       status: "reauth_required",
       revocationPending: true,
-      invitationResultUnconfirmed: true,
     }),
   )
-  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
-  expect(screen.queryByText(warning)).toBeNull()
   expect(screen.getByText("Sign out on this device before you sign in again.")).toBeVisible()
   expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+})
+
+it("refreshes eligible workspaces without signing in again or changing a saved Team policy", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const personal = { id: "synthetic-personal", name: "Personal", kind: "personal" } as const
+  const saved = { id: "saved-team", name: "Saved Team", kind: "team" } as const
+  const joined = { id: "joined-team", name: "Joined Team", kind: "team" } as const
+  const policy = ongoingStatus({
+    destinationId: saved.id,
+    workspaceName: saved.name,
+    status: "ready",
+    policyRevision: "saved-team-policy",
+    consentVersion: "desktop-project-sync-v1",
+    projectChoices: { studio: true },
+  })
+  ongoing.status.mockResolvedValue(ongoingStatus({ teamStatuses: [policy] }))
+  const workspaces = vi
+    .fn<NonNullable<typeof port.workspaces>>()
+    .mockResolvedValue([personal, saved])
+  port.workspaces = workspaces
+  const signIn = vi.spyOn(port, "begin")
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  await screen.findByText("2 workspaces")
+  expect(screen.queryByRole("button", { name: "Open Cloud dashboard" })).toBeNull()
+
+  workspaces.mockResolvedValue([personal, saved, joined])
+  const refresh = screen.getByRole("button", { name: "Refresh workspaces" })
+  refresh.focus()
+  fireEvent.click(refresh)
+
+  expect(await screen.findByText("3 workspaces")).toBeVisible()
+  expect(refresh).toHaveFocus()
+  expect(workspaces).toHaveBeenLastCalledWith({
+    accountId: "synthetic-account",
+    destinationId: personal.id,
+  })
+  expect(session.getSnapshot().teamStatuses?.[saved.id]).toEqual(policy)
+  expect(session.getSnapshot().teamStatuses?.[joined.id]).toBeUndefined()
+  expect(signIn).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+  expect(ongoing.setEnabled).not.toHaveBeenCalled()
+})
+
+it("recovers workspace access without reading folders when capture is unsupported", async () => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  emit({ captureEnabled: false, setupError: cloudCaptureUnsupported })
+  const personal = { id: "synthetic-personal", name: "Personal", kind: "personal" } as const
+  const team = { id: "joined-team", name: "Joined Team", kind: "team" } as const
+  const workspaces = vi.fn<NonNullable<typeof port.workspaces>>().mockResolvedValue([personal])
+  port.workspaces = workspaces
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  await screen.findByText("1 workspace")
+
+  const refresh = screen.getByRole("button", { name: "Refresh workspaces" })
+  const accessDenied = "You do not have access to the selected Cloud workspace."
+  workspaces.mockRejectedValueOnce(new Error("Cloud workspace access denied."))
+  fireEvent.click(refresh)
+  expect(await screen.findByText(accessDenied)).toBeVisible()
+
+  workspaces.mockResolvedValue([personal, team])
+  fireEvent.click(refresh)
+
+  expect(await screen.findByText("2 workspaces")).toBeVisible()
+  expect(screen.queryByText(accessDenied)).toBeNull()
+  expect(workspaces).toHaveBeenCalledTimes(3)
+  expect(workspaces).toHaveBeenLastCalledWith({
+    accountId: "synthetic-account",
+    destinationId: personal.id,
+  })
+  expect(ongoing.groups).not.toHaveBeenCalled()
+  expect(session.getSnapshot().projects?.loaded).toBe(false)
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("opens the configured dashboard without changing the desktop account", async () => {
+  const { port, emit } = cloudProjectFixture()
+  emit({ dashboardAvailable: true })
+  const openDashboard = vi.fn<NonNullable<typeof port.openDashboard>>()
+  openDashboard.mockRejectedValueOnce(new Error("Synthetic browser failure"))
+  openDashboard.mockResolvedValueOnce(undefined)
+  port.openDashboard = openDashboard
+  const signIn = vi.spyOn(port, "begin")
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+
+  const open = await screen.findByRole("button", { name: "Open Cloud dashboard" })
+  fireEvent.click(open)
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not open the Cloud dashboard.",
+  )
+  await waitFor(() => expect(open).not.toHaveAttribute("aria-disabled"))
+  fireEvent.click(open)
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull())
+  expect(openDashboard).toHaveBeenCalledTimes(2)
+  expect(openDashboard).toHaveBeenLastCalledWith()
+  expect(signIn).not.toHaveBeenCalled()
+  expect(screen.getByText("Signed in as Example")).toBeVisible()
+})
+
+it("offers browser workspace setup in Settings even without the dashboard shortcut", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const openSetup = vi.fn().mockResolvedValue(undefined)
+  port.openSetup = openSetup
+  const signIn = vi.spyOn(port, "begin")
+  render(<Account session={new CloudSession(port, false, true)} />)
+
+  fireEvent.click(await screen.findByRole("button", { name: "Finish setup in browser" }))
+  expect(openSetup).toHaveBeenCalledExactlyOnceWith()
+  expect(screen.queryByRole("button", { name: "Open Cloud dashboard" })).toBeNull()
+  expect(signIn).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("keeps session access updates cancellable in Settings after sign-in is lost", async () => {
+  const { port, emit, ongoing } = cloudProjectFixture()
+  emit({ sessionReadsAllowed: false, sessionReadUpdateAvailable: true })
+  const signOut = vi.spyOn(port, "signOut")
+  const current = await port.read()
+  const disconnected: CloudSnapshot = {
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "reauth_required",
+  }
+  const begin = vi
+    .spyOn(port, "begin")
+    .mockResolvedValueOnce({ ...current, accessUpdate: "waiting" })
+    .mockResolvedValueOnce({ ...disconnected, status: "waiting" })
+  const cancel = vi.spyOn(port, "cancel").mockResolvedValue(disconnected)
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const updateAccess = await screen.findByRole("button", {
+    name: "Update device access to search and read Cloud sessions",
+  })
+  expect(screen.getByText(/approve this device to search and read/i)).toBeVisible()
+  expect(begin).not.toHaveBeenCalled()
+  fireEvent.click(updateAccess)
+  expect(await screen.findByRole("button", { name: "Cancel access update" })).toBeVisible()
+  expect(begin).toHaveBeenCalledExactlyOnceWith("session_reads")
+  expect(screen.getByText("Signed in as Example")).toBeVisible()
+  expect(screen.getByText(/your current connection stays active/i)).toBeVisible()
+
+  act(() => emit({ ...disconnected, destination: null, accessUpdate: "waiting" }))
+  expect(screen.getByText("Not signed in")).toBeVisible()
+  expect(screen.queryByText(/your current connection stays active/i)).toBeNull()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Cancel access update" }))
+
+  const signIn = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  expect(screen.queryByRole("button", { name: "Cancel access update" })).toBeNull()
+  fireEvent.click(signIn)
+  expect(await screen.findByRole("button", { name: "Cancel sign-in" })).toBeVisible()
+  expect(begin).toHaveBeenLastCalledWith(undefined)
+  expect(cancel).toHaveBeenCalledOnce()
+  expect(signOut).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
 it("canceling the reset confirmation does not call a native cleanup action", async () => {
@@ -265,44 +408,6 @@ it("uses legacy cleanup events only for the signed-in account", async () => {
   ).toBeEnabled()
 })
 
-it("requires source selection and sends account-bound folder changes from Settings", async () => {
-  const { session, save } = fixture({
-    ...emptyCloudSnapshot,
-    authEnabled: true,
-    status: "signed_in",
-    identity: { id: "synthetic-account", login: "Example" },
-    destination: { id: "synthetic-personal", name: "Personal", kind: "personal" },
-    draft: {
-      screen: "folders",
-      folders: [{ path: "/Example/Project", selected: false }],
-    },
-  })
-  const container = document.createElement("div")
-  document.body.append(container)
-  render(<Account session={session} />, { container })
-  const source = await screen.findByRole("switch", {
-    name: "Select /Example/Project for Cloud capture",
-  })
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  const row = screen.getByText("Cloud folders").closest<HTMLElement>("[data-settings-control]")!
-  row.scrollIntoView = vi.fn()
-  new SettingsTargetFocus().attach(container, "sessions", "cloudFolders", 1)()
-  expect(source).toHaveFocus()
-  expect(source).not.toBeChecked()
-  expect(save).not.toHaveBeenCalled()
-  fireEvent.click(source)
-  await waitFor(() =>
-    expect(screen.getByRole("switch", { name: /Select \/Example\/Project/ })).toBeChecked(),
-  )
-  expect(save).toHaveBeenCalledWith(
-    { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
-    { accountId: "synthetic-account", destinationId: "synthetic-personal" },
-    true,
-  )
-  expect(screen.queryByText(/It does not sign out your browser/)).not.toBeInTheDocument()
-  expect(row).toHaveAttribute("data-settings-control", "cloudFolders")
-})
-
 it("keeps revocation available when folder setup cannot load", async () => {
   const { session, signOut } = fixture({
     ...emptyCloudSnapshot,
@@ -321,104 +426,25 @@ it("keeps revocation available when folder setup cannot load", async () => {
   await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
 })
 
-const desktopCapture: CloudSnapshot = {
-  ...emptyCloudSnapshot,
-  authEnabled: true,
-  captureEnabled: true,
-  status: "signed_in",
-  identity: { id: "synthetic-account", login: "Example" },
-  destination: { id: "personal", name: "Personal", kind: "personal" },
-  draft: {
-    screen: "complete",
-    folders: [{ path: "/Example/claude/projects/project", selected: true }],
-  },
-}
-
-it("saves a desktop capture request from Settings after onboarding without claiming upload", async () => {
-  const { session, prepareSync, start } = fixture(desktopCapture)
-  render(<Account session={session} />)
-  const save = await screen.findByRole("button", { name: "Save capture request" })
-  expect(save).toBeEnabled()
-  expect(
-    screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
-  ).not.toBeInTheDocument()
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  expect(save).toBeEnabled()
-  fireEvent.click(save)
-  await waitFor(() => expect(start).toHaveBeenCalledOnce())
-  expect(prepareSync).toHaveBeenCalledOnce()
-  expect(
-    await screen.findByText("Capture request saved on this device. Upload unavailable."),
-  ).toBeVisible()
-  expect(screen.queryByText(/Sessions syncing/)).not.toBeInTheDocument()
-})
-
 it.each([
-  { draft: { screen: "complete" as const, folders: [] } },
   { destination: null },
   { destination: { id: "team", name: "Team", kind: "team" as const } },
   { status: "reauth_required" as const },
   { setupError: "Could not read Cloud setup." },
-])(
-  "disables desktop saves without selected sources and current personal context: %j",
-  async (patch) => {
-    const { session, prepareSync } = fixture({ ...desktopCapture, ...patch })
-    render(<Account session={session} />)
-    const save = await screen.findByRole("button", { name: "Save capture request" })
-    expect(save).toBeDisabled()
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-    fireEvent.click(save)
-    expect(prepareSync).not.toHaveBeenCalled()
-  },
-)
-
-it("does not save or authorize a request when source selection changes", async () => {
-  const { session, start } = fixture(desktopCapture)
+])("does not grant folder sync without current Personal authority: %j", async (patch) => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  emit(patch)
+  const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  const save = await screen.findByRole("button", { name: "Save capture request" })
-  expect(save).toBeEnabled()
-  fireEvent.click(screen.getByRole("switch"))
-  await waitFor(() => expect(save).toBeDisabled())
-  expect(start).not.toHaveBeenCalled()
-})
-
-it("uses an already discovered OpenCode source without a Settings picker", async () => {
-  const { session, pick, save, prepareSync } = fixture({
-    ...desktopCapture,
-    draft: {
-      screen: "complete",
-      folders: [
-        {
-          path: "/Example/opencode/opencode.db",
-          sourceKind: "opencode_sqlite_v2",
-          selected: true,
-        },
-      ],
-    },
-  })
-  render(<Account session={session} />)
-  const source = await screen.findByRole("switch", {
-    name: "Select /Example/opencode/opencode.db for Cloud capture",
-  })
-  expect(source).toBeChecked()
-  expect(pick).not.toHaveBeenCalled()
-  expect(save).not.toHaveBeenCalled()
-  expect(screen.queryByRole("button", { name: /Choose OpenCode/ })).not.toBeInTheDocument()
-  expect(screen.getByText("OpenCode V2: /Example/opencode/opencode.db")).toBeVisible()
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  expect(prepareSync).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole("button", { name: "Save capture request" }))
-  await waitFor(() => expect(prepareSync).toHaveBeenCalledOnce())
-  expect(prepareSync).toHaveBeenCalledWith(
-    expect.any(Array),
-    expect.any(String),
-    expect.objectContaining({
-      version: "native-full-content-v2",
-      fullContent: true,
-      attachments: false,
-      selectedSources: [
-        { sourceKind: "opencode_sqlite_v2", path: "/Example/opencode/opencode.db" },
-      ],
-    }),
-  )
+  await waitFor(() => expect(session.getSnapshot().loaded).toBe(true))
+  if ("setupError" in patch) {
+    const start = screen.getByRole("button", { name: "Start syncing" })
+    expect(start).toHaveAttribute("aria-disabled", "true")
+    await act(async () => fireEvent.click(start))
+  } else {
+    expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
+  }
+  await act(async () => session.startPendingProjects(session.getSnapshot(), false))
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
 })

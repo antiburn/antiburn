@@ -275,13 +275,14 @@ mod tests {
                 assert!(store.cloud_draft("account", "personal").is_err());
                 store
                     .lock()
-                    .execute_batch("CREATE TABLE cloud_capture_request (invalid INTEGER);")
+                    .execute_batch("CREATE TABLE cloud_sync_job (invalid INTEGER);")
                     .unwrap();
                 assert!(super::super::ensure_cloud_setup(&ready, &store).is_err());
                 assert!(!ready.load(Ordering::Acquire));
+                assert!(store.cloud_draft("account", "personal").is_err());
                 store
                     .lock()
-                    .execute_batch("DROP TABLE cloud_capture_request;")
+                    .execute_batch("DROP TABLE cloud_sync_job;")
                     .unwrap();
                 super::super::ensure_cloud_setup(&ready, &store)?;
                 assert!(ready.load(Ordering::Acquire));

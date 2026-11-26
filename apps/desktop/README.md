@@ -157,10 +157,8 @@ Automatic spool release requires verified integrity acceptance, not a successful
 transfer or progress count. Interrupted captures need recovery rather than
 automatic recapture.
 
-Legacy **Save capture request** commands remain discovery-only and report
-**Upload unavailable**. They do not grant ongoing upload consent or start the
-background sync policy. Local sessions and model-based Checks keep their separate
-controls.
+Old one-time capture requests do not grant upload permission. Approve folders
+to enable uploads. Local sessions and model-based Checks keep their separate controls.
 
 ## Layout
 
@@ -240,7 +238,7 @@ not running, local sessions still work and Cloud requests report offline.
 The Cloud Dev menu offers separate simulated previews without a service.
 
 These launchers use the debug app identifier and its own data directory.
-Debug settings, source selections, saved requests, and Cloud state stay separate
+Debug settings, folder consent, and Cloud state stay separate
 from the release app. Selections remain reusable within each app profile.
 
 To override the local service, set both `ANTIBURN_CLOUD_ISSUER` and

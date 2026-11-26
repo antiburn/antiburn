@@ -3,10 +3,11 @@
 //! cleanup owns capture requests or compressed retry bytes.
 
 use super::{
-    AuthStatus,
+    AccessUpdateStatus, AuthStatus,
     auth::{
-        self, Attempt, Callback, Config, Credential, EligibleWorkspace, Failure, Session,
-        TokenRequest, Transport, Vault, Workspace, WorkspaceKind,
+        self, AccessUpgrade, Attempt, Callback, Config, Credential, DeviceAction,
+        EligibleWorkspace, Failure, ReplacementCredential, Session, TokenRequest, Transport, Vault,
+        Workspace, WorkspaceKind,
     },
     loopback::Listener,
     state::{self, Cleanup, Guard, Phase, Record, StateStore},
@@ -32,6 +33,11 @@ impl RemoteLogout {
             config,
             proofs: std::iter::once(credential.refresh_token)
                 .chain(credential.cleanup_refresh_tokens)
+                .chain(
+                    credential
+                        .replacement
+                        .map(|replacement| replacement.refresh_token),
+                )
                 .collect(),
         }
     }
@@ -73,11 +79,8 @@ pub struct Engine {
     notify_remote_logout_failure: Option<Arc<dyn Fn() + Send + Sync>>,
     pub state: StateStore,
     pub attempt: Option<Attempt>,
+    pub(super) access_update: Option<AccessUpdateStatus>,
     access: Option<Access>,
-    invitation_support: Option<bool>,
-    invitation_reauth_write_failed: bool,
-    /// Display-only warning for this process. Never carries the old attempt to a new grant.
-    pub(super) invitation_result_unconfirmed: bool,
     clock: Box<dyn Fn() -> i64 + Send>,
     pub status: AuthStatus,
     pub cleanup: Cleanup,
@@ -104,10 +107,8 @@ impl Engine {
             notify_remote_logout_failure: None,
             state,
             attempt: None,
+            access_update: None,
             access: None,
-            invitation_support: None,
-            invitation_reauth_write_failed: false,
-            invitation_result_unconfirmed: false,
             clock: Box::new(super::now),
             status: AuthStatus::Idle,
             cleanup: Cleanup::None,
@@ -201,7 +202,8 @@ impl Engine {
     }
 
     /// Fetch a fresh eligible list without exposing the bearer. Missing or changed
-    /// Personal anchors fail closed. Callers must match each exact Team generation.
+    /// Personal anchors fail closed. A rejected bearer closes cached access but
+    /// keeps the saved grant. Callers must match each exact Team generation.
     pub(super) fn eligible_workspaces(
         &mut self,
         binding: &super::DestinationBinding,
@@ -220,90 +222,23 @@ impl Engine {
         {
             return Err(Failure::Cancelled);
         }
-        let result = self.transport.workspaces(config, &access.token)?;
-        if !current() || self.session().is_none() {
+        let result = self.transport.workspaces(config, &access.token);
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        if matches!(result, Err(Failure::ReauthRequired)) {
+            self.access = None;
+            self.status = AuthStatus::ReauthRequired;
+            return result;
+        }
+        let result = result?;
+        if self.session().is_none() {
             return Err(Failure::Cancelled);
         }
         if personal_anchor(&result)?.id != access.session.workspace.id {
             return Err(Failure::InvalidResponse);
         }
         Ok(result)
-    }
-
-    /// Probe once when a saved session restores without a browser sign-in.
-    pub(super) fn check_invitation_support(&mut self) {
-        if self.invitation_support.is_none() && self.session().is_some() {
-            self.invitation_support = Some(
-                self.config
-                    .as_ref()
-                    .is_some_and(|config| self.transport.supports_invitations(config)),
-            );
-        }
-    }
-
-    /// Only a live account and a positive development capability enable invitations.
-    pub(super) fn invitations_enabled(&self) -> bool {
-        self.invitation_support == Some(true) && self.session().is_some()
-    }
-
-    /// Run an invitation request with current account authority. Keep bearer
-    /// proof in Rust and reject stale renderer actions before dispatch. A 401
-    /// requires account cleanup only if the request still owns this account.
-    pub(super) fn with_invitation_access<T>(
-        &mut self,
-        account_id: &str,
-        current: impl Fn() -> bool,
-        request: impl FnOnce(&Config, &str, &dyn Fn() -> bool) -> Result<T, Failure>,
-    ) -> Result<T, Failure> {
-        if !current() || self.invitation_support != Some(true) {
-            return Err(Failure::Unavailable);
-        }
-        if let Err(error) = self.refresh((self.clock)(), &current) {
-            if current() {
-                self.status = error.into();
-            }
-            return Err(error);
-        }
-        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
-        let access = self.access.as_ref().ok_or(Failure::ReauthRequired)?;
-        if !current() || access.session.user.id != account_id {
-            return Err(Failure::Cancelled);
-        }
-        access.session.validate(config, (self.clock)())?;
-        let can_send = || current() && access.expires_at > (self.clock)();
-        let result = request(config, &access.token, &can_send);
-        if !current() {
-            return Err(Failure::Cancelled);
-        }
-        if matches!(result, Err(Failure::ReauthRequired)) {
-            self.reject_invitation_access(&current)?;
-        }
-        result
-    }
-
-    /// Close the rejected grant without discarding the proof needed for sign-out.
-    fn reject_invitation_access(&mut self, current: &dyn Fn() -> bool) -> Result<(), Failure> {
-        let state = self.state.lock().and_then(|mut guard| {
-            let record = guard.read()?;
-            Ok((guard, record))
-        });
-        if !current() {
-            return Err(Failure::Cancelled);
-        }
-        self.access = None;
-        self.status = AuthStatus::ReauthRequired;
-        self.cleanup = Cleanup::Revoke {
-            prior_unconfirmed: self.cleanup.prior_unconfirmed(),
-        };
-        // If disk is unavailable, stay closed in this process until explicit cleanup.
-        self.invitation_reauth_write_failed = state
-            .and_then(|(mut guard, mut record)| {
-                record.phase = Phase::ReauthRequired;
-                record.cleanup = self.cleanup;
-                guard.write(&record)
-            })
-            .is_err();
-        Ok(())
     }
 
     /// Send one bounded capture API request without returning access proof.
@@ -336,6 +271,7 @@ impl Engine {
         let access = self.access.as_ref().ok_or(TransportError::Unauthorized)?;
         if !current()
             || access.session.user.id != identity.account_id
+            || !access.session.allows(DeviceAction::CaptureWrite)
             || access.expires_at <= (self.clock)()
             || access.session.validate(config, (self.clock)()).is_err()
         {
@@ -395,6 +331,28 @@ impl Engine {
         state
     }
 
+    /// Restore an active saved grant when local access is missing. Return no
+    /// listener after refresh. Only open browser approval for a new connection.
+    pub(super) fn begin_account_sign_in(
+        &mut self,
+        now: i64,
+        generation: u64,
+        account_current: impl Fn() -> bool,
+    ) -> Result<Option<(String, Listener, Attempt)>, Failure> {
+        if !self.cleanup_only
+            && !self.sign_out_marker_failed
+            && self.attempt.is_none()
+            && self.session().is_none()
+        {
+            let (_, record) = self.read_state()?;
+            if record.phase == Phase::Active {
+                self.refresh(now, account_current)?;
+                return Ok(None);
+            }
+        }
+        self.begin(now, generation).map(Some)
+    }
+
     /// Bind a fresh callback before browser launch and persist its pending epoch.
     /// The caller must wait for the returned listener outside the controller lock.
     pub fn begin(
@@ -402,7 +360,7 @@ impl Engine {
         now: i64,
         generation: u64,
     ) -> Result<(String, Listener, Attempt), Failure> {
-        if self.cleanup_only || self.invitation_reauth_write_failed {
+        if self.cleanup_only {
             return Err(Failure::Unavailable);
         }
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
@@ -432,17 +390,77 @@ impl Engine {
         }
         // An explicit sign-in replaces any pending listener, including one lost on restart.
         self.attempt = None;
+        self.access_update = None;
         self.vault.write(None)?;
         let listener = Listener::bind()?;
         let record = guard.replace(Phase::Pending, record.cleanup)?;
         self.sign_out_marker_failed = false;
+        let (url, listener, attempt) =
+            Self::browser_attempt(&config, listener, now, record.epoch, generation, None)?;
+        self.access = None;
+        self.attempt = Some(attempt.clone());
+        self.status = AuthStatus::Opening;
+        Ok((url, listener, attempt))
+    }
+
+    /// Reuse browser approval without changing active credentials or folder settings.
+    /// The caller must claim the browser attempt before starting the update.
+    /// Browser cancellation cannot cancel refresh of the current account grant.
+    pub(super) fn begin_access_update(
+        &mut self,
+        now: i64,
+        generation: u64,
+        actions: &[DeviceAction],
+        account_current: impl Fn() -> bool,
+    ) -> Result<(String, Listener, Attempt), Failure> {
+        self.refresh(now, account_current)?;
+        let session = self.session().ok_or(Failure::ReauthRequired)?;
+        if self.cleanup_only || !actions.iter().any(|&action| !session.allows(action)) {
+            return Err(Failure::Unavailable);
+        }
+        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+        let mut scope = auth::scope_names(&session.scope).ok_or(Failure::InvalidResponse)?;
+        scope.extend(actions.iter().map(|action| action.name()));
+        let upgrade = AccessUpgrade {
+            grant_id: session.grant_id.clone(),
+            account_id: session.user.id.clone(),
+            requested_scope: scope.into_iter().collect::<Vec<_>>().join(" "),
+        };
+        let epoch = self
+            .access
+            .as_ref()
+            .ok_or(Failure::ReauthRequired)?
+            .epoch
+            .clone();
+        let (url, listener, attempt) = Self::browser_attempt(
+            config,
+            Listener::bind()?,
+            now,
+            epoch,
+            generation,
+            Some(upgrade),
+        )?;
+        self.attempt = Some(attempt.clone());
+        self.access_update = Some(AccessUpdateStatus::Waiting);
+        Ok((url, listener, attempt))
+    }
+
+    fn browser_attempt(
+        config: &Config,
+        listener: Listener,
+        now: i64,
+        epoch: String,
+        generation: u64,
+        upgrade: Option<AccessUpgrade>,
+    ) -> Result<(String, Listener, Attempt), Failure> {
         let attempt = Attempt {
             state: auth::random()?,
             verifier: auth::random()?,
             callback: listener.callback().to_owned(),
             expires_at: now + 600,
-            epoch: record.epoch,
+            epoch,
             generation,
+            upgrade,
         };
         let mut url = config.authorization.clone();
         let device_name = auth::device_name();
@@ -456,24 +474,25 @@ impl Engine {
             ("code_challenge_method", "S256"),
             ("device_name", device_name.as_str()),
         ]);
-        let supports_invitations = self.transport.supports_invitations(&config);
-        self.invitation_support = Some(supports_invitations);
-        if supports_invitations {
+        if let Some(upgrade) = &attempt.upgrade {
             url.query_pairs_mut()
-                .append_pair("native_invitations", "true");
+                .append_pair("scope", &upgrade.requested_scope)
+                .append_pair("account_id", &upgrade.account_id);
         }
-        self.access = None;
-        self.attempt = Some(attempt.clone());
-        self.status = AuthStatus::Opening;
         Ok((url.to_string(), listener, attempt))
     }
 
-    /// Clear only this pending attempt after the opener proves no browser handoff.
+    /// Clear only this pending attempt when no browser handoff occurred.
     /// Do not use this for an uncertain launch or a lost callback.
     pub fn abort_browser_launch(&mut self, attempt: &Attempt) -> Result<(), Failure> {
         if self.attempt.as_ref().is_none_or(|pending| {
             pending.epoch != attempt.epoch || pending.generation != attempt.generation
         }) {
+            return Ok(());
+        }
+        if attempt.upgrade.is_some() {
+            self.attempt = None;
+            self.access_update = None;
             return Ok(());
         }
         let (mut guard, record) = self.read_state()?;
@@ -498,6 +517,12 @@ impl Engine {
             return Ok(());
         }
         if let Some(attempt) = self.attempt.take() {
+            if attempt.upgrade.is_some() {
+                // The browser can create a grant before Desktop receives the callback.
+                self.mark_remote_logout_unconfirmed();
+                self.access_update = None;
+                return Ok(());
+            }
             let (mut guard, record) = self.read_state()?;
             if record.epoch == attempt.epoch && record.phase == Phase::Pending {
                 return self.abandon_pending(&mut guard);
@@ -535,6 +560,9 @@ impl Engine {
         started_at: i64,
         current: impl Fn() -> bool,
     ) -> Result<(), Failure> {
+        if let Some(upgrade) = &attempt.upgrade {
+            return self.complete_access_update(attempt, upgrade, callback, started_at, current);
+        }
         let (mut guard, mut record) = self.read_state()?;
         if !current()
             || started_at >= attempt.expires_at
@@ -569,6 +597,232 @@ impl Engine {
         self.accept(&mut guard, record, tokens, None, started_at, current)
     }
 
+    /// Exchange into a separate candidate. The old proof stays active until the
+    /// candidate has passed remote checks, a secure write, and an epoch commit.
+    fn complete_access_update(
+        &mut self,
+        attempt: &Attempt,
+        upgrade: &AccessUpgrade,
+        callback: Callback,
+        started_at: i64,
+        current: impl Fn() -> bool,
+    ) -> Result<(), Failure> {
+        if !current()
+            || self.attempt.as_ref().is_none_or(|pending| {
+                pending.epoch != attempt.epoch || pending.generation != attempt.generation
+            })
+        {
+            return Err(Failure::Cancelled);
+        }
+        let preflight = self.read_state().and_then(|(guard, record)| {
+            if started_at >= attempt.expires_at
+                || record.phase != Phase::Active
+                || record.epoch != attempt.epoch
+            {
+                return Err(Failure::Cancelled);
+            }
+            Ok((guard, record))
+        });
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        // The listener delivered its only callback after browser launch. Leave
+        // no pending attempt on failure so the user can start another update.
+        self.attempt = None;
+        let (mut guard, record) = preflight.inspect_err(|_| {
+            if matches!(callback, Callback::Code(_)) {
+                self.mark_remote_logout_unconfirmed();
+            }
+        })?;
+        let Callback::Code(code) = callback else {
+            self.access_update = Some(AccessUpdateStatus::Denied);
+            return Ok(());
+        };
+        // Until Desktop has a distinct proof to revoke, a verified callback
+        // can fail locally without proving that Cloud did not create a grant.
+        let (config, mut saved, prior_workspace, tokens) = (|| {
+            let config = self.config.clone().ok_or(Failure::Unavailable)?;
+            let saved = self
+                .vault
+                .read()?
+                .and_then(|credential| credential.for_epoch(&record.epoch))
+                .filter(|credential| {
+                    self.owns_credential(Some(credential)) && credential.account_grant
+                })
+                .ok_or(Failure::CredentialFailed)?;
+            let prior = saved
+                .session
+                .as_ref()
+                .filter(|session| {
+                    session.grant_id == upgrade.grant_id && session.user.id == upgrade.account_id
+                })
+                .ok_or(Failure::Cancelled)?;
+            let prior_workspace = prior.workspace.id.clone();
+            if !current() {
+                return Err(Failure::Cancelled);
+            }
+            let tokens = self.transport.exchange(
+                &config,
+                &TokenRequest::AuthorizationCode {
+                    code: &code,
+                    code_verifier: &attempt.verifier,
+                },
+            )?;
+            // A bad response must not make the old grant a cleanup target.
+            if tokens.grant_id == upgrade.grant_id || tokens.refresh_token == saved.refresh_token {
+                return Err(Failure::InvalidResponse);
+            }
+            Ok((config, saved, prior_workspace, tokens))
+        })()
+        .inspect_err(|_| self.mark_remote_logout_unconfirmed())?;
+        let result = (|| {
+            let (session, expires_at) =
+                self.verify_tokens(&config, &tokens, started_at, &current)?;
+            if session.user.id != upgrade.account_id
+                || session.workspace.id != prior_workspace
+                || auth::scope_names(&session.scope) != auth::scope_names(&upgrade.requested_scope)
+            {
+                return Err(Failure::InvalidResponse);
+            }
+            let replacement = Record {
+                epoch: auth::random()?,
+                phase: Phase::Active,
+                // Persist uncertainty before trying to revoke the old grant.
+                cleanup: Cleanup::RemoteUnconfirmed,
+            };
+            saved.replacement = Some(ReplacementCredential {
+                epoch: replacement.epoch.clone(),
+                refresh_token: tokens.refresh_token.clone(),
+                session: session.clone(),
+            });
+            if !current() || expires_at <= (self.clock)() {
+                return Err(Failure::Cancelled);
+            }
+            // Even if this write reports an error after changing the entry,
+            // restart still resolves the unchanged active epoch to the old proof.
+            self.vault.write(Some(&saved))?;
+            let verified = self
+                .vault
+                .read()?
+                .filter(|credential| {
+                    self.owns_credential(Some(credential))
+                        && credential.account_grant
+                        && credential.epoch == saved.epoch
+                        && credential.refresh_token == saved.refresh_token
+                })
+                .and_then(|credential| credential.replacement)
+                .is_some_and(|candidate| {
+                    candidate.epoch == replacement.epoch
+                        && candidate.refresh_token == tokens.refresh_token
+                        && candidate.session.same_grant(&session)
+                });
+            if !verified {
+                return Err(Failure::CredentialFailed);
+            }
+            if !current() || expires_at <= (self.clock)() {
+                return Err(Failure::Cancelled);
+            }
+            Ok((session, expires_at, replacement))
+        })();
+        let (session, expires_at, mut replacement) = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.revoke_access_update_grant(&config, &tokens.refresh_token);
+                return Err(error);
+            }
+        };
+        let committed = guard.write(&replacement);
+        if committed.is_err() || !current() || expires_at <= (self.clock)() {
+            // A rename can succeed before a directory sync fails. If rollback
+            // also fails, keep both proofs and let refresh resolve the epoch.
+            if let Err(error) = guard.write(&record) {
+                self.access = None;
+                self.mark_remote_logout_unconfirmed();
+                return Err(error);
+            }
+            self.revoke_access_update_grant(&config, &tokens.refresh_token);
+            committed?;
+            return Err(Failure::Cancelled);
+        }
+        if self.revoke_access_update_grant(&config, &saved.refresh_token)
+            && current()
+            && record.cleanup != replacement.cleanup
+        {
+            // Restore only the previous marker cleanup under the same lock.
+            // Detached workers record their warnings separately.
+            replacement.cleanup = record.cleanup;
+            if guard.write(&replacement).is_err() {
+                replacement.cleanup = Cleanup::RemoteUnconfirmed;
+                self.mark_remote_logout_unconfirmed();
+            }
+        }
+        self.access = Some(Access {
+            token: tokens.access_token,
+            expires_at,
+            epoch: replacement.epoch,
+            session,
+        });
+        self.status = AuthStatus::SignedIn;
+        self.cleanup = replacement.cleanup;
+        self.access_update = None;
+        Ok(())
+    }
+
+    /// Do not use the detached slot here. Explicit sign-out may need that slot
+    /// for the active grant as soon as the access update returns.
+    fn revoke_access_update_grant(&self, config: &Config, proof: &str) -> bool {
+        if self.transport.revoke(config, proof).is_err() {
+            self.mark_remote_logout_unconfirmed();
+            return false;
+        }
+        true
+    }
+
+    fn mark_remote_logout_unconfirmed(&self) {
+        Self::record_remote_logout_failure(
+            &self.state.remote_logout_warning_path(),
+            &self.remote_logout_failed,
+        );
+    }
+
+    /// Verify token authority with independent grant and Personal destination reads.
+    fn verify_tokens(
+        &self,
+        config: &Config,
+        tokens: &auth::Tokens,
+        started_at: i64,
+        current: &impl Fn() -> bool,
+    ) -> Result<(Session, i64), Failure> {
+        tokens
+            .validate(config, started_at)
+            .and_then(|()| {
+                if started_at.saturating_add(tokens.expires_in as i64) <= (self.clock)() {
+                    return Err(Failure::InvalidResponse);
+                }
+                self.transport.session(config, &tokens.access_token)
+            })
+            .and_then(|account| {
+                if !tokens.matches_session(&account) {
+                    return Err(Failure::InvalidResponse);
+                }
+                if !current() {
+                    return Err(Failure::Cancelled);
+                }
+                let eligible = self.transport.workspaces(config, &tokens.access_token)?;
+                let session = account.with_personal(personal_anchor(&eligible)?.clone())?;
+                let checked_at = started_at.max((self.clock)());
+                session.validate(config, checked_at)?;
+                let expires_at = started_at
+                    .saturating_add(tokens.expires_in as i64)
+                    .min(session.expires_at)
+                    .min(session.access_expires_at);
+                if expires_at <= checked_at {
+                    return Err(Failure::InvalidResponse);
+                }
+                Ok((session, expires_at))
+            })
+    }
+
     /// Accept only matching fixed grant authority. Fence every vault/state write;
     /// rejected or late tokens must take the logout-only cleanup path.
     fn accept(
@@ -581,32 +835,9 @@ impl Engine {
         current: impl Fn() -> bool,
     ) -> Result<(), Failure> {
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
-        let session = tokens
-            .validate(&config, started_at)
-            .and_then(|()| {
-                if started_at.saturating_add(tokens.expires_in as i64) <= (self.clock)() {
-                    return Err(Failure::InvalidResponse);
-                }
-                self.transport.session(&config, &tokens.access_token)
-            })
-            .and_then(|account| {
-                if !tokens.matches_session(&account) {
-                    return Err(Failure::InvalidResponse);
-                }
-                if !current() {
-                    return Err(Failure::Cancelled);
-                }
-                let eligible = self.transport.workspaces(&config, &tokens.access_token)?;
-                let session = account.with_personal(personal_anchor(&eligible)?.clone())?;
-                let checked_at = started_at.max((self.clock)());
-                session.validate(&config, checked_at)?;
-                let expires_at = started_at
-                    .saturating_add(tokens.expires_in as i64)
-                    .min(session.expires_at)
-                    .min(session.access_expires_at);
-                if expires_at <= checked_at {
-                    return Err(Failure::InvalidResponse);
-                }
+        let session = self
+            .verify_tokens(&config, &tokens, started_at, &current)
+            .and_then(|(session, expires_at)| {
                 if previous.is_some_and(|previous| {
                     previous
                         .session
@@ -614,9 +845,10 @@ impl Engine {
                         .is_none_or(|saved| !saved.same_grant(&session))
                         || previous.refresh_token == tokens.refresh_token
                 }) {
-                    return Err(Failure::InvalidResponse);
+                    Err(Failure::InvalidResponse)
+                } else {
+                    Ok((session, expires_at))
                 }
-                Ok((session, expires_at))
             });
         if !current() || session.is_err() {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
@@ -635,6 +867,7 @@ impl Engine {
             cleanup_refresh_tokens: Vec::new(),
             account_grant: true,
             session: Some(session.clone()),
+            replacement: None,
         };
         if self.vault.write(Some(&credential)).is_err() {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
@@ -700,6 +933,7 @@ impl Engine {
             },
             account_grant: false,
             session: None,
+            replacement: None,
         };
         let stored = self.vault.write(Some(&cleanup));
         if stored.is_err() {
@@ -792,9 +1026,6 @@ impl Engine {
     /// Restore or rotate one fixed grant inside the worker. Persist uncertainty
     /// before exchange; never retry a predecessor after an uncertain response.
     pub fn refresh(&mut self, started_at: i64, current: impl Fn() -> bool) -> Result<(), Failure> {
-        if self.invitation_reauth_write_failed {
-            return Err(Failure::ReauthRequired);
-        }
         let Some(config) = self.config.clone() else {
             return Ok(());
         };
@@ -861,7 +1092,11 @@ impl Engine {
         };
         guard.write(&record)?;
         self.cleanup = record.cleanup;
-        let credential = self.vault.read()?.ok_or(Failure::ReauthRequired)?;
+        let credential = self
+            .vault
+            .read()?
+            .and_then(|credential| credential.for_epoch(&record.epoch))
+            .ok_or(Failure::ReauthRequired)?;
         if self.cleanup_only
             || !credential.account_grant
             || credential.epoch != record.epoch
@@ -916,7 +1151,14 @@ impl Engine {
     /// A durable closed marker permits retrying a failed keyring deletion.
     pub(super) fn sign_out(&mut self) -> Result<Option<RemoteLogout>, Failure> {
         self.access = None;
-        self.attempt = None;
+        if self
+            .attempt
+            .take()
+            .is_some_and(|attempt| attempt.upgrade.is_some())
+        {
+            self.mark_remote_logout_unconfirmed();
+        }
+        self.access_update = None;
         self.sign_out_marker_failed = true;
         self.status = AuthStatus::CredentialFailed;
         let mut guard = self.state.lock()?;
@@ -939,13 +1181,11 @@ impl Engine {
                     return Err(error);
                 }
                 self.vault.write(None)?;
-                self.invitation_reauth_write_failed = false;
                 self.status = AuthStatus::SignedOut;
                 self.cleanup = Cleanup::RemoteUnconfirmed;
                 return Ok(self.logout_proof(&previous, saved));
             }
         };
-        self.invitation_reauth_write_failed = false;
         self.sign_out_marker_failed = false;
         self.status = AuthStatus::SignedOut;
         self.cleanup = record.cleanup;
@@ -1012,7 +1252,6 @@ impl Engine {
             return Err(Failure::Unavailable);
         }
         guard.replace(Phase::SignedOut, Cleanup::RemoteUnconfirmed)?;
-        self.invitation_reauth_write_failed = false;
         self.access = None;
         self.attempt = None;
         self.cleanup = Cleanup::RemoteUnconfirmed;

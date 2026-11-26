@@ -1615,8 +1615,6 @@ it("saves the first folders before manually syncing their current policy", async
   await waitFor(() => expect(footerStatus()).toHaveTextContent("Folder sync enabled"))
   expect(footer.getByRole("button", { name: "Sync now" })).toBe(start)
   expect(footerStatus()).not.toHaveTextContent("0 accepted")
-  expect(port.prepareSync).not.toHaveBeenCalled()
-  expect(port.start).not.toHaveBeenCalled()
   act(() =>
     emitSync(
       ongoingStatus({
@@ -1849,7 +1847,6 @@ it.each([
       nextCursor: null,
       partial: true,
     })
-    port.pick = vi.fn(async () => [sourcePath])
     const session = new CloudSession(port, false, true)
     render(<Account session={session} />)
     expect(await screen.findByText("No sessions ready to upload")).toBeVisible()
@@ -1862,7 +1859,6 @@ it.each([
     expect(
       screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
     ).not.toBeInTheDocument()
-    expect(port.pick).not.toHaveBeenCalled()
     expect(ongoing.enable).not.toHaveBeenCalled()
     await act(() => session.startSync(beforeAccess))
     expect(ongoing.enable).not.toHaveBeenCalled()

@@ -689,7 +689,7 @@ to System and the corresponding explicit theme.
 ## Desktop design principles
 
 - Show the normal task first. Hide optional sections with no confirmed items.
-  In Settings, show confirmed invitations instead of a prompt to check for them.
+  In Settings, let signed-in users refresh eligible workspaces.
 - Keep routine status short and tie it to current evidence. Put notices beside
   the task they affect. Show an alert only when the user needs to know about an
   action failure or a current problem. Do not put expired or superseded
@@ -2169,9 +2169,10 @@ subtitle states full-session scope. The account and destination share a compact
 chip; the selected group count sits above the list. Back, underlined Continue
 locally, and Start syncing are the folder footer's only content.
 Normal Settings shows the account, folder choices, and a short sync status.
-Show workspace names when they distinguish
-active destinations, not as a separate Personal status section. Show Join only
-for confirmed workspace invitations. Do not show old remote sign-out warnings.
+Show workspace names when they distinguish active destinations, not as a
+separate Personal status section. After sign-in, onboarding offers browser
+workspace setup and waits for Continue. Check current destinations before
+showing folder choices. Do not show old remote sign-out warnings.
 The folder footer has one primary action: **Start syncing** for the first
 approval and **Sync now** after approval. A failure can change the action in
 place to **Try again**, **Review folders**, or **Check Cloud**. Do not add a

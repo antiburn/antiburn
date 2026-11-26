@@ -62,6 +62,22 @@ it("settles pending tool setup from events without account or folder refreshes",
   expect(screen.getByRole("button", { name: "Done" })).toBeEnabled()
 })
 
+it("points a missing CLI to Repair and allows onboarding to finish", async () => {
+  const { port, emit, emitLocalTools } = cloudProjectFixture()
+  const complete = vi.fn()
+  emit({ syncEnabled: true })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={complete} />,
+  )
+  await waitFor(() => expect(port.localTools.read).toHaveBeenCalledOnce())
+  act(() => emitLocalTools({ ...localToolsStatus("failed", 1), reason: "cli_unavailable" }))
+  expect(
+    await screen.findByText("CLI unavailable. Try Repair in Settings → CLI."),
+  ).toBeVisible()
+  await act(async () => screen.getByRole("button", { name: "Done" }).click())
+  expect(complete).toHaveBeenCalledOnce()
+})
+
 it("does not restore ready from a lower-revision query after a failed tool event", async () => {
   const { port, emit, emitLocalTools } = cloudProjectFixture()
   emit({ syncEnabled: true })

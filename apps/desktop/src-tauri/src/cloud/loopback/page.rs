@@ -14,7 +14,8 @@ static STYLE_SOURCE: LazyLock<String> =
     LazyLock::new(|| STANDARD.encode(Sha256::digest(STYLE.replace("\r\n", "\n"))));
 
 /// Report the browser result only. The app still has to exchange a valid code.
-pub(super) fn response(callback: Option<&Callback>) -> String {
+/// Only pass the configured setup URL for initial sign-in, never an access update.
+pub(super) fn response(callback: Option<&Callback>, setup: Option<&url::Url>) -> String {
     let (status, title, detail, next) = match callback {
         Some(Callback::Code(_)) => (
             "200 OK",
@@ -35,13 +36,28 @@ pub(super) fn response(callback: Option<&Callback>) -> String {
             "Return to Antiburn and start sign-in again.",
         ),
     };
+    let next = match (callback, setup) {
+        (Some(Callback::Code(_)), Some(setup)) => {
+            let href = setup
+                .as_str()
+                .replace('&', "&amp;")
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!(
+                r#"<p>Verify your work email to check for a workspace invite before you return to Antiburn.</p>
+        <p class="next"><a href="{href}" rel="noreferrer">Continue setup in browser</a></p>"#
+            )
+        }
+        _ => format!(r#"<p class="next">{next}</p>"#),
+    };
     let body = format!(
         r#"<!doctype html>
         <html lang="en"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{title} | Antiburn</title><style>{STYLE}</style></head>
         <body><main><header><span aria-hidden="true">{BRAND_MARK}</span>Antiburn Cloud</header>
-        <h1>{title}</h1><p>{detail}</p><p class="next">{next}</p>
+        <h1>{title}</h1><p>{detail}</p>{next}
         </main></body></html>"#
     );
     format!(
@@ -66,7 +82,7 @@ mod tests {
             (Some(&Callback::Cancelled), "200 OK", "Device access denied"),
             (None, "400 Bad Request", "Could not finish sign-in"),
         ] {
-            let reply = response(input);
+            let reply = response(input, None);
             let (headers, body) = reply.split_once("\r\n\r\n").unwrap();
             assert!(headers.starts_with(&format!("HTTP/1.1 {status}\r\n")));
             assert!(headers.contains("\r\nContent-Type: text/html; charset=utf-8\r\n"));
@@ -84,6 +100,24 @@ mod tests {
             for tag in ["<script", "<link", "<img", "<form", "<a "] {
                 assert!(!body.contains(tag), "{tag}");
             }
+        }
+    }
+
+    #[test]
+    fn setup_link_only_follows_a_valid_code_and_does_not_echo_proof() {
+        let setup = url::Url::parse("https://api.example/v1/devices/setup").unwrap();
+        let code = Callback::Code("synthetic-callback-code".into());
+        let reply = response(Some(&code), Some(&setup));
+        assert!(reply.contains("\r\nReferrer-Policy: no-referrer\r\n"));
+        assert!(reply.contains(
+            r#"<a href="https://api.example/v1/devices/setup" rel="noreferrer">Continue setup in browser</a>"#
+        ));
+        assert!(!reply.contains("synthetic-callback-code"));
+        assert!(!reply.contains("Return to Antiburn to finish signing in."));
+        for callback in [Some(&Callback::Cancelled), None] {
+            let reply = response(callback, Some(&setup));
+            assert!(!reply.contains("<a "));
+            assert!(!reply.contains(setup.as_str()));
         }
     }
 }

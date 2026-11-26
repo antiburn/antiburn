@@ -1559,25 +1559,40 @@ fn cloud_device_upload_preference_survives_restart_without_changing_bound_work()
 }
 
 #[test]
-fn cloud_device_upload_upgrade_keeps_an_old_workspace_pause_closed() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open_in_memory(directory.path()).unwrap();
-    store.initialize_cloud_setup().unwrap();
-    let saved = store.set_cloud_sync_paused(&policy(&store), true).unwrap();
-    store
-        .lock()
-        .execute("DELETE FROM cloud_device_upload", [])
-        .unwrap();
-
-    store.initialize_cloud_setup().unwrap();
-    assert!(!store.cloud_device_upload_enabled().unwrap());
-    store.set_cloud_device_upload_enabled(true).unwrap();
-    assert_eq!(
+fn cloud_device_upload_upgrade_preserves_the_saved_workspace_pause() {
+    for paused in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        let saved = store
+            .set_cloud_sync_paused(&policy(&store), paused)
+            .unwrap();
         store
-            .cloud_sync_policy("account", "personal", ORIGIN)
-            .unwrap(),
-        Some(saved)
-    );
+            .lock()
+            .execute("DROP TABLE cloud_device_upload", [])
+            .unwrap();
+
+        store.initialize_cloud_setup().unwrap();
+        let enabled: bool = store
+            .lock()
+            .query_row(
+                "SELECT enabled FROM cloud_device_upload WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled, !paused);
+        assert_eq!(store.cloud_device_upload_enabled().unwrap(), enabled);
+        store.set_cloud_device_upload_enabled(!enabled).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        assert_eq!(store.cloud_device_upload_enabled().unwrap(), !enabled);
+        assert_eq!(
+            store
+                .cloud_sync_policy("account", "personal", ORIGIN)
+                .unwrap(),
+            Some(saved)
+        );
+    }
 }
 
 #[test]

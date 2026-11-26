@@ -259,6 +259,7 @@ pub(super) fn discover_page(
 
 /// Follow Cursor continuations within setup limits. Keep candidates when the
 /// listing is incomplete, but never use a partial listing as absence evidence.
+#[cfg(all(test, unix))]
 pub(super) fn discover_cursor_sources(
     kind: SourceKind,
     root: &Path,

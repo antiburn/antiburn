@@ -65,7 +65,7 @@ impl Fixture {
         let cli = antiburn_cli_runtime::Installation {
             root: self.installation.data.join("cli"),
             terminal: self.installation.data.join("cli/terminal/antiburn-cli"),
-            payload,
+            payload: Some(payload),
             target: manifest.target,
         };
         cli.reconcile().unwrap();

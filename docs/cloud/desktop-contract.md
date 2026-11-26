@@ -26,8 +26,7 @@ On supported Unix platforms, Desktop can capture and upload supported native
 sessions after you enable upload for a folder. Enabling a folder is the upload
 decision. There is no second content prompt. Workspace sign-in and browser
 approval are separate and do not enable folders. A desktop scheduler runs
-independently of onboarding or Settings. Discovery and legacy saved requests
-do not start it.
+independently of onboarding or Settings. Discovery does not start it.
 
 Local analysis needs no Cloud account or content consent. Model-based Burn Checks
 use their own configured connection and **Run checks** setting. They can send
@@ -42,7 +41,7 @@ environment variable nor the `distribution` feature enables it. The standard
 desktop debug launcher selects it explicitly. Production build commands do not.
 
 The standard debug launchers use a separate app identifier and data directory.
-Settings, source selections, saved requests, auth state, and retry files remain
+Settings, folder consent, auth state, and retry files remain
 separate from the release app. Source selections can be reused within one profile;
 this does not move credentials between service origins.
 
@@ -68,6 +67,15 @@ Standard release builds keep Cloud disabled. Manually enabling `cloud` without
 debug assertions defaults both origins to `https://api.antiburn.com` when
 neither variable is set. Set both variables to override that default with
 canonical HTTPS origins. The resource origin owns the device API routes.
+
+For the **Open Cloud dashboard** shortcut in Settings, set the build-time
+`ANTIBURN_CLOUD_DASHBOARD` to the dashboard's canonical origin without a
+trailing slash. It must use HTTPS, or loopback HTTP in a build with debug
+assertions.
+**Open Cloud dashboard** opens the root of this origin in the system browser.
+An invalid or missing dashboard origin hides this shortcut. It does not
+change device approval or **Finish setup in browser**. Desktop opens setup
+through the configured resource origin.
 
 The explicit feature command also works for a debug build:
 
@@ -105,36 +113,59 @@ workspace. Reset permits a new connection without waiting for remote
 revocation. An unresolved team approval does not block Personal sign-in. An
 explicit browser denial does not need a reset.
 
-The browser must name the workspace, permitted action, and device before the user
+The browser must show the account, permitted actions, and device before the user
 approves the connection. The approved scope covers the first-party device
 connection only. It does not grant general API-client or third-party authorization.
 Token responses bind opaque credentials to an account grant, user,
 fixed grant deadline, scope, resource, and issuer. The session
 response supplies those same bindings, a nullable display name,
 the device label, and the access deadline. Deadlines use RFC 3339 strings.
-Desktop accepts only these exact scope strings:
+Desktop checks each action in the space-delimited `scope` field:
 
-- New approvals use `capture:write sessions:list sessions:read`. This scope
-  permits capture and authorizes search and reads for sessions the signed-in
-  user can access. The service still checks the user's current access. Desktop
-  capture uses only the capture permission.
-- `capture:write` permits capture only. Older account grants keep this scope
-  when refreshed.
+- `capture:write` permits session uploads to workspaces that allow uploads.
+- `sessions:list` permits session search and metadata lists.
+- `sessions:read` permits reading complete session documents.
+
+The service still checks current workspace access. Unknown action names do
+not enable or disable any known action. Desktop checks that the action set,
+including any unknown actions, stays the same across refresh.
 
 Desktop requires the token and session bindings to match before it saves a
 refresh credential. A changed grant, account, scope, or fixed deadline
-cannot restore the saved connection. To receive the broader scope on an older
-connection, sign in again instead of refreshing the old grant.
+cannot restore the saved connection. To add missing actions, choose
+**Update device access**. Desktop asks the same account to approve its current
+actions and the missing actions in the browser. An access update cannot overlap
+another browser approval. Once the approval expires, a new attempt can start.
+You can still cancel an access update if Desktop loses the current session.
+Desktop keeps the current grant until it verifies and securely saves the
+replacement. It records unconfirmed
+revocation with the replacement epoch, then tries to revoke the old grant
+before returning from the callback. That request can take up to 15 seconds.
+It leaves the detached logout slot free for sign-out. Both proofs share one
+keyring entry until Desktop replaces or deletes the entry, for example during
+credential rotation or sign-out. Desktop does not queue a revocation retry.
+After a confirmed revoke, Desktop restores the previous cleanup state for the
+same epoch without clearing earlier warnings. If that write fails, Desktop
+keeps revocation uncertainty.
+If Desktop cannot confirm rollback to the old epoch, it leaves both proofs
+in place. A later refresh selects the proof that matches the active epoch.
+
+Denial or cancellation does not revoke the old grant. If Desktop abandons
+an update after the browser may have opened, it records revocation uncertainty
+without blocking the current grant. This also applies if a verified callback
+fails before Desktop has proof it can use to revoke the replacement. Explicit
+denial and confirmed launch failure do not add uncertainty. The update does not
+change folder settings.
 
 Device authentication requests use the configured API origin:
 
-| Request                          | Proof                                                                                                        |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
-| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
-| `GET /v1/devices/session`        | Access bearer                                                                                                |
-| `GET /v1/captures/destinations`  | Access bearer                                                                                                |
-| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                       |
+| Request | Proof |
+| --- | --- |
+| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name`. For an access update, also send the requested `scope` and current `account_id`. |
+| `POST /v1/devices/token` | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
+| `GET /v1/devices/grants/current` | Access bearer |
+| `GET /v1/captures/destinations` | Access bearer |
+| `POST /v1/devices/grants/current/revoke` | JSON `{refresh_token}` |
 
 Desktop uses the short OS hostname as `device_name`. It omits the domain suffix
 and falls back to `Antiburn Desktop` if the name is unavailable or unsuitable.
@@ -154,8 +185,13 @@ for each folder. With only Personal available, Desktop shows a folder switch.
 If workspace discovery is temporarily unavailable, Desktop retries while the
 folder pane is open. In Settings, choose **Check again** if Desktop could not
 read the account or verify its Personal workspace. This does not enable upload.
-A workspace list response of `401` asks the user to sign in again. A `403` tells
-the user that access is denied. Neither response starts folder discovery or
+Desktop checks for current destinations when the user selects **Continue**
+after sign-in. A signed-in user can also select **Refresh workspaces** in
+**Settings > Sessions**. Both actions use the same workspace list request.
+They do not issue a grant or change consent.
+A workspace list response of `401` clears cached access and asks the user to
+sign in again. It does not revoke the saved grant. A `403` tells the user that
+workspace access is denied without changing the connection. Neither response
 grants upload permission.
 
 One account approval covers Personal and current or future Teams where the
@@ -166,32 +202,58 @@ back to Personal. An old workspace grant does not become an account grant.
 Sign in again to use the account flow. Old refresh proof can only sign out the
 grant it belongs to.
 
+### Browser workspace setup
+
+After the loopback listener validates an initial approval callback, the
+browser can select **Continue setup in browser**. Desktop exchanges the
+approval code without waiting for this action. If the browser page is closed,
+**Finish setup in browser** opens the same route after sign-in. The action is
+available in onboarding and in **Settings > Sessions**.
+
+Both actions open `GET /v1/devices/setup` on the configured resource origin.
+The service redirects the browser to `/desktop/setup` on its dashboard. The
+loopback page does not send its URL as the referrer. Neither action sends
+device proof, an email address, an invite token, or a redirect parameter.
+
+The dashboard verifies the work email and offers a matching workspace invite.
+Device approval does not wait for email verification or workspace admission.
+Desktop does not accept a browser assertion about membership. After the user
+returns and selects **Continue**, Desktop checks the current destinations with
+its existing device grant before it shows folder choices. This flow does not
+approve folders or turn on sync.
+
 ## Credential and logout safety
 
 ### Read sessions from the CLI
 
 On macOS and Linux, a Cloud-enabled CLI can reuse an active, read-capable
 device connection from a running Antiburn Desktop app. The app owns sign-in
-and refresh. It gives the CLI short-lived access proof over a private local
-socket that checks the OS user. It does not write the access proof to a file or
-give the CLI the refresh credential. This does not isolate processes that run
-as the same OS user.
+and refresh. Desktop requests a read-only token with `POST
+/v1/devices/grants/current/read-token`. It sends the current device bearer and
+no body, cookies, or `Origin` header. The response is `{access_token}`.
+The read token cannot upload or claim membership. It expires with the original
+access token, within 15 minutes, and has no refresh token.
+
+Desktop gives the CLI only the read token over a private local socket that
+checks the OS user. If Desktop cannot get a read token, it does not pass the
+device bearer instead. Desktop does not store the read token or give the CLI a
+refresh credential. The socket does not isolate processes that run as the
+same OS user.
 
 The CLI starts with the Personal workspace. It can request another workspace
 by ID. The service checks current workspace and session permissions on every
 search and document read. It uses the workspace session API, not a device-only
 or CLI-only endpoint. A connection approved only for upload cannot serve
-CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
-where the service offers them.
+CLI reads. In Antiburn Desktop, choose **Update device access** to approve
+session reads without signing out.
 
-| Request                                                                                        | Device scope    | Page fields the CLI uses                                                          |
-| ---------------------------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------- |
-| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]`                         | `sessions:list` | `items`, `page.next_cursor`                                                       |
-| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
+| Request | Device action | Result |
+| --- | --- | --- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | A page of session metadata. |
+| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` | `sessions:read` | One versioned projected session document. |
 
-Send the access token as `Authorization: Bearer <token>`. A cursor continues
-the same document revision; it does not grant access. The service checks
-permission again when the CLI reads the next page.
+Send the access token as `Authorization: Bearer <token>`. The service checks
+current permission again when the CLI reads another metadata page.
 
 ### Device credentials
 
@@ -203,8 +265,9 @@ one-year deadline. Refresh does not extend that deadline.
 A single Cloud blocking-work permit admits synchronous keyring, SQLite, source,
 state-file, and short HTTP operations before they enter Tokio's blocking pool.
 Ordinary requests fail clearly as busy without starting work. Cleanup waits
-asynchronously for the permit. Sign-out, reset, and browser cancellation invalidate
-their account or browser generation before waiting. A busy connection attempt
+asynchronously for the permit. Sign-out and browser cancellation invalidate
+their account or browser generation before waiting. A local reset invalidates
+late work only after it succeeds. A busy connection attempt
 does not invalidate the pending browser attempt. An admitted connection attempt
 cannot replace a newer cancellation while it waits for a blocking worker.
 An awaiting caller cannot release a permit still owned by running work.
@@ -215,7 +278,8 @@ credential cleanup.
 Loopback accept, read, write, cancellation polling, and expiry use Tokio async I/O
 outside the controller mutex and blocking-work permit. The existing HTTP transport
 remains synchronous with a 15-second timeout per request. Normal requests use
-admitted blocking work. Best-effort logout uses a separate blocking worker.
+admitted blocking work, including access update revocation. Best-effort logout
+for sign-out and older Team slots uses a separate blocking worker.
 
 A process-wide mutex serializes credential operations. One lifetime OS lock owns
 the vault namespace. A second process cannot write credentials until that owner
@@ -464,8 +528,7 @@ saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
 Settings → Sessions shows the account, verified workspace count, device upload
-switch, folder choices, and a short sync status. The invitation section appears
-only when Desktop has a confirmed invitation or a join action is in progress.
+switch, folder choices, and a short sync status.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
 uploads run or the policy is paused.
@@ -674,8 +737,8 @@ Expired incomplete parts can require transfer again from the same local bytes.
 This never grants permission to read source again, change the capture, or
 overwrite a newer publication. Deletion and cancellation remain final.
 
-Capture API requests use `/v1/captures` on the configured resource origin
-and use credentials held by Desktop.
+Desktop sends capture API requests to the configured resource origin with its
+own credentials. See the [capture routes](capture.md#desktop-http-routes).
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.
 Upload locations never enter saved state, renderer status, or diagnostics.
@@ -748,20 +811,12 @@ setup while preserving ownership checks. Read-only status calls do not install
 or repair tools. See the [CLI contract](../cli-installation.md#debug-cli-and-skill)
 for profile and platform limits.
 
-### Legacy saved source requests
+### Retired saved source requests
 
-`cloud_prepare_sync`, `cloud_start_sync`, and `cloud_reconcile_sync` retain the
-discovery-only saved-request contract. They do not create an ongoing policy or
-start desktop capture/upload. **Save capture request** on that compatibility path
-still reports **Upload unavailable**. Older `native-full-content-v1` and
-`native-full-content-v2` confirmations cannot become `desktop-project-sync-v1`
-consent.
-
-Legacy Claude and typed-provider requests retain their serialized consent,
-source scopes, capture IDs, and locators. Reading or reconciling a completed or
-cancelled selection does not rediscover it or convert its records. Unknown saved
-provider kinds fail without rewriting data. Cancellation does not remove
-unrelated captures or remote content.
+Desktop no longer opens or runs one-time source requests. SQLite upgrades keep
+the old request rows and source scopes unchanged. Desktop does not convert
+their consent into folder sync permission. Approve folders in the current
+workspace to enable uploads.
 
 ## Validation
 

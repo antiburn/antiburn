@@ -140,7 +140,8 @@ impl Default for Receipt {
 pub struct Installation {
     pub root: PathBuf,
     pub terminal: PathBuf,
-    pub payload: PathBuf,
+    /// Set only for installation or repair. Runtime reads do not use the payload.
+    pub payload: Option<PathBuf>,
     pub target: String,
 }
 
@@ -535,7 +536,10 @@ impl Installation {
     fn matches(&self, path: &Path, m: &Manifest) -> bool {
         #[cfg(unix)]
         {
-            fs::read_link(path).is_ok_and(|p| p == self.immutable(m))
+            use std::os::unix::fs::MetadataExt;
+            fs::symlink_metadata(path).is_ok_and(|metadata| {
+                metadata.is_symlink() && metadata.uid() == unsafe { libc::geteuid() }
+            }) && fs::read_link(path).is_ok_and(|p| p == self.immutable(m))
         }
         #[cfg(windows)]
         {
@@ -555,8 +559,9 @@ impl Installation {
             path.parent().context("CLI destination has no parent")?,
             true,
         )?;
+        let destination_exists = present(path)?;
         ensure!(
-            !present(path)? || self.owned_entry(path, r),
+            !destination_exists || self.owned_entry(path, r),
             "CLI destination collides with an unrelated or modified command; move it yourself before Repair"
         );
         if self.matches(path, m) {
@@ -564,15 +569,22 @@ impl Installation {
         }
         #[cfg(unix)]
         {
-            if !present(path)? {
-                std::os::unix::fs::symlink(self.immutable(m), path)?;
+            if !destination_exists {
+                std::os::unix::fs::symlink(self.immutable(m), path)
+                    .context("Cannot create CLI link without replacing another entry")?;
                 return sync_dir(parent(path)?);
             }
             let mut random = [0u8; 16];
             getrandom::fill(&mut random).map_err(|e| anyhow::anyhow!("CLI temporary name: {e}"))?;
             let temp = path.with_file_name(format!(".cli-link-{:x}", u128::from_le_bytes(random)));
             std::os::unix::fs::symlink(self.immutable(m), &temp)?;
-            let result = fs::rename(&temp, path).context("Could not publish CLI link");
+            let result = if self.owned_entry(path, r) {
+                fs::rename(&temp, path).context("Could not publish CLI link")
+            } else {
+                Err(anyhow::anyhow!(
+                    "CLI destination changed during link publication"
+                ))
+            };
             let _ = fs::remove_file(&temp);
             result?;
             sync_dir(parent(path)?)?;
@@ -583,7 +595,7 @@ impl Installation {
             &read_file(&self.immutable(m), MAX_BINARY)?,
             true,
             Some(&self.immutable(m)),
-            present(path)?,
+            destination_exists,
         )?;
         Ok(())
     }
@@ -687,15 +699,20 @@ impl Installation {
     fn reconcile_locked(&self) -> Result<()> {
         let mut r = self.receipt()?;
         let obsolete = r.previous.clone();
+        let payload = self
+            .payload
+            .as_deref()
+            .context("Bundled CLI resources are unavailable. Quit and reopen Desktop. If the problem continues, reinstall it.")?;
         let m: Manifest = serde_json::from_slice(
-            &read_file(&self.payload.join("manifest.json"), MAX_JSON).context(
-                "Bundled CLI manifest is missing or unreadable; reinstall the desktop app",
+            &read_file(&payload.join("manifest.json"), MAX_JSON).context(
+                "Bundled CLI manifest is missing or unreadable. Quit and reopen Desktop. If the problem continues, reinstall it.",
             )?,
         )
         .context("Bundled CLI manifest is invalid; reinstall the desktop app")?;
         validate_manifest(&m, &self.target)?;
-        let bytes = read_file(&self.payload.join(file_name()), MAX_BINARY).context(
-            "Bundled CLI executable is missing or unreadable; reinstall the desktop app",
+        let source = payload.join(file_name());
+        let bytes = read_file(&source, MAX_BINARY).context(
+            "Bundled CLI executable is missing or unreadable. Quit and reopen Desktop. If the problem continues, reinstall it.",
         )?;
         ensure!(
             digest(&bytes) == m.sha256,
@@ -710,13 +727,7 @@ impl Installation {
                 "Immutable CLI payload was modified; preserve it for review"
             );
         } else {
-            atomic_bytes(
-                &immutable,
-                &bytes,
-                true,
-                Some(&self.payload.join(file_name())),
-                false,
-            )?;
+            atomic_bytes(&immutable, &bytes, true, Some(&source), false)?;
         }
         ensure!(
             !present(&self.stable())? || self.owned_entry(&self.stable(), &r),
@@ -846,13 +857,16 @@ mod tests {
             let i = Installation {
                 root: base.join("data/cli"),
                 terminal: base.join("local/bin").join(file_name()),
-                payload: base.join("bundle"),
+                payload: Some(base.join("bundle")),
                 target: "synthetic-target".into(),
             };
-            fs::create_dir(&i.payload).unwrap();
+            fs::create_dir(i.payload.as_ref().unwrap()).unwrap();
             let f = Self { _temp: temp, i };
             f.payload(b"synthetic native CLI one");
             f
+        }
+        fn payload_path(&self) -> &Path {
+            self.i.payload.as_deref().unwrap()
         }
         fn payload(&self, bytes: &[u8]) {
             let m = Manifest {
@@ -863,9 +877,9 @@ mod tests {
                 sha256: digest(bytes),
                 delivery_protocols: vec!["delivery-v1".into()],
             };
-            fs::write(self.i.payload.join(file_name()), bytes).unwrap();
+            fs::write(self.payload_path().join(file_name()), bytes).unwrap();
             fs::write(
-                self.i.payload.join("manifest.json"),
+                self.payload_path().join("manifest.json"),
                 serde_json::to_vec(&m).unwrap(),
             )
             .unwrap();
@@ -882,9 +896,9 @@ mod tests {
         f.i.reconcile().unwrap();
         assert_eq!(fs::read(f.i.root.join("receipt.json")).unwrap(), receipt);
         assert!(f.i.state(None).runtime.is_some());
-        fs::remove_dir_all(&f.i.payload).unwrap();
+        fs::remove_dir_all(f.payload_path()).unwrap();
         assert_eq!(f.i.resolve().unwrap().executable, first.executable);
-        assert!(!first.executable.starts_with(&f.i.payload));
+        assert!(!first.executable.starts_with(f.payload_path()));
     }
 
     #[test]
@@ -976,7 +990,7 @@ mod tests {
         let path = f.i.immutable(&manifest);
         let original = path.with_extension("original");
         fs::rename(&path, &original).unwrap();
-        fs::copy(f.i.payload.join(file_name()), &path).unwrap();
+        fs::copy(f.payload_path().join(file_name()), &path).unwrap();
         fs::set_permissions(&path, fs::metadata(&original).unwrap().permissions()).unwrap();
         f.i.resolve_cached(&mut cache).unwrap();
         fs::remove_file(&path).unwrap();
@@ -1010,7 +1024,7 @@ mod tests {
         f.i.reconcile().unwrap();
         let receipt = fs::read(f.i.root.join("receipt.json")).unwrap();
         let bin = f.i.stable().parent().unwrap().to_path_buf();
-        let outside = f.i.payload.join("redirected-bin");
+        let outside = f.payload_path().join("redirected-bin");
         fs::rename(&bin, &outside).unwrap();
         std::os::unix::fs::symlink(&outside, &bin).unwrap();
         assert!(f.i.matches(
@@ -1102,16 +1116,34 @@ mod tests {
         assert!(f.i.resolve().is_ok());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn repair_preserves_an_unrelated_dangling_link() {
+        let f = Fixture::new();
+        f.i.reconcile().unwrap();
+        let stable = f.i.stable();
+        let unrelated = f._temp.path().join("missing-user-file");
+        fs::remove_file(&stable).unwrap();
+        std::os::unix::fs::symlink(&unrelated, &stable).unwrap();
+
+        let error = f.i.reconcile().unwrap_err();
+        assert!(error.to_string().contains("unrelated or changed"));
+        assert_eq!(fs::read_link(&stable).unwrap(), unrelated);
+        assert!(!unrelated.exists());
+        assert!(f.i.state(Some(error.to_string())).runtime.is_none());
+    }
+
     #[test]
     fn state_keeps_the_actionable_reconciliation_error() {
         let f = Fixture::new();
-        let state =
-            f.i.state(Some("Bundled runtime is corrupt; reinstall the app".into()));
-        assert!(state.runtime.is_none());
-        assert_eq!(
-            state.diagnostic.as_deref(),
-            Some("Bundled runtime is corrupt; reinstall the app")
+        fs::remove_file(f.payload_path().join("manifest.json")).unwrap();
+        let diagnostic = f.i.reconcile().unwrap_err().to_string();
+        assert!(
+            diagnostic.contains("Quit and reopen Desktop. If the problem continues, reinstall it.")
         );
+        let state = f.i.state(Some(diagnostic.clone()));
+        assert!(state.runtime.is_none());
+        assert_eq!(state.diagnostic, Some(diagnostic));
     }
 
     #[test]
@@ -1224,7 +1256,7 @@ mod tests {
         let r = f.i.receipt().unwrap();
         assert_eq!(r.previous.as_ref().unwrap().sha256, first.sha256);
         assert!(f.i.immutable(r.previous.as_ref().unwrap()).is_file());
-        fs::write(f.i.payload.join(file_name()), b"corrupt").unwrap();
+        fs::write(f.payload_path().join(file_name()), b"corrupt").unwrap();
         assert!(f.i.reconcile().is_err());
         assert_eq!(f.i.resolve().unwrap().sha256, second.sha256);
     }
@@ -1330,7 +1362,7 @@ mod tests {
     #[test]
     fn startup_does_not_retry_payload_or_ownership_errors() {
         let f = Fixture::new();
-        fs::write(f.i.payload.join(file_name()), b"corrupt").unwrap();
+        fs::write(f.payload_path().join(file_name()), b"corrupt").unwrap();
         let mut attempts = 0;
         let error = retry_startup(
             || {
@@ -1396,7 +1428,7 @@ mod tests {
     fn staging_preserves_quarantine_attributes() {
         use std::process::Command;
         let f = Fixture::new();
-        let source = f.i.payload.join(file_name());
+        let source = f.payload_path().join(file_name());
         let quarantine = "0081;00000000;Antiburn synthetic fixture;";
         assert!(
             Command::new("/usr/bin/xattr")
@@ -1428,13 +1460,17 @@ mod tests {
         let bundle = f._temp.path().join("Antiburn.app");
         let payload = bundle.join("Contents/Resources/cli-payload");
         fs::create_dir_all(&payload).unwrap();
-        fs::rename(f.i.payload.join(file_name()), payload.join(file_name())).unwrap();
         fs::rename(
-            f.i.payload.join("manifest.json"),
+            f.payload_path().join(file_name()),
+            payload.join(file_name()),
+        )
+        .unwrap();
+        fs::rename(
+            f.payload_path().join("manifest.json"),
             payload.join("manifest.json"),
         )
         .unwrap();
-        f.i.payload = payload;
+        f.i.payload = Some(payload);
         assert!(
             Command::new("/usr/bin/xattr")
                 .args([
@@ -1565,17 +1601,36 @@ mod tests {
 
     #[test]
     #[ignore = "Build a native CLI payload with scripts/build-cli-sidecar.mjs first"]
-    fn native_payload_runs_offline_with_a_minimal_path_after_bundle_removal() {
+    fn native_payload_installs_repairs_and_runs_after_bundle_removal() {
         let mut f = Fixture::new();
         let original =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/src-tauri/cli-payload");
         for name in [file_name(), "manifest.json"] {
-            fs::copy(original.join(name), f.i.payload.join(name)).unwrap();
+            fs::copy(original.join(name), f.payload_path().join(name)).unwrap();
         }
         f.i.target = crate::TARGET.into();
+        f.i.reconcile_at_startup().unwrap();
+        let installed = f.i.resolve().unwrap();
+        #[cfg(unix)]
+        {
+            let target =
+                f.i.immutable(f.i.receipt().unwrap().active.as_ref().unwrap());
+            assert_eq!(fs::read_link(&installed.executable).unwrap(), target);
+            fs::remove_file(&target).unwrap();
+            assert!(!installed.executable.exists());
+            assert!(f.i.state(None).runtime.is_none());
+            f.i.reconcile().unwrap();
+            assert_eq!(fs::read_link(&installed.executable).unwrap(), target);
+        }
+        fs::remove_file(&installed.executable).unwrap();
+        assert!(f.i.state(None).runtime.is_none());
         f.i.reconcile().unwrap();
-        fs::remove_dir_all(&f.i.payload).unwrap();
-        let runtime = f.i.resolve().unwrap();
+        assert!(!present(&f.i.terminal).unwrap());
+        fs::remove_dir_all(f.payload_path()).unwrap();
+        f.i.payload = None;
+        assert!(f.i.reconcile().is_err());
+        let runtime = f.i.state(None).runtime.unwrap();
+        assert_eq!(runtime.sha256, installed.sha256);
         let output = std::process::Command::new(&runtime.executable)
             .args(["capabilities", "--json"])
             .env_clear()
@@ -1603,7 +1658,7 @@ mod tests {
         f.i.target = "another-target".into();
         assert!(f.i.reconcile().is_err());
         fs::write(
-            f.i.payload.join("manifest.json"),
+            f.payload_path().join("manifest.json"),
             vec![b' '; MAX_JSON as usize + 1],
         )
         .unwrap();
@@ -1617,7 +1672,8 @@ mod tests {
         f.i.reconcile().unwrap();
         f.payload(b"synthetic next runtime");
         let m: Manifest =
-            serde_json::from_slice(&fs::read(f.i.payload.join("manifest.json")).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(f.payload_path().join("manifest.json")).unwrap())
+                .unwrap();
         let mut r = f.i.receipt().unwrap();
         safe_dir(f.i.immutable(&m).parent().unwrap(), true).unwrap();
         atomic_bytes(
@@ -1640,7 +1696,7 @@ mod tests {
     #[test]
     fn redirected_directories_locks_and_commands_are_preserved() {
         let f = Fixture::new();
-        let outside = f.i.payload.join("outside");
+        let outside = f.payload_path().join("outside");
         fs::create_dir(&outside).unwrap();
         fs::create_dir_all(f.i.root.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&outside, &f.i.root).unwrap();
@@ -1648,8 +1704,11 @@ mod tests {
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
         fs::remove_file(&f.i.root).unwrap();
         safe_dir(&f.i.root, true).unwrap();
-        std::os::unix::fs::symlink(f.i.payload.join(file_name()), f.i.root.join("install.lock"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            f.payload_path().join(file_name()),
+            f.i.root.join("install.lock"),
+        )
+        .unwrap();
         assert!(f.i.reconcile().is_err());
     }
 
@@ -1665,7 +1724,7 @@ mod tests {
 
         seed_legacy_export(&f);
         fs::remove_file(&f.i.terminal).unwrap();
-        let changed_target = f.i.payload.join(file_name());
+        let changed_target = f.payload_path().join(file_name());
         std::os::unix::fs::symlink(&changed_target, &f.i.terminal).unwrap();
         f.i.reconcile().unwrap();
         assert_eq!(fs::read_link(&f.i.terminal).unwrap(), changed_target);

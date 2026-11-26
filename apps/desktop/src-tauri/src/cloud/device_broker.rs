@@ -1,5 +1,5 @@
-//! Give the same-user CLI access to the current Desktop device session.
-//! Only the Unix socket response contains an access token. Desktop owns refresh.
+//! Give the same-user CLI a read-only token for the current Desktop connection.
+//! Full device proof and refresh stay in Desktop.
 
 mod socket;
 
@@ -39,8 +39,8 @@ fn account_generation(app: &tauri::AppHandle) -> u64 {
         .load(Ordering::Acquire)
 }
 
-/// Keep refresh and workspace verification in the existing Cloud worker. Carry
-/// the account generation out so the socket can reject a late response.
+/// Fetch the read token in the existing Cloud worker. Carry the account
+/// generation out so the socket can reject a late response.
 async fn load_session(app: tauri::AppHandle) -> Option<(u64, DeviceSession)> {
     let generation = account_generation(&app);
     let work = app.state::<Controller>().blocking.clone();
@@ -62,12 +62,12 @@ async fn load_session(app: tauri::AppHandle) -> Option<(u64, DeviceSession)> {
         }
         Ok(result
             .ok()
-            .map(|(origin, access_token, personal_workspace_id)| {
+            .map(|(origin, read_token, personal_workspace_id)| {
                 (
                     generation,
                     DeviceSession {
                         origin,
-                        access_token,
+                        read_token,
                         personal_workspace_id,
                     },
                 )

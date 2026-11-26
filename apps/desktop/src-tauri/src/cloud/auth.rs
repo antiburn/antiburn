@@ -3,7 +3,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{ffi::OsStr, io::Read, time::Duration};
+use std::{collections::BTreeSet, ffi::OsStr, io::Read, time::Duration};
 use url::Url;
 
 const DEFAULT_DEVICE_NAME: &str = "Antiburn Desktop";
@@ -33,14 +33,47 @@ fn short_hostname(hostname: &OsStr) -> Option<&str> {
         && !label.eq_ignore_ascii_case("localhost"))
     .then_some(label)
 }
-/// Scope for existing capture-only account grants.
+#[cfg(test)]
 pub const CAPTURE_SCOPE: &str = "capture:write";
-/// Scope for account grants that can also search and read sessions.
+#[cfg(test)]
 pub const CAPTURE_AND_SESSION_SCOPE: &str = "capture:write sessions:list sessions:read";
+#[cfg(test)]
+pub const CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE: &str =
+    "capture:write sessions:list sessions:read workspaces:join";
 
-/// Accept only the service's exact scope strings. Do not normalize or split them.
-fn supported_scope(scope: &str) -> bool {
-    matches!(scope, CAPTURE_SCOPE | CAPTURE_AND_SESSION_SCOPE)
+/// Device actions this version understands. Unknown names never enable a feature.
+#[derive(Clone, Copy)]
+pub(super) enum DeviceAction {
+    CaptureWrite,
+    SessionList,
+    SessionRead,
+}
+
+impl DeviceAction {
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::CaptureWrite => "capture:write",
+            Self::SessionList => "sessions:list",
+            Self::SessionRead => "sessions:read",
+        }
+    }
+}
+
+/// Keep unknown names when comparing grants so refresh cannot widen their scope.
+pub(super) fn scope_names(scope: &str) -> Option<BTreeSet<&str>> {
+    if !bounded(scope, 256) {
+        return None;
+    }
+    let names: BTreeSet<_> = scope.split_ascii_whitespace().collect();
+    (!names.is_empty()
+        && names
+            .iter()
+            .all(|name| name.bytes().all(|b| b.is_ascii_graphic())))
+    .then_some(names)
+}
+
+fn same_actions(left: &str, right: &str) -> bool {
+    scope_names(left).is_some_and(|names| scope_names(right).as_ref() == Some(&names))
 }
 
 /// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
@@ -56,20 +89,26 @@ pub struct Config {
     pub issuer: String,
     pub resource: String,
     pub authorization: Url,
+    /// Browser entry point for email verification and workspace setup. No device proof.
+    pub desktop_setup: Url,
     pub token: Url,
     pub session: Url,
     pub workspaces: Url,
     pub revocation: Url,
+    /// Canonical browser dashboard origin. Never send device proof to it.
+    pub dashboard: Option<Url>,
 }
 
 impl Config {
     /// Default both origins to localhost in debug and to Antiburn Cloud in release.
     /// Partial or invalid overrides disable authentication.
     pub fn from_build() -> Option<Self> {
-        Self::from_origins(
+        let mut config = Self::from_origins(
             option_env!("ANTIBURN_CLOUD_ISSUER"),
             option_env!("ANTIBURN_CLOUD_RESOURCE"),
-        )
+        )?;
+        config.dashboard = option_env!("ANTIBURN_CLOUD_DASHBOARD").and_then(canonical_origin);
+        Some(config)
     }
 
     /// Keep explicit origins as one complete pair; never fill a missing override.
@@ -90,31 +129,34 @@ impl Config {
 
     /// Reject aliases, credentials, paths, and remote HTTP rather than normalizing authority.
     pub fn parse(issuer: &str, resource: &str) -> Option<Self> {
-        /// Require the exact public origin string used by callback and response proofs.
-        fn canonical(value: &str) -> Option<Url> {
-            let url = Url::parse(value).ok()?;
-            ((url.scheme() == "https" || debug_loopback_http(&url))
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none()
-                && url.path() == "/"
-                && url.origin().ascii_serialization() == value)
-                .then_some(url)
-        }
-        canonical(issuer)?;
-        let resource_url = canonical(resource)?;
+        canonical_origin(issuer)?;
+        let resource_url = canonical_origin(resource)?;
         Some(Self {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
             authorization: resource_url.join("devices/authorize/account").ok()?,
+            desktop_setup: resource_url.join("v1/devices/setup").ok()?,
             token: resource_url.join("v1/devices/token").ok()?,
-            revocation: resource_url.join("v1/devices/logout").ok()?,
-            session: resource_url.join("v1/devices/session").ok()?,
+            revocation: resource_url.join("v1/devices/grants/current/revoke").ok()?,
+            session: resource_url.join("v1/devices/grants/current").ok()?,
             workspaces: resource_url.join("v1/captures/destinations").ok()?,
+            dashboard: None,
         })
     }
+}
+
+/// Accept an exact origin, not a route, a credential, or a redirect target.
+fn canonical_origin(value: &str) -> Option<Url> {
+    let url = Url::parse(value).ok()?;
+    ((url.scheme() == "https" || debug_loopback_http(&url))
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path() == "/"
+        && url.origin().ascii_serialization() == value)
+        .then_some(url)
 }
 
 /// Admit plaintext only for exact loopback hosts when debug assertions are enabled.
@@ -220,7 +262,7 @@ impl Session {
             || self.workspace.kind != WorkspaceKind::Personal
             || !self.workspace.valid()
             || self.resource != config.resource
-            || !supported_scope(&self.scope)
+            || scope_names(&self.scope).is_none()
             || self.iss != config.issuer
             || self.expires_at <= now
             || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
@@ -230,6 +272,11 @@ impl Session {
         Ok(())
     }
 
+    /// Check one known action, independently of new actions sent by the service.
+    pub(super) fn allows(&self, action: DeviceAction) -> bool {
+        scope_names(&self.scope).is_some_and(|names| names.contains(action.name()))
+    }
+
     /// Pin account grant authority and the local Personal anchor across rotation.
     pub fn same_grant(&self, other: &Self) -> bool {
         self.user.id == other.user.id
@@ -237,7 +284,7 @@ impl Session {
             && self.workspace.id == other.workspace.id
             && self.workspace.kind == other.workspace.kind
             && self.resource == other.resource
-            && self.scope == other.scope
+            && same_actions(&self.scope, &other.scope)
             && self.iss == other.iss
             && self.expires_at == other.expires_at
     }
@@ -317,7 +364,7 @@ impl Tokens {
         if !bounded(&self.grant_id, 256)
             || !bounded(&self.user_id, 256)
             || self.legacy_workspace_claim
-            || !supported_scope(&self.scope)
+            || scope_names(&self.scope).is_none()
             || self.resource != config.resource
             || self.iss != config.issuer
             || expires_at <= now
@@ -334,7 +381,7 @@ impl Tokens {
             && self.user_id == session.user_id
             && deadline(&self.grant_expires_at)
                 .is_ok_and(|expires_at| deadline(&session.grant_expires_at) == Ok(expires_at))
-            && self.scope == session.scope
+            && same_actions(&self.scope, &session.scope)
             && self.resource == session.resource
             && self.iss == session.iss
     }
@@ -407,6 +454,15 @@ pub struct Attempt {
     pub expires_at: i64,
     pub epoch: String,
     pub generation: u64,
+    pub(super) upgrade: Option<AccessUpgrade>,
+}
+
+/// Pin a replacement to the grant and account that requested the additional actions.
+#[derive(Clone)]
+pub(super) struct AccessUpgrade {
+    pub grant_id: String,
+    pub account_id: String,
+    pub requested_scope: String,
 }
 
 /// OS-only refresh record. `session: None` permits logout only, never authentication;
@@ -424,6 +480,36 @@ pub struct Credential {
     #[serde(default)]
     pub account_grant: bool,
     pub session: Option<Session>,
+    /// Keep the previous credential intact until the new epoch is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) replacement: Option<ReplacementCredential>,
+}
+
+/// Verified candidate saved alongside the previous credential in the same OS entry.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReplacementCredential {
+    pub epoch: String,
+    pub refresh_token: String,
+    pub session: Session,
+}
+
+impl Credential {
+    /// Resolve authority using only the committed nonsecret state epoch.
+    pub(super) fn for_epoch(mut self, epoch: &str) -> Option<Self> {
+        if self.epoch == epoch {
+            self.replacement = None;
+            return Some(self);
+        }
+        let replacement = self
+            .replacement
+            .take()
+            .filter(|replacement| replacement.epoch == epoch)?;
+        self.epoch = replacement.epoch;
+        self.refresh_token = replacement.refresh_token;
+        self.session = Some(replacement.session);
+        Some(self)
+    }
 }
 
 /// Store one engine's rotating refresh credential and logout-only proofs.
@@ -478,6 +564,10 @@ impl Vault for KeyringVault {
                 if credential.cleanup_refresh_tokens.len() > 1
                     || !bounded(&credential.refresh_token, 16_384)
                     || credential
+                        .replacement
+                        .as_ref()
+                        .is_some_and(|replacement| !bounded(&replacement.refresh_token, 16_384))
+                    || credential
                         .cleanup_refresh_tokens
                         .iter()
                         .any(|proof| !bounded(proof, 16_384))
@@ -527,12 +617,6 @@ pub enum TokenRequest<'a> {
 /// serializes credential operations; transport success does not grant access.
 /// Implementors can block only inside admitted Cloud blocking work.
 pub trait Transport: Send + Sync {
-    /// Read public support without device proof. A failed probe must leave
-    /// normal account sign-in available.
-    fn supports_invitations(&self, _config: &Config) -> bool {
-        false
-    }
-
     /// Return decoded tokens with a bounded refresh proof, even when other fields
     /// are invalid. The engine validates authority and saves rejected proof for
     /// logout. Return `OfflineBeforeSend` only when no HTTP proof was sent.
@@ -618,10 +702,6 @@ fn exchange_failure(error: reqwest::Error) -> Failure {
 }
 
 impl Transport for HttpTransport {
-    fn supports_invitations(&self, config: &Config) -> bool {
-        super::invitations::supported(config)
-    }
-
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
             client(&config.token)?

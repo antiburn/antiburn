@@ -166,9 +166,7 @@ export function SessionsStepSettings({
   const cloudFolderRowId = useId()
   const uploadRowId = useId()
   const canSetUpCloud =
-    cloudSession.projectSyncSupported &&
-    cloud.cloud.status === "signed_in" &&
-    cloud.cloud.destination?.kind === "personal"
+    cloud.cloud.status === "signed_in" && cloud.cloud.destination?.kind === "personal"
   const hasSavedFolders = [cloud.ongoing, ...Object.values(cloud.teamStatuses ?? {})].some(
     (policy) =>
       policy?.consentVersion === "desktop-project-sync-v1" && policy.projects.length > 0,

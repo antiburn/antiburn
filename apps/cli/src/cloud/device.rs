@@ -20,11 +20,11 @@ enum Unavailable {
     Unavailable,
 }
 
-/// Short-lived proof. The app alone owns sign-in and token rotation.
+/// Read-only proof. The app alone owns the full connection and token rotation.
 #[derive(Deserialize)]
 pub(super) struct Connection {
     pub origin: String,
-    pub access_token: String,
+    pub read_token: String,
     pub personal_workspace_id: Uuid,
 }
 
@@ -77,7 +77,7 @@ pub(super) async fn current(config: &Config) -> Result<Option<Connection>, Strin
             return Err(unavailable.into());
         }
         stream
-            .write_all(b"device-session-v1\n")
+            .write_all(b"device-read-session-v1\n")
             .await
             .map_err(|_| unavailable)?;
         let mut reply = Vec::new();

@@ -99,6 +99,9 @@ Cross-target development requests are rejected. Debug startup stages the runtime
 automatically only when the app identifier is `ai.antiburn.desktop.debug`.
 Other source builds still require explicit Repair. The installer does not change
 the release app's runtime or terminal commands from this debug profile.
+An unbundled debug app reads the payload beside its executable, including in a
+custom Cargo target directory. A bundled app reads its packaged resources.
+Neither the status check nor Test needs the original payload.
 
 ### Debug CLI and skill
 
@@ -195,6 +198,8 @@ Settings → CLI is available in release and debug builds. It shows the internal
 runtime name. Technical details contains Test, Repair, copyable location and
 technical diagnostics. Test results appear separately from Installed. Settings
 contains no terminal setup instructions, export status or Remove action.
+Repair reports success or failure beside the button. If Repair fails, Technical
+details opens to show the diagnostic, even if you closed it during Repair.
 
 Test CLI runs only the receipt-validated absolute executable with
 `capabilities --json`, null stdin and an empty PATH. It holds the installation
@@ -209,6 +214,8 @@ write capability. No path, output, or diagnostic enters product analytics.
 Repair restores a missing owned runtime and retires receipt-owned legacy terminal
 commands. It preserves
 unrelated or changed destinations. Broken owned POSIX links are repairable.
+If Repair cannot find the bundled payload after you moved the running app, quit
+and reopen Desktop. Reinstall it only if the problem continues.
 
 Vendor integration installation, trust, reload, native-context delivery and
 onboarding are separate features. Out-of-process JavaScript adapters cannot call
@@ -291,7 +298,7 @@ Do not copy private session data or captured machine paths into public docs.
    Run every vendor route with empty PATH and an injected `ANTIBURN_EXECUTABLE`.
 
 The ignored backend test
-`native_payload_runs_offline_with_a_minimal_path_after_bundle_removal` can run
+`native_payload_installs_repairs_and_runs_after_bundle_removal` can run
 locally after generating a native payload. It copies into a temporary root,
 removes its synthetic bundle, and invokes only capabilities with an empty PATH.
 It is not signed-download, GUI, Gatekeeper, Windows, Linux or vendor-context proof.

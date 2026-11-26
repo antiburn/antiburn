@@ -947,16 +947,13 @@ mod tests {
     }
 
     const CLOUD_ACCOUNT_COMMANDS: &[&str] = &[
-        "cloud_invitations",
         "cloud_backfill_sync",
         "cloud_begin",
         "cloud_cancel",
-        "cloud_cancel_sync",
         "cloud_enable_sync",
-        "cloud_prepare_sync",
+        "cloud_open_dashboard",
         "cloud_project_groups",
         "cloud_reapprove_team_sync",
-        "cloud_reconcile_sync",
         "cloud_reset_local",
         "cloud_reset_workspace",
         "cloud_retry_sync",
@@ -964,10 +961,7 @@ mod tests {
         "cloud_set_sync_enabled",
         "cloud_set_sync_project",
         "cloud_sign_out",
-        "cloud_source_picker_directory",
-        "cloud_start_sync",
         "cloud_status",
-        "cloud_sync_projects",
         "cloud_sync_status",
         "cloud_workspaces",
     ];

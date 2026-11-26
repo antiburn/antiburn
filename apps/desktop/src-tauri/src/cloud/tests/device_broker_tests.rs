@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 fn claim() -> DeviceSession {
     DeviceSession {
         origin: "https://cloud.example.test".into(),
-        access_token: "synthetic-access".into(),
+        read_token: "synthetic-read-token".into(),
         personal_workspace_id: "synthetic-personal".into(),
     }
 }
@@ -70,7 +70,7 @@ async fn sends_only_the_current_device_claim_as_a_single_line() {
         serde_json::from_slice::<serde_json::Value>(&response).unwrap(),
         json!({
             "origin": "https://cloud.example.test",
-            "access_token": "synthetic-access",
+            "read_token": "synthetic-read-token",
             "personal_workspace_id": "synthetic-personal"
         })
     );
@@ -94,7 +94,11 @@ async fn rejects_stale_and_invalid_requests_without_sending_proof() {
     )
     .await;
     assert!(exchange(&path, b"device-session").await.is_empty());
-    assert_eq!(exchange(&path, b"device-session-v2\n").await, UNAVAILABLE);
+    assert!(exchange(&path, b"device-session-v1\n").await.is_empty());
+    assert_eq!(
+        exchange(&path, b"device-read-session-v2\n").await,
+        UNAVAILABLE
+    );
     assert_eq!(loads.load(Ordering::Relaxed), 0);
     assert_eq!(exchange(&path, REQUEST).await, UNAVAILABLE);
     assert_eq!(loads.load(Ordering::Relaxed), 1);
@@ -108,7 +112,7 @@ async fn returns_unavailable_instead_of_truncating_a_claim() {
         directory.path(),
         || {
             let mut session = claim();
-            session.access_token = "x".repeat(MAX_RESPONSE);
+            session.read_token = "x".repeat(MAX_RESPONSE);
             std::future::ready(Some((7, session)))
         },
         |_| true,

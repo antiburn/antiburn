@@ -3,12 +3,15 @@ pub(crate) mod probe;
 use crate::analytics::{self, event::CliOperation};
 pub use antiburn_cli_runtime::{CliInstallState, CliRuntime};
 use antiburn_cli_runtime::{Installation, RuntimeDigestCache, file_name};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 fn installation(app: &tauri::AppHandle) -> Result<Installation, String> {
-    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot locate the app data directory for the CLI: {e}"))?;
     let terminal = if cfg!(debug_assertions) || !cfg!(feature = "distribution") {
         data.join("cli").join("terminal").join(file_name())
     } else if cfg!(windows) {
@@ -19,18 +22,43 @@ fn installation(app: &tauri::AppHandle) -> Result<Installation, String> {
             .join("bin")
             .join(file_name())
     } else {
-        home.join(".local").join("bin").join(file_name())
+        app.path()
+            .home_dir()
+            .map_err(|e| format!("Cannot locate the home directory for CLI cleanup: {e}"))?
+            .join(".local")
+            .join("bin")
+            .join(file_name())
     };
     Ok(Installation {
         root: data.join("cli"),
         terminal,
-        payload: app
-            .path()
-            .resource_dir()
-            .map_err(|e| e.to_string())?
-            .join("cli-payload"),
+        payload: None,
         target: env!("ANTIBURN_CLI_TARGET").into(),
     })
+}
+
+/// Only startup and Repair need a payload. Read and Test use the installed runtime.
+fn payload_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if cfg!(debug_assertions) && tauri::is_dev() {
+        // Tauri copies development resources beside the executable. Its resource
+        // lookup can miss custom Cargo output directories on macOS.
+        let executable = tauri::utils::platform::current_exe()
+            .map_err(|e| format!("Cannot locate the development CLI payload: {e}"))?;
+        let payload = executable
+            .parent()
+            .ok_or("Cannot locate the development app directory")?
+            .join("cli-payload");
+        if !payload.is_dir() {
+            return Err("Development CLI payload is missing. Launch with `pnpm --filter @antiburn/desktop dev` to prepare it.".into());
+        }
+        return Ok(payload);
+    }
+    app.path()
+        .resource_dir()
+        .map(|directory| directory.join("cli-payload"))
+        .map_err(|e| {
+            format!("Cannot locate bundled CLI resources: {e}. Quit and reopen Desktop. If the problem continues, reinstall it.")
+        })
 }
 
 /// Resolve only the durable runtime whose bytes match its installation receipt.
@@ -61,7 +89,11 @@ pub(crate) fn runtime_for_test(
 
 /// Run on the CLI worker. Release skill writes hold the same lock as staging.
 fn reconcile(app: &tauri::AppHandle, startup: bool) -> Result<CliInstallState, String> {
-    let installation = installation(app)?;
+    let mut installation = installation(app)?;
+    installation.payload = match payload_directory(app) {
+        Ok(directory) => Some(directory),
+        Err(error) => return Ok(installation.state(Some(error))),
+    };
     #[cfg(target_os = "macos")]
     {
         use crate::local_tools::release_skill;
@@ -74,7 +106,7 @@ fn reconcile(app: &tauri::AppHandle, startup: bool) -> Result<CliInstallState, S
                         diagnostic: None,
                     }
                 }
-                Err(error) => installation.state(Some(error.to_string())),
+                Err(error) => installation.state(Some(format!("{error:#}"))),
             });
         }
     }
@@ -83,7 +115,7 @@ fn reconcile(app: &tauri::AppHandle, startup: bool) -> Result<CliInstallState, S
     } else {
         installation.reconcile()
     };
-    Ok(installation.state(result.err().map(|error| error.to_string())))
+    Ok(installation.state(result.err().map(|error| format!("{error:#}"))))
 }
 
 pub fn start(app: &tauri::AppHandle) {

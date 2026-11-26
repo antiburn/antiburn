@@ -69,7 +69,9 @@ impl Listener {
                     let result = request(&mut stream).await.and_then(|(target, host)| {
                         validate_callback(&target, &host, config, attempt, super::now())
                     });
-                    let response = page::response(result.as_ref());
+                    let setup =
+                        (attempt.upgrade.is_none() && current()).then_some(&config.desktop_setup);
+                    let response = page::response(result.as_ref(), setup);
                     // A browser response failure must not repeat a valid callback.
                     let _ = timeout(
                         Duration::from_millis(250),
@@ -152,6 +154,7 @@ mod tests {
                 epoch: "synthetic-epoch".into(),
                 expires_at: super::super::now() + 600,
                 generation: 0,
+                upgrade: None,
             };
             (listener, attempt)
         })
@@ -195,7 +198,68 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(reply.contains("<h1>Device access denied</h1>"));
         assert!(!reply.contains("synthetic-state"));
+        assert!(!reply.contains("Continue setup in browser"));
         assert!(matches!(task.await.unwrap(), Some(Callback::Cancelled)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cloud_async_loopback_offers_browser_setup_only_after_initial_approval() {
+        for access_update in [false, true] {
+            let (listener, mut attempt) = pending_listener().await;
+            if access_update {
+                attempt.upgrade = Some(super::super::auth::AccessUpgrade {
+                    grant_id: "synthetic-grant".into(),
+                    account_id: "synthetic-account".into(),
+                    requested_scope: "capture:write".into(),
+                });
+            }
+            let address = attempt
+                .callback
+                .strip_prefix("http://")
+                .unwrap()
+                .strip_suffix("/cloud/callback")
+                .unwrap()
+                .to_owned();
+            let target = format!(
+                "/cloud/callback?state={}&iss=https%3A%2F%2Fissuer.example&code=synthetic-code",
+                attempt.state
+            );
+            let task = tokio::spawn(async move {
+                listener
+                    .wait(
+                        &Config::parse("https://issuer.example", "https://api.example").unwrap(),
+                        &attempt,
+                        || true,
+                    )
+                    .await
+            });
+            let mut stream = TcpStream::connect(&address).await.unwrap();
+            stream
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut reply = String::new();
+            timeout(Duration::from_secs(2), stream.read_to_string(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"));
+            assert!(reply.contains("<h1>Browser step complete</h1>"));
+            assert_eq!(reply.contains("Continue setup in browser"), !access_update);
+            assert_eq!(
+                reply.contains("https://api.example/v1/devices/setup"),
+                !access_update
+            );
+            assert_eq!(
+                reply.contains("Return to Antiburn to finish signing in."),
+                access_update
+            );
+            assert!(!reply.contains("synthetic-code"));
+            assert!(!reply.contains("synthetic-state"));
+            assert!(
+                matches!(task.await.unwrap(), Some(Callback::Code(code)) if code == "synthetic-code")
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -275,6 +339,7 @@ mod tests {
             .unwrap();
         assert!(reply.starts_with("HTTP/1.1 400"));
         assert!(reply.contains("<h1>Could not finish sign-in</h1>"));
+        assert!(!reply.contains("Continue setup in browser"));
         active.store(false, Ordering::Release);
         assert!(
             timeout(Duration::from_secs(1), task)

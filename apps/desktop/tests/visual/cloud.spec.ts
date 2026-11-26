@@ -34,6 +34,30 @@ async function expectWarningAboveFooter(warning: Locator, footer: Locator) {
   expect(message.y + message.height).toBeLessThanOrEqual(bounds.y)
 }
 
+test("browser setup and return work by keyboard inside onboarding", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 480 })
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
+  await page.goto("/tests/visual/?surface=cloud&cloud=identity&theme=dark&browserSetup")
+  const open = page.getByRole("button", { name: "Finish setup in browser" })
+  await expect(open).toBeEnabled({ timeout: 15_000 })
+  await open.focus()
+  await page.keyboard.press("Enter")
+  await expect(page.locator("body")).toHaveAttribute("data-browser-setup-opened", "true")
+  await expect(page.getByRole("textbox")).toHaveCount(0)
+  const next = page.getByRole("button", { name: "Continue", exact: true })
+  await expect(next).toBeInViewport()
+  const local = page.getByRole("button", { name: "Continue locally" })
+  await expect(local).toBeInViewport()
+  await capture(page, "dark-onboarding-browser-setup")
+  await page.keyboard.press("Tab")
+  await expect(local).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(next).toBeFocused()
+  await page.keyboard.press("Enter")
+  await expect(page.getByRole("button", { name: "Start syncing", exact: true })).toBeVisible()
+  await expect(page.getByText(/No sync destination selected/)).toBeVisible()
+})
+
 for (const theme of ["light", "dark"] as const) {
   test(`Cloud handoff and recovery states stay truthful in ${theme}`, async ({ page }) => {
     const external: string[] = []
@@ -495,6 +519,34 @@ test("folder discovery retries and saved verification stay automatic in Sessions
     page.getByRole("button", { name: /Retry folders|Retry folder list|Retry saved uploads/ }),
   ).toHaveCount(0)
   await expect(page.getByRole("progressbar")).toHaveCount(0)
+})
+
+test("Settings opens browser setup and refreshes a newly eligible team without selecting it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 780 })
+  await page.goto(
+    "/tests/visual/?surface=cloud&cloud=settings-folders&joinedTeam=1&browserSetup",
+  )
+  await expect(page.getByText("1 workspace", { exact: true })).toBeVisible({ timeout: 15_000 })
+  const setup = page.getByRole("button", { name: "Finish setup in browser" })
+  await setup.focus()
+  await page.keyboard.press("Enter")
+  await expect(page.locator("body")).toHaveAttribute("data-browser-setup-opened", "true")
+  await capture(page, "settings-browser-setup")
+  const refresh = page.getByRole("button", { name: "Refresh workspaces", exact: true })
+  await refresh.focus()
+  await page.evaluate(() => {
+    document.body.dataset.joinedTeam = "true"
+  })
+  await page.keyboard.press("Enter")
+  await expect(page.getByText("2 workspaces", { exact: true })).toBeVisible()
+  await expect(refresh).toBeFocused()
+  await expect(page.locator('option[value="joined-team"]').first()).toHaveJSProperty(
+    "selected",
+    false,
+  )
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
 })
 
 test("reopened Settings keeps exclusions and does not confirm newly shown groups", async ({

@@ -102,8 +102,8 @@ export interface ProjectScopeObserver {
   receiveWorkspace: (value: CloudWorkspaceRecovery) => void
 }
 
-/** Verify account and workspace scope before the user can approve folders.
- * Keep newer desktop events. A null result means local setup is still unavailable.
+/** Read workspaces for the current account and keep newer desktop events.
+ * A null result means a setup error other than unsupported capture blocks the read.
  */
 export async function readCloudProjectScope(
   port: CloudPort,
@@ -162,7 +162,8 @@ export async function readCloudProjectScope(
     }
   }
   if (status && revision === observer.policyRevision()) observer.receivePolicy(status)
-  if (observer.getSnapshot().cloud.setupError) return null
+  const currentSetupError = observer.getSnapshot().cloud.setupError
+  if (currentSetupError && currentSetupError !== cloudCaptureUnsupported) return null
 
   const verifyWorkspaces = port.workspaces
   if (!verifyWorkspaces) return previous.projects?.workspaces

@@ -2,13 +2,12 @@ import {
   emptyCloudSnapshot,
   CLOUD_BUSY_MESSAGE,
   desktopCloudPort,
-  cloudSourceKind,
   cloudProjectChoices,
+  type CloudAccessUpdate,
   type CloudDraft,
   type CloudPort,
   type CloudScreen,
   type CloudSnapshot,
-  type CloudSourceKind,
   type SyncResult,
   type CloudProjectGroup,
   type CloudProjectChoices,
@@ -29,7 +28,7 @@ import {
 } from "./cloudProjectRoutes"
 import type { ProjectPages } from "./cloudProjectPages"
 import { CloudProjectReader } from "./cloudProjectReader"
-import { retryCloudRead } from "./cloudReadRetry"
+import { cloudReadScopeMessage, retryCloudRead } from "./cloudReadRetry"
 import {
   cloudFolderReadChanged,
   savedUploadStatusBecameUnavailable,
@@ -48,7 +47,6 @@ import {
   folderSaveError,
   hasSavedProjectPermission,
   isCloudBusy,
-  legacyCaptureConsent,
   matchesUploadPolicy,
   ongoingDestination,
   projectBinding,
@@ -57,7 +55,6 @@ import {
   projectSyncChoices,
   retryTarget,
   reviewableProjectSelections,
-  selectedFoldersKey,
   selectedProjects,
   supportedProjectSelections,
   teamFoldersToConfirm,
@@ -99,7 +96,6 @@ export class CloudSession {
     busy: false,
     error: null,
     loaded: false,
-    sourceListingNeedsRetry: false,
   }
   private listeners = new Set<() => void>()
   private stop: (() => void) | undefined
@@ -110,6 +106,7 @@ export class CloudSession {
   private localToolsEventGeneration = 0
   private localToolsStatusRevision = -1
   private accountRead: AbortController | undefined
+  private workspaceRead: AbortController | undefined
   private projectPages: ProjectPages | undefined
   private readonly projectReader: CloudProjectReader
   private projectChoices: CloudProjectChoices = {}
@@ -126,8 +123,6 @@ export class CloudSession {
   private active = false
   private visible = true
   private viewed: CloudScreen | null = null
-  private requestId: string | null = null
-  private preparedRequestId: string | null = null
   private syncInFlight = false
   private consentRevision = 0
   private folderMoveScope = { authority: 0, account: 0 }
@@ -167,10 +162,6 @@ export class CloudSession {
   }
   /** Return the stable snapshot expected by useSyncExternalStore. */
   getSnapshot = () => this.snapshot
-  /** Distinguish current desktop ongoing sync from legacy saved-request fixtures. */
-  get projectSyncSupported() {
-    return this.port.ongoing !== undefined
-  }
   /** Observe snapshots without starting reads. The host owns the active subscription. */
   subscribeSnapshot = (listener: () => void) => {
     this.snapshotListeners.add(listener)
@@ -205,6 +196,7 @@ export class CloudSession {
         this.localToolsLoading = false
         this.projectReader.abort()
         this.accountRead?.abort()
+        this.workspaceRead?.abort()
         clearTimeout(this.timer)
         document.removeEventListener("visibilitychange", this.visibility)
         window.removeEventListener("focus", this.refreshIncompleteProjects)
@@ -289,9 +281,7 @@ export class CloudSession {
     const patch = accountViewPatch(this.snapshot, value, {
       resetProjects,
       contextChanged,
-      ongoing: !!this.port.ongoing,
       projectSyncState: this.projectSyncState,
-      preparedRequestId: this.preparedRequestId,
     })
     if (!resetProjects && (sourcesChanged || setupFailed) && this.snapshot.projects)
       patch.projects = {
@@ -304,14 +294,8 @@ export class CloudSession {
         hasMore: sourcesChanged ? false : this.snapshot.projects.hasMore,
       }
     if (contextChanged) {
-      this.requestId = null
-      this.preparedRequestId = null
       this.folderMoveScope = advanceFolderMoveScope(this.folderMoveScope, previous, value)
       this.consentRevision++
-    }
-    if (!this.port.ongoing && value.identity && value.pendingSync) {
-      this.requestId = value.pendingSync.requestId
-      this.preparedRequestId = value.pendingSync.requestId
     }
     this.publish(patch)
   }
@@ -324,7 +308,7 @@ export class CloudSession {
       !this.snapshot.busy &&
       this.snapshot.screen === "identity" &&
       !this.holdIdentity &&
-      !this.snapshot.cloud.invitationEnabled &&
+      !this.canOpenSetup() &&
       !this.snapshot.cloud.setupError &&
       !this.snapshot.error
     if (handoff && this.identityTimer) return
@@ -419,9 +403,7 @@ export class CloudSession {
       if (current()) this.localToolsLoading = false
     }
   }
-  /** Attach events before independent account/tool reads. Restore saved IDs
-   * without starting a request; neither status path blocks the other.
-   */
+  /** Attach events before independent account and tool reads. */
   load = async () => {
     const generation = this.generation
     this.accountRead?.abort()
@@ -452,7 +434,7 @@ export class CloudSession {
         }
         this.stop = stop
       }
-      if (this.port.ongoing && !this.stopOngoing) {
+      if (!this.stopOngoing) {
         const stop = await this.port.ongoing.watch((status) => {
           if (this.active && generation === this.generation) this.receiveOngoing(status, true)
         })
@@ -485,39 +467,20 @@ export class CloudSession {
           })
       }
       readRevision = this.revision
-      const value = await (this.port.ongoing
-        ? retryCloudRead(
-            () => this.projectReader.request(this.port.read, signal),
-            signal,
-            (value) => value.status === "signed_in" && !value.destination,
-          )
-        : this.projectReader.request(this.port.read, signal))
+      const value = await retryCloudRead(
+        () => this.projectReader.request(this.port.read, signal),
+        signal,
+        (value) => value.status === "signed_in" && !value.destination,
+      )
       if (signal.aborted || !currentLoad()) return
       clearTimeout(timeout)
       accountReadFinished = true
-      const appliedRead = readRevision === this.revision
-      if (appliedRead) this.receive(value)
-      if (!this.port.ongoing && appliedRead && value.identity && value.pendingSync) {
-        this.requestId = value.pendingSync.requestId
-        this.publish({
-          screen: "complete",
-          busy: false,
-          sync: value.pendingSync.result,
-        })
-        const reconcileRevision = this.revision
-        const sync = await this.port.reconcile(this.requestId)
-        if (!currentLoad()) return
-        if (reconcileRevision !== this.revision) {
-          this.publish({ busy: false })
-          return
-        }
-        this.publish({ sync, screen: "complete" })
-      }
+      if (readRevision === this.revision) this.receive(value)
       this.publish({ busy: false })
-      if (this.port.ongoing && this.snapshot.cloud.identity) await this.loadProjects()
+      if (this.snapshot.cloud.identity) await this.loadProjects()
     } catch (error) {
       if ((signal.aborted && signal.reason !== accountTimeout) || !currentLoad()) return
-      if (this.port.ongoing && readRevision !== undefined && readRevision !== this.revision) {
+      if (readRevision !== undefined && readRevision !== this.revision) {
         this.publish({ busy: false })
         if (this.snapshot.cloud.status === "signed_in") await this.loadProjects()
         return
@@ -941,7 +904,7 @@ export class CloudSession {
 
   /** Ask desktop to scan the exact saved policy shown in Settings. */
   private backfillSync = async (context: CloudViewSnapshot, teamId?: string) => {
-    const backfill = this.port.ongoing?.backfill
+    const backfill = this.port.ongoing.backfill
     const target = backfillTarget(context, this.snapshot, this.projectBinding(true), teamId)
     if (!backfill || !target || this.syncInFlight) return "stopped" as const
     return this.changeSyncControl(() => backfill(target.binding, target.revision), {
@@ -994,6 +957,8 @@ export class CloudSession {
   private async run(
     action: Parameters<typeof noteCloudAction>[1] | null,
     task: () => Promise<CloudSnapshot>,
+    failureMessage: (error: unknown) => string | null = () =>
+      "Cloud could not complete that action. Try again.",
   ) {
     if (this.snapshot.busy) return false
     if (this.analytics && action) noteCloudAction(this.snapshot.screen, action)
@@ -1012,16 +977,16 @@ export class CloudSession {
       if (this.active && generation === this.generation)
         this.publish({
           busy: false,
-          error: isCloudBusy(error)
-            ? CLOUD_BUSY_MESSAGE
-            : "Cloud could not complete that action. Try again.",
+          error: isCloudBusy(error) ? CLOUD_BUSY_MESSAGE : failureMessage(error),
         })
       return false
     }
   }
-  /** Start explicit browser approval; authentication alone never starts capture. */
-  begin = () =>
-    this.run(this.snapshot.cloud.authEnabled ? "sign_in" : "learn_more", this.port.begin)
+  /** Start browser approval, optionally for an action missing from the active grant. */
+  begin = (update?: CloudAccessUpdate) =>
+    this.run(update ? null : this.snapshot.cloud.authEnabled ? "sign_in" : "learn_more", () =>
+      this.port.begin(update),
+    )
   retry = () =>
     !this.snapshot.cloud.authEnabled ? this.begin() : this.run("retry", this.port.begin)
   /** Record explicit browser cancellation without cancelling saved source requests. */
@@ -1106,176 +1071,69 @@ export class CloudSession {
     await this.run(action, () =>
       this.saveDraft({ ...this.snapshot.cloud.draft, screen }, false),
     )
-    if (screen === "folders" && this.port.ongoing && !this.snapshot.projects?.loaded)
-      await this.loadProjects()
+    if (screen === "folders" && !this.snapshot.projects?.loaded) await this.loadProjects()
   }
-  /** Discard picker results after account changes and clear consent before source edits. */
-  addFolders = async (sourceKind: CloudSourceKind = "claude_jsonl") => {
+  /** Open the configured dashboard root without sending device proof. */
+  openDashboard = () =>
+    this.port.openDashboard?.() ??
+    Promise.reject(new Error("The Cloud dashboard is unavailable."))
+
+  /** Simulated ports may omit the browser setup handoff. */
+  canOpenSetup = () => !!this.port.openSetup
+
+  /** The browser owns email verification and workspace admission. */
+  openSetup = () =>
+    this.port.openSetup?.() ?? Promise.reject(new Error("Cloud setup is unavailable."))
+
+  /** Require a fresh destination list for the same device grant before showing folders. */
+  continueFromDashboard = async () => {
+    const { cloud } = this.snapshot
+    const binding = this.projectBinding()
+    if (!binding || this.snapshot.screen !== "identity") return
     const generation = this.generation
-    const account = this.snapshot.cloud.identity?.id
-    const destination = this.snapshot.cloud.destination?.id
-    await this.run("add_folder", async () => {
-      const paths = await this.port.pick(sourceKind)
-      if (
-        !this.active ||
-        generation !== this.generation ||
-        account !== this.snapshot.cloud.identity?.id ||
-        destination !== this.snapshot.cloud.destination?.id
-      )
-        return this.snapshot.cloud
-      const folders = this.snapshot.cloud.draft.folders.map((folder) => ({ ...folder }))
-      let changed = false
-      for (const path of paths) {
-        const existing = folders.find(
-          (folder) => folder.path === path && cloudSourceKind(folder) === sourceKind,
-        )
-        if (existing && !existing.selected) {
-          existing.selected = true
-          changed = true
-        } else if (!existing && folders.length < 100) {
-          folders.push({
-            path,
-            selected: true,
-            ...(sourceKind === "opencode_sqlite_v2" ? { sourceKind } : {}),
+    await this.run(
+      "continue",
+      async () => {
+        this.projectReader.suspend()
+        // The native check can rotate the grant before reading destinations.
+        // Wait for its HTTP deadlines and the current read in the account lane.
+        const read = (this.workspaceRead = new AbortController())
+        const workspaces = await this.projectReader
+          .request(() => this.port.workspaces?.(binding) ?? Promise.resolve(null), read.signal)
+          .finally(() => {
+            if (this.workspaceRead === read) this.workspaceRead = undefined
           })
-          changed = true
-        }
-      }
-      if (!changed) return this.snapshot.cloud
-      this.invalidateContentConfirmation()
-      return this.saveDraft({ ...this.snapshot.cloud.draft, folders })
-    })
-    if (this.port.ongoing) await this.loadProjects()
-  }
-  /** Clear consent immediately, before a delayed preference save can complete. */
-  selectFolder = (
-    path: string,
-    selected: boolean,
-    sourceKind: CloudSourceKind = "claude_jsonl",
-  ) => {
-    this.invalidateContentConfirmation()
-    return this.run("select_folder", () =>
-      this.saveDraft({
-        ...this.snapshot.cloud.draft,
-        folders: this.snapshot.cloud.draft.folders.map((folder) =>
-          folder.path === path && cloudSourceKind(folder) === sourceKind
-            ? { ...folder, selected }
-            : folder,
-        ),
-      }),
+        const { cloud: current, screen } = this.snapshot
+        if (
+          !this.active ||
+          this.generation !== generation ||
+          screen !== "identity" ||
+          current.status !== "signed_in" ||
+          current.identity?.id !== binding.accountId ||
+          current.destination?.id !== binding.destinationId ||
+          current.grantId !== cloud.grantId ||
+          current.grantExpiresAt !== cloud.grantExpiresAt ||
+          !workspaces?.some(
+            ({ id, kind }) => id === binding.destinationId && kind === "personal",
+          )
+        )
+          throw new Error("Could not verify Cloud workspaces.")
+        if (this.projectPages && this.projectReader.canUseChoices)
+          this.publishProjectGroups(this.projectPages, workspaces)
+        return this.saveDraft({ ...current.draft, screen: "folders" }, false)
+      },
+      (error) =>
+        this.snapshot.cloud.status === "reauth_required"
+          ? null
+          : (cloudReadScopeMessage(error) ?? "Could not continue to Cloud folders. Try again."),
     )
+    const view = this.getSnapshot()
+    if (view.screen === "folders" && !view.projects?.loaded) await this.loadProjects()
   }
-  /** Remove a draft choice, not any saved request, source, or spool entry. */
-  removeFolder = (path: string, sourceKind: CloudSourceKind = "claude_jsonl") => {
-    this.invalidateContentConfirmation()
-    return this.run(null, () =>
-      this.saveDraft({
-        ...this.snapshot.cloud.draft,
-        folders: this.snapshot.cloud.draft.folders.filter(
-          (folder) => folder.path !== path || cloudSourceKind(folder) !== sourceKind,
-        ),
-      }),
-    )
-  }
-  /** Handle an explicit Start or Update click for the rendered context. Loading
-   * rows or changing a selection never calls this method. Retry keeps saved IDs.
-   */
+  /** Confirm the rendered folder choices only after an explicit Start click. */
   startSync = async (context: CloudViewSnapshot = this.snapshot) => {
     if (!this.isCurrentConfirmation(context)) return
-    if (this.port.ongoing) return this.startProjectSync()
-    const selected = this.snapshot.cloud.draft.folders.filter((folder) => folder.selected)
-    const selectionKey = selectedFoldersKey(this.snapshot.cloud)
-    const destination = personalCloudDestination(this.snapshot.cloud.destination ?? null)
-    if (
-      this.snapshot.busy ||
-      this.syncInFlight ||
-      (!this.snapshot.cloud.captureEnabled && this.snapshot.screen !== "folders") ||
-      !(this.snapshot.cloud.captureEnabled || this.snapshot.cloud.syncEnabled) ||
-      this.snapshot.cloud.status !== "signed_in" ||
-      !!this.snapshot.cloud.setupError ||
-      !this.snapshot.cloud.identity ||
-      !destination ||
-      this.snapshot.cloud.pendingSync?.result.status === "cancelled" ||
-      !selected.length
-    )
-      return
-    if (this.analytics)
-      noteCloudAction(
-        this.snapshot.cloud.captureEnabled ? this.snapshot.screen : "folders",
-        "start_sync",
-      )
-    const generation = this.generation
-    const revision = this.revision
-    const account = this.snapshot.cloud.identity.id
-    const desktopCapture = this.snapshot.cloud.captureEnabled === true
-    const destinationId = destination.id
-    const consent = legacyCaptureConsent({ accountId: account, destinationId }, selected)
-    const requestId = this.requestId ?? crypto.randomUUID()
-    this.requestId = requestId
-    const existing = this.preparedRequestId === requestId
-    const consentRevision = this.consentRevision
-    const current = () =>
-      this.active &&
-      generation === this.generation &&
-      this.requestId === requestId &&
-      this.snapshot.cloud.status === "signed_in" &&
-      !this.snapshot.cloud.setupError &&
-      this.snapshot.cloud.identity?.id === account &&
-      personalCloudDestination(this.snapshot.cloud.destination ?? null)?.id === destinationId &&
-      selectedFoldersKey(this.snapshot.cloud) === selectionKey &&
-      consentRevision === this.consentRevision &&
-      !(
-        this.snapshot.cloud.pendingSync?.requestId === requestId &&
-        this.snapshot.cloud.pendingSync.result.status === "cancelled"
-      )
-    this.syncInFlight = true
-    const starting: SyncResult = { status: "starting" }
-    this.publish({
-      screen: "complete",
-      busy: false,
-      sync: starting,
-      error: null,
-      accountReadFailed: false,
-      sourceListingNeedsRetry: false,
-    })
-    try {
-      if (!existing) {
-        await this.port.prepareSync(selected, requestId, consent)
-        if (!current()) return
-        this.preparedRequestId = requestId
-      }
-      if (!current()) return
-      const sync =
-        existing && !desktopCapture
-          ? await this.port.reconcile(requestId)
-          : await this.port.start(selected, requestId, consent)
-      if (current() && (desktopCapture || revision === this.revision))
-        this.publish({ sync, busy: false, screen: "complete" })
-    } catch (error) {
-      if (current() && (desktopCapture || revision === this.revision)) {
-        const saved = desktopCapture && this.preparedRequestId === requestId
-        const busy = isCloudBusy(error)
-        this.publish({
-          sync: { status: saved ? "upload_unavailable" : busy ? "unavailable" : "ambiguous" },
-          busy: false,
-          screen: "complete",
-          sourceListingNeedsRetry: saved,
-          ...(busy
-            ? { error: CLOUD_BUSY_MESSAGE }
-            : saved
-              ? {
-                  error:
-                    "Could not finish listing sources. Your request is saved. Retry in Settings > Sessions.",
-                }
-              : {}),
-        })
-      }
-    } finally {
-      this.syncInFlight = false
-      // Clear only this operation's progress, not state from a newer desktop event.
-      if (this.active && generation === this.generation && this.snapshot.sync === starting)
-        this.publish({ sync: { status: "unavailable" } })
-    }
+    return this.startProjectSync()
   }
   private isCurrentConfirmation(context: CloudViewSnapshot) {
     return (

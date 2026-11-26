@@ -11,7 +11,6 @@ import {
   emptyCloudSnapshot,
   type CloudPort,
   type CloudSnapshot,
-  type SyncResult,
   type CloudOngoingStatus,
   type DesktopCloudProjectGroup,
 } from "../../src/lib/cloud"
@@ -27,6 +26,8 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
   const backgroundProgress = params.has("backgroundProgress")
   const partialSettingsFolders = params.has("partialSettingsFolders")
   const pagedSettingsFolders = params.has("pagedSettingsFolders")
+  const joinedTeam = name === "settings-folders" && params.has("joinedTeam")
+  const browserSetup = params.has("browserSetup")
   const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
   const firstPersonalSaveFailure =
     name === "settings-folders" && params.has("personalSaveFailure")
@@ -354,11 +355,35 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       : ongoing
   return {
     displayHome: async () => "/Users/avery",
+    ...(browserSetup && {
+      openSetup: async () => {
+        document.body.dataset.browserSetupOpened = "true"
+      },
+    }),
+    ...(browserSetup &&
+      name === "identity" && {
+        workspaces: async () => [
+          { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+          ...(document.body.dataset.browserSetupOpened === "true"
+            ? [{ id: "synthetic-team", name: teamName, kind: "team" as const }]
+            : []),
+        ],
+      }),
     ...(name === "settings-team-confirmation"
       ? {
           workspaces: async () => [
             { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
             { id: "synthetic-team", name: teamName, kind: "team" as const },
+          ],
+        }
+      : {}),
+    ...(joinedTeam
+      ? {
+          workspaces: async () => [
+            { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+            ...(document.body.dataset.joinedTeam === "true"
+              ? [{ id: "joined-team", name: "Joined Team", kind: "team" as const }]
+              : []),
           ],
         }
       : {}),
@@ -737,7 +762,6 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       value = { ...emptyCloudSnapshot, status: "signed_out", remoteRevocationUnconfirmed: true }
       return value
     },
-    pick: async () => ["/Example/New folder"],
     localTools: {
       read: async () => localTools,
       watch: async (listener) => {
@@ -754,25 +778,6 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         return () => stops.forEach((stop) => stop())
       },
     },
-    prepareSync: async () => {},
-    start: async () =>
-      name === "ambiguous"
-        ? Promise.reject(new Error("Synthetic network ambiguity"))
-        : name === "failed"
-          ? { status: "failed" }
-          : {
-              status: name as "accepted" | "partial" | "syncing",
-              operationId: "synthetic-operation",
-              completed: name === "partial" ? 1 : 0,
-              total: 2,
-            },
-    reconcile: async (): Promise<SyncResult> => ({
-      status: "accepted",
-      operationId: "synthetic-operation",
-      completed: 0,
-      total: 2,
-    }),
-    cancelSync: async () => ({ status: "cancelled" }),
   }
 }
 /** Render the selected synthetic view without analytics or persisted onboarding changes. */

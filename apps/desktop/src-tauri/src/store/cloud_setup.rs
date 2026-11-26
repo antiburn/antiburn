@@ -6,7 +6,8 @@ use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
 impl Store {
-    /// Create feature-owned tables in one checked transaction on admitted blocking work.
+    /// Upgrade feature-owned tables in one transaction on admitted blocking work.
+    /// Retired request tables and their rows stay intact but do not grant sync.
     /// Call before Cloud table access; failure can retry without marking setup ready.
     pub(crate) fn initialize_cloud_setup(&self) -> Result<()> {
         let mut connection = self.lock();
@@ -18,21 +19,6 @@ impl Store {
                 draft_json TEXT NOT NULL CHECK(length(draft_json) <= 524288),
                 PRIMARY KEY (account_id, workspace_id)
             );
-            CREATE TABLE IF NOT EXISTS cloud_source_scope (
-                account_id TEXT NOT NULL,
-                root_path TEXT NOT NULL,
-                source_scope_id TEXT NOT NULL UNIQUE,
-                PRIMARY KEY (account_id, root_path)
-            );
-            CREATE TABLE IF NOT EXISTS cloud_capture_request (
-                request_id TEXT PRIMARY KEY,
-                account_id TEXT NOT NULL,
-                destination_id TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                record_json TEXT NOT NULL CHECK(length(record_json) <= 1048576)
-            );
-            CREATE INDEX IF NOT EXISTS cloud_capture_request_owner
-                ON cloud_capture_request(account_id, destination_id, created_at);
             CREATE TABLE IF NOT EXISTS cloud_sync_policy (
                 account_id TEXT NOT NULL,
                 destination_id TEXT NOT NULL,
@@ -227,6 +213,10 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "tests/cloud_setup_upgrade_integration_tests.rs"]
+mod upgrade_tests;
 
 #[cfg(test)]
 mod tests {

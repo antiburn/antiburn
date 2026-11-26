@@ -2,7 +2,6 @@
  * this renderer boundary; saved requests are not capture or upload acceptance.
  */
 import { invoke } from "@tauri-apps/api/core"
-import { open } from "@tauri-apps/plugin-dialog"
 import { appInfo, hasShell } from "./ipc"
 import { listen } from "./tauriEvents"
 import type { LocalToolsStatus } from "./ipcPayloads"
@@ -119,18 +118,8 @@ export interface CloudFolder {
   sourceKind?: CloudSourceKind
 }
 /** Normalize only an absent legacy kind; desktop code rejects unknown kinds. */
-export const cloudSourceKind = (source: CloudFolder): CloudSourceKind =>
+const cloudSourceKind = (source: CloudFolder): CloudSourceKind =>
   source.sourceKind ?? "claude_jsonl"
-/** Display the provider without changing its saved source format. */
-export const cloudSourceLabel = (source: CloudFolder): string =>
-  ({
-    claude_jsonl: "Claude",
-    opencode_sqlite_v2: "OpenCode V2",
-    codex_jsonl: "Codex",
-    pi_jsonl: "Pi",
-    cursor_cli_agent_jsonl: "Cursor CLI",
-    cursor_ide_composer: "Cursor IDE",
-  })[cloudSourceKind(source)]
 /** Compare provider and path together without treating display counts as consent. */
 export const cloudSourceKey = (source: CloudFolder) =>
   JSON.stringify([cloudSourceKind(source), source.path])
@@ -401,26 +390,19 @@ export interface CloudOngoingPort {
     expectedPolicyRevision: string,
   ): Promise<CloudOngoingStatus>
 }
-/** One explicit confirmation for a saved request. V1 stays Claude-only. V2
- * includes proved session-owned database blobs, never external files or URLs.
- */
-export type CaptureConsent = CloudDestinationBinding & {
-  fullContent: true
-  attachments: false
-} & (
-    | { version: "native-full-content-v1"; selectedRoots: string[] }
-    | { version: "native-full-content-v2"; selectedSources: CloudSourceSelection[] }
-  )
 /** Desktop account state, not a build gate. authEnabled requires valid service
  * configuration. captureEnabled permits explicit desktop capture on this platform;
  * syncEnabled reports a saved, unpaused ongoing policy, not upload acceptance.
  */
 export interface CloudSnapshot {
-  /** The current signed-in device can use account invitation routes. */
-  invitationEnabled?: boolean
-  /** Display-only warning for this launch. A new grant cannot read the old attempt. */
-  invitationResultUnconfirmed?: boolean
   authEnabled: boolean
+  /** A configured system-browser dashboard can open without device approval. */
+  dashboardAvailable?: boolean
+  sessionReadsAllowed?: boolean
+  sessionReadUpdateAvailable?: boolean
+  captureUpdateAvailable?: boolean
+  accessUpdate?: "waiting" | "denied" | "failed" | null
+  grantId?: string | null
   syncEnabled: boolean
   captureEnabled?: boolean
   status: CloudStatus
@@ -433,9 +415,10 @@ export interface CloudSnapshot {
   localResetAvailable?: boolean
   remoteRevocationUnconfirmed?: boolean
   setupError?: string | null
-  pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
+/** Additional actions a signed-in device can request in the browser. */
+export type CloudAccessUpdate = "session_reads" | "capture"
 /** Cleanup state for a legacy Team connection. Upload failure alone does not allow reset. */
 export interface CloudWorkspaceRecovery {
   accountId: string
@@ -444,24 +427,9 @@ export interface CloudWorkspaceRecovery {
   localResetAvailable?: boolean | undefined
   remoteRevocationUnconfirmed?: boolean | undefined
 }
-/** Legacy saved-request states. Ongoing uploads use CloudOngoingStatus. */
-export type SyncResult =
-  | {
-      status:
-        | "unavailable"
-        | "upload_unavailable"
-        | "idle"
-        | "starting"
-        | "ambiguous"
-        | "failed"
-        | "cancelled"
-    }
-  | {
-      status: "accepted" | "syncing" | "partial" | "complete"
-      operationId: string
-      completed: number
-      total: number
-    }
+/** State of one folder confirmation. Transfer status comes from CloudOngoingStatus. */
+export type SyncResult = { status: "unavailable" | "idle" | "starting" | "ambiguous" }
+
 /**
  * Desktop commands for setup and Settings.
  * Attach watch before read: commands, including reads, can emit state before
@@ -471,20 +439,24 @@ export type SyncResult =
 export interface CloudPort {
   /** Current desktop home for display only. Missing proof keeps raw paths visible. */
   displayHome?(): Promise<string | null>
+  /** Open the configured dashboard root without sending device proof. */
+  openDashboard?(): Promise<void>
+  /** Open the browser setup route on the configured resource origin without device proof. */
+  openSetup?(): Promise<void>
   /** List verified destinations for this account. Listing does not grant folder consent. */
   workspaces?(binding: CloudDestinationBinding): Promise<CloudWorkspace[] | null>
   /** Clear an old Team connection locally. This does not close its remote grant. */
   resetWorkspace?(binding: CloudDestinationBinding, workspaceId: string): Promise<CloudStatus>
   /** Observe cleanup for old Team connections only. */
   watchWorkspace?(listener: (result: CloudWorkspaceRecovery) => void): Promise<() => void>
-  /** Desktop grouped project path. Legacy saved-request fixtures may omit it. */
-  ongoing?: CloudOngoingPort | undefined
+  /** Read project folders and manage ongoing upload consent. */
+  ongoing: CloudOngoingPort
   /** Refresh desktop authority. A state event can precede this reply. */
   read(): Promise<CloudSnapshot>
   /** Observe safe snapshots until the returned stop function is called. */
   watch(listener: (value: CloudSnapshot) => void): Promise<() => void>
   /** Open browser approval, or the information page when service config is absent. */
-  begin(): Promise<CloudSnapshot>
+  begin(accessUpdate?: CloudAccessUpdate): Promise<CloudSnapshot>
   /** Cancel a pending browser attempt only; keep established auth and saved requests. */
   cancel(): Promise<CloudSnapshot>
   /** Save preferences only for the exact current personal account binding. */
@@ -497,8 +469,6 @@ export interface CloudPort {
   signOut(): Promise<CloudSnapshot>
   /** Permit reconnect only without saved proof; retain the remote-revocation warning. */
   resetLocal(): Promise<CloudSnapshot>
-  /** Ask for exact sources of one provider. Default hints never authorize reads. */
-  pick(sourceKind?: CloudSourceKind): Promise<string[]>
   /** Observe CLI and skill setup independently of Cloud and vendor integrations.
    * Attach the listener before reading; neither operation installs or repairs tools.
    */
@@ -506,14 +476,6 @@ export interface CloudPort {
     read(): Promise<LocalToolsStatus>
     watch(listener: (status: LocalToolsStatus) => void): Promise<() => void>
   }
-  /** Save exact account/root consent before listing. Reuse this ID after uncertainty. */
-  prepareSync(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<void>
-  /** List a legacy saved selection only; this command does not capture or upload bytes. */
-  start(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<SyncResult>
-  /** Read saved state only. Reconciliation must not rescan or submit an upload. */
-  reconcile(requestId: string): Promise<SyncResult>
-  /** Mark the original account's saved selection cancelled without deleting bytes. */
-  cancelSync(requestId: string): Promise<SyncResult>
 }
 /** Safe busy rejection means desktop work did not start; never surface other raw errors. */
 export const CLOUD_BUSY_MESSAGE = "Cloud is busy. Try again."
@@ -552,20 +514,20 @@ async function cloudCommand(command: string, args?: Record<string, unknown>) {
   if (!(await cloudBuildEnabled())) return emptyCloudSnapshot
   return args ? invoke<CloudSnapshot>(command, args) : invoke<CloudSnapshot>(command)
 }
-/** Keep saved-request IPC gated separately from simulated operation progress. */
-async function cloudSyncCommand(
-  command: string,
-  args: Record<string, unknown>,
-): Promise<SyncResult> {
-  if (!(await cloudBuildEnabled())) return { status: "unavailable" }
-  return invoke<SyncResult>(command, args)
-}
 /** Invoke Cloud commands only when Rust AppInfo confirms the non-default feature. */
 export const desktopCloudPort: CloudPort = {
   displayHome: async () => {
     if (!hasShell()) return null
     const info = await appInfo()
     return info?.homeDirectory ?? null
+  },
+  openDashboard: async () => {
+    if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable.")
+    await invoke("cloud_open_dashboard")
+  },
+  openSetup: async () => {
+    if (!(await cloudBuildEnabled())) throw new Error("Cloud is unavailable.")
+    await invoke("cloud_open_dashboard", { setup: true })
   },
   workspaces: async (binding) =>
     (await cloudBuildEnabled())
@@ -609,28 +571,13 @@ export const desktopCloudPort: CloudPort = {
     (await cloudBuildEnabled())
       ? listen<CloudSnapshot>("cloud:changed", (event) => listener(event.payload))
       : () => {},
-  begin: () => cloudCommand("cloud_begin"),
+  begin: (accessUpdate) =>
+    cloudCommand("cloud_begin", accessUpdate ? { accessUpdate } : undefined),
   cancel: () => cloudCommand("cloud_cancel"),
   save: (value, binding, foldersEdited = true) =>
     cloudCommand("cloud_save_draft", { value, binding, foldersEdited }),
   signOut: () => cloudCommand("cloud_sign_out"),
   resetLocal: () => cloudCommand("cloud_reset_local"),
-  pick: async (sourceKind = "claude_jsonl") => {
-    if (!(await cloudBuildEnabled())) return []
-    const database = sourceKind === "opencode_sqlite_v2"
-    const defaultPath = database
-      ? await invoke<string | null>("cloud_source_picker_directory")
-      : null
-    const selected = await open({
-      directory: !database,
-      multiple: true,
-      title: database
-        ? "Choose OpenCode V2 databases"
-        : "Choose Claude projects/<project> source directories",
-      ...(defaultPath ? { defaultPath } : {}),
-    })
-    return selected === null ? [] : Array.isArray(selected) ? selected : [selected]
-  },
   localTools: {
     read: async () =>
       hasShell()
@@ -648,10 +595,4 @@ export const desktopCloudPort: CloudPort = {
         ? listen<LocalToolsStatus>("local-tools:changed", (event) => listener(event.payload))
         : () => {},
   },
-  prepareSync: async (folders, requestId, consent) => {
-    await cloudSyncCommand("cloud_prepare_sync", { folders, requestId, consent })
-  },
-  start: (_folders, requestId) => cloudSyncCommand("cloud_start_sync", { requestId }),
-  reconcile: (requestId) => cloudSyncCommand("cloud_reconcile_sync", { requestId }),
-  cancelSync: (requestId) => cloudSyncCommand("cloud_cancel_sync", { requestId }),
 }

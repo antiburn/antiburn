@@ -114,6 +114,7 @@ fn cloud_capture_only_account_bearer_reserves_only_the_exact_team_membership() {
 #[test]
 fn cloud_capture_and_session_account_bearer_reserves_only_the_exact_team_membership() {
     assert_team_reservation("capture:write sessions:list sessions:read");
+    assert_team_reservation("capture:write sessions:list sessions:read workspaces:join");
 }
 
 fn assert_team_reservation(scope: &'static str) {
@@ -127,16 +128,12 @@ fn assert_team_reservation(scope: &'static str) {
     let personal_id = "00000000-0000-0000-0000-000000000001";
     let generation = "opaque-membership";
     let worker = std::thread::spawn(move || {
+        let personal = serde_json::json!({"workspace_id":personal_id,"name":"Personal","type":"personal","membership_generation":null});
         let workspaces = serde_json::json!({"workspaces":[
-            {"workspace_id":personal_id,"name":"Personal","type":"personal","membership_generation":null},
+            personal.clone(),
             {"workspace_id":team_id,"name":"Example Team","type":"team","membership_generation":generation}
         ]});
         let responses = [
-            (
-                "GET",
-                "/v1/devices/invitation-capabilities",
-                serde_json::json!({"version": 0}),
-            ),
             (
                 "POST",
                 "/v1/devices/token",
@@ -149,7 +146,7 @@ fn assert_team_reservation(scope: &'static str) {
             ),
             (
                 "GET",
-                "/v1/devices/session",
+                "/v1/devices/grants/current",
                 serde_json::json!({
                     "user_id":"synthetic-user", "display_name":"Example",
                     "grant_id":"account-grant", "device_name":"Example",
@@ -157,12 +154,17 @@ fn assert_team_reservation(scope: &'static str) {
                     "grant_expires_at":"1970-01-01T02:46:40Z", "access_expires_at":"1970-01-01T00:05:00Z",
                 }),
             ),
+            (
+                "GET",
+                "/v1/captures/destinations",
+                serde_json::json!({"workspaces":[personal]}),
+            ),
             ("GET", "/v1/captures/destinations", workspaces.clone()),
             ("GET", "/v1/captures/destinations", workspaces.clone()),
             ("GET", "/v1/captures/destinations", workspaces),
             (
                 "POST",
-                "/v1/captures/reserve",
+                "/v1/captures",
                 serde_json::json!({"reservation_id":"team-reservation"}),
             ),
         ];
@@ -187,13 +189,9 @@ fn assert_team_reservation(scope: &'static str) {
             assert!(!request.headers.contains_key("origin"));
             assert_eq!(
                 request.headers.get("authorization").map(String::as_str),
-                (!matches!(
-                    path,
-                    "/v1/devices/invitation-capabilities" | "/v1/devices/token"
-                ))
-                .then_some("Bearer account-bearer")
+                (path != "/v1/devices/token").then_some("Bearer account-bearer")
             );
-            if path == "/v1/captures/reserve" {
+            if path == "/v1/captures" {
                 let body = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap();
                 assert_eq!(body["identity"]["destination_id"], team_id);
                 assert_eq!(body["membership_generation"], generation);
@@ -213,8 +211,18 @@ fn assert_team_reservation(scope: &'static str) {
     )
     .with_clock(|| 100);
     let (url, _listener, attempt) = engine.begin(100, 1).unwrap();
-    assert!(!url.contains("workspace_id"));
-    assert!(!url.contains("native_invitations"));
+    let url = url::Url::parse(&url).unwrap();
+    assert_eq!(url.path(), "/devices/authorize/account");
+    assert_eq!(
+        url.query_pairs().map(|(key, _)| key).collect::<Vec<_>>(),
+        [
+            "redirect_uri",
+            "state",
+            "code_challenge",
+            "code_challenge_method",
+            "device_name",
+        ]
+    );
     engine
         .callback(
             &attempt,
@@ -228,6 +236,13 @@ fn assert_team_reservation(scope: &'static str) {
         vault.read().unwrap().unwrap().refresh_token,
         "account-refresh"
     );
+    let binding = super::super::DestinationBinding {
+        account_id: "synthetic-user".into(),
+        destination_id: personal_id.into(),
+    };
+    let refreshed = engine.eligible_workspaces(&binding, &|| true).unwrap();
+    assert!(refreshed.iter().any(|item| item.workspace.id == team_id));
+    assert_eq!(engine.session().unwrap().workspace.id, personal_id);
     let target = CaptureIdentity {
         destination_id: team_id.into(),
         ..identity()
@@ -285,7 +300,7 @@ fn cloud_execution_http_reserve_uses_exact_device_route_and_api_bearer() {
         "reservation"
     );
     let request = server.join().unwrap();
-    assert_eq!(request.line, "POST /v1/captures/reserve HTTP/1.1");
+    assert_eq!(request.line, "POST /v1/captures HTTP/1.1");
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer synthetic-api-access")
@@ -308,21 +323,25 @@ fn cloud_execution_http_reserve_capacity_requires_the_flat_typed_error() {
     use antiburn_cloud_capture::TransportError;
     let valid = serde_json::json!({
         "code": "capture_limit", "message": "Any safe explanation.",
-        "retryable": true, "requestId": "synthetic-request",
+        "retryable": true, "request_id": "synthetic-request",
     });
     for (body, expected) in [
         (valid.clone(), TransportError::Backpressure),
+        (
+            serde_json::json!({"code":"capture_limit","message":"capacity","retryable":true,"requestId":"synthetic"}),
+            TransportError::Offline,
+        ),
         (serde_json::json!({"error": valid}), TransportError::Offline),
         (
             serde_json::json!({"message":"capture_limit", "retryable":true}),
             TransportError::Offline,
         ),
         (
-            serde_json::json!({"code":"capture_limit","message":null,"retryable":true,"requestId":"synthetic"}),
+            serde_json::json!({"code":"capture_limit","message":null,"retryable":true,"request_id":"synthetic"}),
             TransportError::Offline,
         ),
         (
-            serde_json::json!({"code":"capture_limit","message":"capacity","retryable":false,"requestId":"synthetic"}),
+            serde_json::json!({"code":"capture_limit","message":"capacity","retryable":false,"request_id":"synthetic"}),
             TransportError::Offline,
         ),
     ] {
@@ -403,11 +422,80 @@ fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
     assert_eq!(
         request.line,
         format!(
-            "GET /v1/captures/capture-synthetic/status?plan_id=plan-one&manifest_sha256={} HTTP/1.1",
+            "GET /v1/captures/capture-synthetic?plan_id=plan-one&manifest_sha256={} HTTP/1.1",
             "a".repeat(64)
         )
     );
     assert!(request.body.is_empty());
+}
+
+#[test]
+fn cloud_execution_http_finalize_requires_exact_status_target() {
+    use super::super::upload::{Failure, HttpTransport};
+    use antiburn_cloud_capture::TransportError;
+
+    let manifest = CaptureManifest {
+        version: 1,
+        identity: identity(),
+        compression: "gzip-mtime0-os255-level6".into(),
+        chunk_expanded_bytes: 8 * 1024 * 1024,
+        metadata_fingerprint: "a".repeat(64),
+        source_fingerprint: "b".repeat(64),
+        streams: Vec::new(),
+    };
+    let plan = UploadPlan {
+        identity: identity(),
+        manifest_sha256: "a".repeat(64),
+        plan_id: "plan-one".into(),
+        chunks: Vec::new(),
+        required_transfer_bytes: 0,
+        reused_bytes: 0,
+    };
+    let target = format!(
+        "/v1/captures/capture-synthetic?plan_id=plan-one&manifest_sha256={}",
+        plan.manifest_sha256
+    );
+    for (status_url, expected) in [
+        (target.clone(), Ok(())),
+        (
+            target.replace("capture-synthetic?", "capture-synthetic/status?"),
+            Err(TransportError::Rejected),
+        ),
+        (
+            target.replace("capture-synthetic", "capture-other"),
+            Err(TransportError::Rejected),
+        ),
+        (
+            target.replace("plan-one", "plan-other"),
+            Err(TransportError::Rejected),
+        ),
+        (
+            target.replace(&plan.manifest_sha256, &"b".repeat(64)),
+            Err(TransportError::Rejected),
+        ),
+        (
+            format!("https://other.example{target}"),
+            Err(TransportError::Rejected),
+        ),
+    ] {
+        let response = serde_json::json!({
+            "operation_id": "synthetic-operation",
+            "status_url": status_url,
+        });
+        let (origin, worker) = server(202, response.to_string(), "");
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = connected(directory.path(), &origin);
+        let mut transport = HttpTransport::new(&mut engine, &|| true, &|| true, &origin, None);
+        assert_eq!(
+            transport.complete("reservation", &manifest, &plan),
+            expected
+        );
+        assert_eq!(transport.failure, expected.err().map(|_| Failure::Rejected));
+        assert_eq!(
+            worker.join().unwrap().line,
+            "POST /v1/captures/capture-synthetic/finalize HTTP/1.1"
+        );
+    }
 }
 
 #[test]
@@ -660,7 +748,10 @@ fn cloud_upload_checks_source_authority_before_reading_and_before_put() {
             object_storage.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
-        assert!(worker.join().unwrap().line.contains("/parts"));
+        assert_eq!(
+            worker.join().unwrap().line,
+            "POST /v1/captures/capture-synthetic/part-urls HTTP/1.1"
+        );
     }
 }
 
@@ -745,10 +836,17 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
     let valid = serde_json::json!({
         "code": "source_suppressed", "retryable": false,
         "message": "This session was deleted from Cloud. It will not upload again automatically.",
-        "requestId": "synthetic-request",
+        "request_id": "synthetic-request",
     });
     for (body, expected) in [
         (valid.clone(), Failure::SourceSuppressed),
+        (
+            serde_json::json!({
+                "code": "source_suppressed", "retryable": false,
+                "message": "This session was deleted from Cloud.", "requestId": "synthetic-request",
+            }),
+            Failure::Conflict,
+        ),
         (
             {
                 let mut value = valid.clone();
@@ -834,11 +932,11 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
     assert!(
         requests[0]
             .line
-            .starts_with("GET /v1/captures/capture-synthetic/status?")
+            .starts_with("GET /v1/captures/capture-synthetic?")
     );
     assert_eq!(
         requests[1].line,
-        "POST /v1/captures/capture-synthetic/renew HTTP/1.1"
+        "POST /v1/captures/capture-synthetic/renew-lease HTTP/1.1"
     );
 }
 
@@ -862,10 +960,7 @@ fn cloud_execution_http_missing_endpoint_and_redirect_do_not_claim_reservation()
         );
         assert!(transport.reserve(&identity(), 100).is_err());
         assert_eq!(transport.failure, Some(expected));
-        assert_eq!(
-            server.join().unwrap().line,
-            "POST /v1/captures/reserve HTTP/1.1"
-        );
+        assert_eq!(server.join().unwrap().line, "POST /v1/captures HTTP/1.1");
     }
 }
 
@@ -931,7 +1026,7 @@ fn cloud_execution_http_saved_part_has_signed_checksum_length_and_no_api_bearer(
     let api = api_server.join().unwrap();
     assert_eq!(
         api.line,
-        "POST /v1/captures/capture-synthetic/parts HTTP/1.1"
+        "POST /v1/captures/capture-synthetic/part-urls HTTP/1.1"
     );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&api.body).unwrap(),
@@ -982,7 +1077,7 @@ fn capture_service() -> (String, JoinHandle<usize>) {
             let request = read_request(&mut stream);
             let object = request.line.starts_with("PUT /object?");
             let (_, path) = request.line.split_once(' ').unwrap();
-            assert!(object || path.starts_with("/v1/captures/"));
+            assert!(object || path == "/v1/captures HTTP/1.1" || path.starts_with("/v1/captures/"));
             assert_eq!(request.headers.contains_key("authorization"), !object);
             assert!(!request.headers.contains_key("cookie"));
             assert!(!request.headers.contains_key("origin"));
@@ -991,7 +1086,7 @@ fn capture_service() -> (String, JoinHandle<usize>) {
             } else {
                 serde_json::from_slice(&request.body).unwrap()
             };
-            let (status, body) = if request.line == "POST /v1/captures/reserve HTTP/1.1" {
+            let (status, body) = if request.line == "POST /v1/captures HTTP/1.1" {
                 assert_eq!(input["agent"], "claude-code");
                 (200, serde_json::json!({"reservation_id":"reservation"}))
             } else if request.line.contains("/manifest ") {
@@ -1023,15 +1118,23 @@ fn capture_service() -> (String, JoinHandle<usize>) {
                 (200, serde_json::to_value(value).unwrap())
             } else if request.line.starts_with("GET ") {
                 let saved = manifest.as_ref().unwrap();
+                let digest = saved.sha256().unwrap();
+                assert_eq!(
+                    request.line,
+                    format!(
+                        "GET /v1/captures/{}?plan_id=plan&manifest_sha256={digest} HTTP/1.1",
+                        saved.identity.capture_id
+                    )
+                );
                 let value = ServerStatus {
                     identity: saved.identity.clone(),
-                    manifest_sha256: saved.sha256().unwrap(),
+                    manifest_sha256: digest,
                     plan_id: "plan".into(),
                     uploaded_parts: receipts.clone(),
                     integrity_accepted: finalized,
                 };
                 (200, serde_json::to_value(value).unwrap())
-            } else if request.line.contains("/parts ") {
+            } else if request.line.contains("/part-urls ") {
                 let key: ChunkKey = serde_json::from_value(input["key"].clone()).unwrap();
                 let chunk = manifest.as_ref().unwrap().chunk(&key).unwrap();
                 let digest = (0..64)
@@ -1067,9 +1170,19 @@ fn capture_service() -> (String, JoinHandle<usize>) {
                 });
                 (200, serde_json::Value::Null)
             } else if request.line.contains("/finalize ") {
-                assert_eq!(receipts.len(), plan.as_ref().unwrap().chunks.len());
+                let plan = plan.as_ref().unwrap();
+                assert_eq!(receipts.len(), plan.chunks.len());
                 finalized = true;
-                (202, serde_json::Value::Null)
+                (
+                    202,
+                    serde_json::json!({
+                        "operation_id": "synthetic-operation",
+                        "status_url": format!(
+                            "/v1/captures/{}?plan_id={}&manifest_sha256={}",
+                            plan.identity.capture_id, plan.plan_id, plan.manifest_sha256
+                        ),
+                    }),
+                )
             } else {
                 panic!("unexpected synthetic service route");
             };

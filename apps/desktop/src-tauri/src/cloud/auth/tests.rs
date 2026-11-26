@@ -1,6 +1,7 @@
 use super::{
     AccountSession, Config, Credential, EligibleWorkspace, Failure, HttpTransport, TokenRequest,
-    Tokens, Transport, Vault, Workspace, WorkspaceKind, WorkspaceResponse, short_hostname,
+    Tokens, Transport, Vault, Workspace, WorkspaceKind, WorkspaceResponse, canonical_origin,
+    short_hostname,
 };
 use crate::cloud::{engine::Engine, state::StateStore};
 use std::{
@@ -57,11 +58,12 @@ fn cloud_auth_build_origins_default_only_when_both_are_absent() {
     };
     assert_eq!(config.issuer, origin);
     assert_eq!(config.resource, origin);
+    assert!(config.dashboard.is_none());
     for (url, path) in [
         (config.authorization, "/devices/authorize/account"),
         (config.token, "/v1/devices/token"),
-        (config.session, "/v1/devices/session"),
-        (config.revocation, "/v1/devices/logout"),
+        (config.session, "/v1/devices/grants/current"),
+        (config.revocation, "/v1/devices/grants/current/revoke"),
         (config.workspaces, "/v1/captures/destinations"),
     ] {
         assert_eq!(url.as_str(), format!("{origin}{path}"));
@@ -90,6 +92,29 @@ fn cloud_auth_build_origins_default_only_when_both_are_absent() {
         explicit.token.as_str(),
         "https://resource.example/v1/devices/token"
     );
+}
+
+#[test]
+fn cloud_auth_dashboard_uses_only_a_canonical_browser_origin() {
+    assert_eq!(
+        canonical_origin("https://dashboard.example")
+            .unwrap()
+            .as_str(),
+        "https://dashboard.example/"
+    );
+    assert_eq!(
+        canonical_origin("http://127.0.0.1:4174").is_some(),
+        cfg!(debug_assertions)
+    );
+    for value in [
+        "http://dashboard.example",
+        "https://user:proof@dashboard.example",
+        "https://dashboard.example/join",
+        "https://dashboard.example?code=proof",
+        "https://dashboard.example#invite",
+    ] {
+        assert!(canonical_origin(value).is_none(), "{value}");
+    }
 }
 
 #[test]
@@ -448,8 +473,8 @@ fn cloud_auth_release_disables_loopback_http_transport() {
         let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
         let url = Url::parse(origin).unwrap();
         config.token = url.join("v1/devices/token").unwrap();
-        config.session = url.join("v1/devices/session").unwrap();
-        config.revocation = url.join("v1/devices/logout").unwrap();
+        config.session = url.join("v1/devices/grants/current").unwrap();
+        config.revocation = url.join("v1/devices/grants/current/revoke").unwrap();
         assert!(matches!(
             HttpTransport.exchange(
                 &config,
@@ -623,6 +648,7 @@ mod debug_http {
                 cleanup_refresh_tokens: cleanup_refresh_tokens.clone(),
                 account_grant: true,
                 session: Some(session),
+                replacement: None,
             };
             let mut engine = Engine::new(
                 Config::from_origins(None, None),
@@ -814,7 +840,7 @@ mod debug_http {
         assert!(tokens.matches_session(&session));
         let request = worker.join().unwrap();
         request.native_only();
-        assert_eq!(request.line, "GET /v1/devices/session HTTP/1.1");
+        assert_eq!(request.line, "GET /v1/devices/grants/current HTTP/1.1");
         assert_eq!(
             request.header("authorization"),
             Some("Bearer synthetic-access")
@@ -825,7 +851,10 @@ mod debug_http {
         HttpTransport.revoke(&config, "synthetic-refresh").unwrap();
         let request = worker.join().unwrap();
         request.native_only();
-        assert_eq!(request.line, "POST /v1/devices/logout HTTP/1.1");
+        assert_eq!(
+            request.line,
+            "POST /v1/devices/grants/current/revoke HTTP/1.1"
+        );
         assert!(request.header("authorization").is_none());
         assert_eq!(
             request.body,

@@ -11,6 +11,7 @@ import {
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
 import { canRetryTeamUploads } from "../../onboarding/cloudTeamRetry"
+import { DeviceAccessUpdate } from "../../onboarding/DeviceAccessUpdate"
 import { changeFolderWithFocus } from "../../onboarding/cloudFolderFocus"
 import {
   cloudCaptureUnsupported,
@@ -36,7 +37,6 @@ import {
   CloudProjectFolderSummary,
   folderSessionsFoundLabel,
 } from "../../onboarding/CloudOnboardingFolders"
-import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import {
   cloudAccountCleanupPending,
   cloudSignOutBeforeSignIn,
@@ -52,9 +52,6 @@ import { personalCloudDestination } from "../../lib/cloudDestination"
 import {
   CLOUD_BUSY_MESSAGE,
   cloudDisplayPath,
-  cloudSourceKey,
-  cloudSourceKind,
-  cloudSourceLabel,
   type CloudOngoingStatus,
   type CloudProjectGroup,
   type CloudWorkspaceRecovery,
@@ -280,6 +277,10 @@ export function CloudAccount({
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
   const [retryingSignInRead, setRetryingSignInRead] = useState(false)
+  const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false)
+  const [openingBrowser, setOpeningBrowser] = useState(false)
+  const [browserOpenError, setBrowserOpenError] = useState<string | null>(null)
+  const accessUpdateWaiting = value.cloud.accessUpdate === "waiting"
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed =
@@ -297,6 +298,24 @@ export function CloudAccount({
     value.cloud.status === "signed_in" && !value.projects?.error
       ? value.projects?.workspaces?.length
       : undefined
+  const canRefreshWorkspaces =
+    value.cloud.status === "signed_in" &&
+    !!value.cloud.identity &&
+    personalCloudDestination(value.cloud.destination ?? null)
+  const browserActions = [
+    {
+      label: "Finish setup in browser",
+      available: session.canOpenSetup(),
+      open: session.openSetup,
+      error: "Could not open Cloud setup in your browser. Try again.",
+    },
+    {
+      label: "Open Cloud dashboard",
+      available: value.cloud.dashboardAvailable,
+      open: session.openDashboard,
+      error: "Could not open the Cloud dashboard. Try again.",
+    },
+  ]
   const accountMessage = readFailed
     ? "Could not check Cloud sign-in."
     : value.error
@@ -313,7 +332,6 @@ export function CloudAccount({
   if (!value.loaded)
     return <CloudSettingsLoading account uploadControl={!!children} folderRowId={folderRowId} />
   const loadingSyncStatus =
-    session.projectSyncSupported &&
     value.cloud.status === "signed_in" &&
     personalCloudDestination(value.cloud.destination ?? null) &&
     !value.ongoing &&
@@ -340,9 +358,56 @@ export function CloudAccount({
                     ? "Not signed in"
                     : "Antiburn Cloud is coming soon"}
           </p>
-          {value.cloud.identity && workspaceCount !== undefined && (
-            <p className="mt-1 type-footnote text-label-secondary">
-              {workspaceCount} {workspaceCount === 1 ? "workspace" : "workspaces"}
+          {value.cloud.identity && (workspaceCount !== undefined || canRefreshWorkspaces) && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 type-footnote text-label-secondary">
+              {workspaceCount !== undefined && (
+                <p aria-live="polite">
+                  {workspaceCount} {workspaceCount === 1 ? "workspace" : "workspaces"}
+                </p>
+              )}
+              {canRefreshWorkspaces && (
+                <button
+                  type="button"
+                  className="rounded-control border-0 bg-transparent p-0 underline underline-offset-2 hover:text-label aria-disabled:opacity-50"
+                  aria-disabled={value.busy || refreshingWorkspaces || undefined}
+                  aria-busy={refreshingWorkspaces || undefined}
+                  onClick={() => {
+                    if (value.busy || refreshingWorkspaces) return
+                    setRefreshingWorkspaces(true)
+                    void session
+                      .retryFolderScope()
+                      .finally(() => setRefreshingWorkspaces(false))
+                  }}
+                >
+                  Refresh workspaces
+                </button>
+              )}
+              {canRefreshWorkspaces &&
+                browserActions
+                  .filter(({ available }) => available)
+                  .map(({ label, open, error }) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-control border-0 bg-transparent p-0 underline underline-offset-2 hover:text-label aria-disabled:opacity-50"
+                      aria-disabled={openingBrowser || undefined}
+                      onClick={() => {
+                        if (openingBrowser) return
+                        setOpeningBrowser(true)
+                        setBrowserOpenError(null)
+                        void open()
+                          .catch(() => setBrowserOpenError(error))
+                          .finally(() => setOpeningBrowser(false))
+                      }}
+                    >
+                      {label} <ArrowUpRight size={13} aria-hidden="true" />
+                    </button>
+                  ))}
+            </div>
+          )}
+          {canRefreshWorkspaces && browserOpenError && (
+            <p className="type-footnote text-system-red-text" role="alert">
+              {browserOpenError}
             </p>
           )}
           {accountMessage && (
@@ -382,6 +447,7 @@ export function CloudAccount({
           !requiresAccountCleanup &&
           !value.cloud.localCleanupPending &&
           value.cloud.status !== "credential_failed" &&
+          !accessUpdateWaiting &&
           !checkingSignIn && (
             <button
               className="ui-push-button shrink-0 aria-disabled:opacity-50"
@@ -408,6 +474,14 @@ export function CloudAccount({
           </button>
         )}
       </div>
+      {(value.cloud.status === "signed_in" || accessUpdateWaiting) && (
+        <DeviceAccessUpdate
+          value={value.cloud}
+          busy={value.busy}
+          update={session.begin}
+          cancel={session.cancel}
+        />
+      )}
       {value.cloud.localResetAvailable && (
         <div className="flex flex-col gap-3 px-4 py-3 type-callout text-label">
           {confirmReset ? (
@@ -461,15 +535,6 @@ export function CloudAccount({
             reset={session.resetWorkspace}
           />
         ))}
-      {value.cloud.invitationEnabled && value.cloud.identity && (
-        <div className="px-4 py-3 empty:hidden">
-          <CloudInvitations
-            accountId={value.cloud.identity.id}
-            onJoined={session.load}
-            showConfirmedOnly
-          />
-        </div>
-      )}
       {!loadingSyncStatus && children && (
         <div className="border-t border-separator">{children}</div>
       )}
@@ -479,89 +544,13 @@ export function CloudAccount({
           uploadControl={!!children}
           folderRowId={folderRowId}
         />
-      ) : session.projectSyncSupported ? (
+      ) : (
         <CloudProjectsAccount
           session={session}
           value={value}
           folderRowId={folderRowId}
           uploadSwitchRowId={uploadSwitchRowId}
         />
-      ) : (
-        <>
-          <SettingsRow
-            searchId="cloudFolders"
-            description={value.cloud.setupError ?? undefined}
-          >
-            {value.cloud.identity && (
-              <div className="mt-3 flex flex-col gap-3">
-                {value.cloud.draft.folders.map((folder) => (
-                  <div
-                    key={cloudSourceKey(folder)}
-                    className="flex items-center justify-between gap-3"
-                  >
-                    <span className="min-w-0 break-all type-callout text-label">
-                      {cloudSourceLabel(folder)}: {folder.path}
-                    </span>
-                    {value.busy || value.cloud.setupError ? (
-                      <FolderUploadState>
-                        {folder.selected ? "Selected" : "Not selected"}
-                      </FolderUploadState>
-                    ) : (
-                      <ToggleSwitch
-                        aria-label={`Select ${folder.path} for Cloud capture`}
-                        checked={folder.selected}
-                        onCheckedChange={(selected) =>
-                          void session.selectFolder(
-                            folder.path,
-                            selected,
-                            cloudSourceKind(folder),
-                          )
-                        }
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </SettingsRow>
-          {value.cloud.identity && (
-            <>
-              {value.cloud.captureEnabled && (
-                <div className="flex flex-col items-start gap-2 px-4 pb-3">
-                  <button
-                    className="ui-push-button"
-                    disabled={
-                      value.busy ||
-                      !value.loaded ||
-                      value.cloud.status !== "signed_in" ||
-                      !personalCloudDestination(value.cloud.destination ?? null) ||
-                      !!value.cloud.setupError ||
-                      value.sync.status === "cancelled" ||
-                      !value.cloud.draft.folders.some((folder) => folder.selected)
-                    }
-                    aria-description={`Save a full-session capture request for ${value.cloud.identity.login} in ${value.cloud.destination?.name ?? "the selected destination"}. This does not upload content.`}
-                    onClick={() => void session.startSync(value)}
-                  >
-                    {value.sourceListingNeedsRetry
-                      ? "Retry source listing"
-                      : "Save capture request"}
-                  </button>
-                  <p className="type-footnote text-label-secondary" role="status">
-                    {value.sync.status === "upload_unavailable"
-                      ? "Capture request saved on this device. Upload unavailable."
-                      : value.sync.status === "starting"
-                        ? "Saving capture request. Upload unavailable."
-                        : value.sync.status === "ambiguous"
-                          ? "Could not confirm the capture request. Try Save capture request again. Upload unavailable."
-                          : value.sync.status === "cancelled"
-                            ? "Capture request cancelled. Upload unavailable."
-                            : "Upload unavailable."}
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-        </>
       )}
     </>
   )

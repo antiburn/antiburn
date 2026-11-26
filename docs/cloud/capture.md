@@ -584,6 +584,26 @@ Transport errors use closed values. Filesystem errors expose only their error
 kind. Content, credentials, paths, signed URLs, and raw service errors must not
 enter logs, analytics, or renderer status.
 
+### Desktop HTTP routes
+
+Desktop uses these routes on the configured resource origin:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /v1/captures/capabilities` | Read the supported source formats and capture limits. |
+| `POST /v1/captures` | Reserve a capture before reading its full source. |
+| `POST /v1/captures/{capture_id}/manifest` | Register the manifest and get the upload plan. |
+| `GET /v1/captures/{capture_id}` | Read status for the saved `plan_id` and `manifest_sha256` query values. |
+| `POST /v1/captures/{capture_id}/part-urls` | Get the signed upload request for one part. |
+| `POST /v1/captures/{capture_id}/finalize` | Request verification of the stored capture. |
+| `POST /v1/captures/{capture_id}/renew-lease` | Renew the same capture lease. |
+
+Finalization returns HTTP 202 with `operation_id` and `status_url`. Desktop
+requires `status_url` to match
+`/v1/captures/{capture_id}?plan_id={plan_id}&manifest_sha256={manifest_sha256}`
+for the saved capture and plan. Desktop builds the polling request from its
+saved values on the configured origin. It does not follow a URL from the response.
+
 ### Caller and transport ownership
 
 The desktop host owns source grants, current consent, credentials, durable request
