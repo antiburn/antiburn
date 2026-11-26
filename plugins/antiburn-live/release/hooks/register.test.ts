@@ -3253,3 +3253,83 @@ test("Desktop account usage without a session limit shows only the weekly meter"
   expect(alts).not.toContain("5-hour")
   expect((await $.command.run(command(PLUGIN))).text).not.toContain("5-hour")
 })
+
+const settle = async () => {
+  for (let tick = 0; tick < 200; tick++) await Promise.resolve()
+}
+
+test("a limit check does not make detach clear the native weekly reading", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+  await start($)
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: "terminal", component: "AbovePrompt", props: props() })
+  await measure($, fake.rateLimits)
+  expect(await band.find({ text: "7%" })).toBeDefined()
+  const reads = fake.usageReads
+  expect(fake.requests.length).toBe(1)
+  fake.rateLimits = []
+  await $.session.detach({ surface: "terminal", clientId: "test-client", reason: "detach" })
+  const details = (await $.command.run(command(PLUGIN))).text
+  expect(fake.usageReads).toBe(reads)
+  expect(details).toContain("Weekly: 7%.")
+})
+
+test("a rate-limited limit check keeps its backoff when a new reading arrives", async ($, on) => {
+  const fake = fakeEngine(on)
+  await start($)
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  const response = deferred<HttpResponse>()
+  const fetching = deferred<void>()
+  fake.fetch = () => {
+    fetching.resolve()
+    return response.promise
+  }
+  const attaching = $.session.attach({ surface: "desktop", clientId: "desktop:limits" })
+  await fetching.promise
+  // A 5-hour reading advances the account epoch while the check waits.
+  await measure($, LIMITS)
+  response.resolve({ status: 429, ok: false, headers: { "retry-after": "600" }, text: "" } as HttpResponse)
+  await attaching
+  fake.fetch = undefined
+  fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+  fake.now += 61_000
+  await measure($, fake.rateLimits)
+  expect(fake.requests.length).toBe(1)
+  fake.now += 600_000
+  await measure($, fake.rateLimits)
+  expect(fake.requests.length).toBe(2)
+})
+
+test("overlapping limit checks share one account request", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.response = accountResponse(WEEKLY_ONLY_ACCOUNT)
+  await start($)
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  const reading = deferred<void>()
+  fake.readUsage = async () => {
+    reading.resolve()
+    return fake.rateLimits
+  }
+  let blocking = false
+  const waiters: (() => void)[] = []
+  fake.readClock = () =>
+    blocking ? new Promise<number>((resolve) => waiters.push(() => resolve(fake.now))) : Promise.resolve(fake.now)
+  const until = async (count: number) => {
+    for (let round = 0; round < 20 && waiters.length < count; round++) await settle()
+    expect(waiters.length).toBe(count)
+  }
+  const attaching = $.session.attach({ surface: "desktop", clientId: "desktop:limits" })
+  await reading.promise
+  blocking = true
+  await until(1)
+  const measuring = measure($, fake.rateLimits)
+  await until(2)
+  // Release the measurement reading so its limit check waits beside the attach check.
+  waiters.splice(1, 1)[0]!()
+  await until(2)
+  blocking = false
+  for (const release of waiters.splice(0)) release()
+  await Promise.all([attaching, measuring])
+  expect(fake.requests.length).toBe(1)
+})

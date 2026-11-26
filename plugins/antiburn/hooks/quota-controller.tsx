@@ -194,10 +194,13 @@ async function applyAccountResult(
   }
 }
 
+// Only a display read keeps the result as the shown account reading.
+// A limit check updates the backoff but does not replace the display cache.
 function startAccountRequest(
   $: EngineInterface,
   state: typeof accountState,
   epoch: number,
+  display = true,
 ): Promise<AccountUsageResult> {
   const promise = (async () => {
     const result = await fetchAccountUsage($)
@@ -206,12 +209,17 @@ function startAccountRequest(
       if (result.status === "ready")
         state.fiveHourAbsent = result.snapshot.fiveHourAbsent === true
       else if (result.status === "unsupported") state.fiveHourAbsent ??= false
-      else state.limitsRetryAt = observedAt + 60_000
+      else
+        state.limitsRetryAt = Math.max(
+          state.limitsRetryAt,
+          observedAt + 60_000,
+          retryAfterTime(result.retryAfter, observedAt),
+        )
     }
     if (state !== accountState || epoch !== state.epoch) return result
-    state.lastResult = result
+    if (display) state.lastResult = result
     if (result.status === "ready") {
-      state.snapshot = result.snapshot
+      if (display) state.snapshot = result.snapshot
       state.failures = 0
       state.nextAttempt = observedAt + 60_000
     } else if (result.status === "error") {
@@ -252,16 +260,14 @@ async function checkFiveHourLimit(
   const state = accountState
   if (state.fiveHourAbsent !== null || !weeklyWithoutFiveHour(snapshot)) return
   try {
-    let request: Promise<AccountUsageResult>
-    if (accountRequest?.state === state) request = accountRequest.promise
-    else if (accountRequest) return
-    else {
+    if (!accountRequest) {
       const now = await $.clock.now()
       if (state !== accountState || now < state.limitsRetryAt || now < state.nextAttempt)
         return
-      request = startAccountRequest($, state, state.epoch)
     }
-    await request
+    // Check the slot again after the clock read, because another check can start a request.
+    if (accountRequest && accountRequest.state !== state) return
+    await (accountRequest?.promise ?? startAccountRequest($, state, state.epoch, false))
     if (state !== accountState || state.fiveHourAbsent !== true) return
     await update($, usage, (current) =>
       state === accountState && weeklyWithoutFiveHour(current.snapshot)
