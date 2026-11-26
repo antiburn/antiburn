@@ -21,7 +21,7 @@ fn fresh_cloud_setup_does_not_create_retired_request_schema() {
 fn cloud_setup_upgrade_preserves_completed_request_without_enabling_uploads() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
-    // Use the completed v1 request from the retired runtime's test fixture.
+    // Use a frozen copy of a completed v1 request.
     let request = r#"{"request_id":"legacy","account_id":"account","destination_id":"personal","consent_version":"native-full-content-v1","roots":[{"path":"/Example/missing","source_scope_id":"old-scope"}],"sources":[{"identity":{"capture_id":"old-capture","account_id":"account","destination_id":"personal","source_id":"old-scope/session"},"transcript_path":"/Example/missing/session.jsonl"}],"discovery_complete":true,"cancelled":false}"#;
     {
         let connection = store.lock();

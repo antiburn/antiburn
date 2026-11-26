@@ -7,6 +7,7 @@ import {
   type ProjectPages,
 } from "./cloudProjectPages"
 import {
+  cloudCaptureUnsupported,
   cloudFoldersLoading,
   readCloudProjectScope,
   type ProjectScopeObserver,
@@ -483,10 +484,14 @@ export class CloudProjectReader {
           onExtendedRetry,
         )
         if (!current()) return
-        if (verified === null) {
+        const setupError = observer.getSnapshot().cloud.setupError
+        if (verified === null || setupError) {
           const projects = observer.getSnapshot().projects!
           observer.publishProjects({
             ...projects,
+            ...(setupError === cloudCaptureUnsupported && verified
+              ? { workspaces: verified, scopeInvalid: false, error: null }
+              : {}),
             loading: false,
             retrying: false,
             retryStage: undefined,

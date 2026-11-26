@@ -494,6 +494,8 @@ impl Engine {
         }
         if let Some(attempt) = self.attempt.take() {
             if attempt.upgrade.is_some() {
+                // The browser can create a grant before Desktop receives the callback.
+                self.mark_remote_logout_unconfirmed();
                 self.access_update = None;
                 return Ok(());
             }
@@ -598,35 +600,43 @@ impl Engine {
             self.access_update = Some(AccessUpdateStatus::Denied);
             return Ok(());
         };
-        let config = self.config.clone().ok_or(Failure::Unavailable)?;
-        let mut saved = self
-            .vault
-            .read()?
-            .and_then(|credential| credential.for_epoch(&record.epoch))
-            .filter(|credential| self.owns_credential(Some(credential)) && credential.account_grant)
-            .ok_or(Failure::CredentialFailed)?;
-        let prior = saved
-            .session
-            .as_ref()
-            .filter(|session| {
-                session.grant_id == upgrade.grant_id && session.user.id == upgrade.account_id
-            })
-            .ok_or(Failure::Cancelled)?;
-        let prior_workspace = prior.workspace.id.clone();
-        if !current() {
-            return Err(Failure::Cancelled);
-        }
-        let tokens = self.transport.exchange(
-            &config,
-            &TokenRequest::AuthorizationCode {
-                code: &code,
-                code_verifier: &attempt.verifier,
-            },
-        )?;
-        // A bad response must not turn the old connection into a cleanup target.
-        if tokens.grant_id == upgrade.grant_id || tokens.refresh_token == saved.refresh_token {
-            return Err(Failure::InvalidResponse);
-        }
+        // Until Desktop has a distinct proof to revoke, a verified callback
+        // can fail locally without proving that Cloud did not create a grant.
+        let (config, mut saved, prior_workspace, tokens) = (|| {
+            let config = self.config.clone().ok_or(Failure::Unavailable)?;
+            let saved = self
+                .vault
+                .read()?
+                .and_then(|credential| credential.for_epoch(&record.epoch))
+                .filter(|credential| {
+                    self.owns_credential(Some(credential)) && credential.account_grant
+                })
+                .ok_or(Failure::CredentialFailed)?;
+            let prior = saved
+                .session
+                .as_ref()
+                .filter(|session| {
+                    session.grant_id == upgrade.grant_id && session.user.id == upgrade.account_id
+                })
+                .ok_or(Failure::Cancelled)?;
+            let prior_workspace = prior.workspace.id.clone();
+            if !current() {
+                return Err(Failure::Cancelled);
+            }
+            let tokens = self.transport.exchange(
+                &config,
+                &TokenRequest::AuthorizationCode {
+                    code: &code,
+                    code_verifier: &attempt.verifier,
+                },
+            )?;
+            // A bad response must not make the old grant a cleanup target.
+            if tokens.grant_id == upgrade.grant_id || tokens.refresh_token == saved.refresh_token {
+                return Err(Failure::InvalidResponse);
+            }
+            Ok((config, saved, prior_workspace, tokens))
+        })()
+        .inspect_err(|_| self.mark_remote_logout_unconfirmed())?;
         let result = (|| {
             let (session, expires_at) =
                 self.verify_tokens(&config, &tokens, started_at, &current)?;
@@ -639,7 +649,9 @@ impl Engine {
             let replacement = Record {
                 epoch: auth::random()?,
                 phase: Phase::Active,
-                cleanup: record.cleanup,
+                // Persist uncertainty before trying to revoke the old grant.
+                // This flag cannot distinguish earlier grants.
+                cleanup: Cleanup::RemoteUnconfirmed,
             };
             saved.replacement = Some(ReplacementCredential {
                 epoch: replacement.epoch.clone(),
@@ -673,42 +685,54 @@ impl Engine {
             if !current() || expires_at <= (self.clock)() {
                 return Err(Failure::Cancelled);
             }
-            let committed = guard.write(&replacement);
-            if committed.is_err() || !current() || expires_at <= (self.clock)() {
-                // A rename can succeed before a directory sync reports failure.
-                // Keep the old proof and try to restore its marker.
-                let _ = guard.write(&record);
-                committed?;
-                return Err(Failure::Cancelled);
-            }
-            Ok((session, expires_at, replacement.epoch))
+            Ok((session, expires_at, replacement))
         })();
-        let (session, expires_at, epoch) = match result {
+        let (session, expires_at, replacement) = match result {
             Ok(value) => value,
             Err(error) => {
                 self.revoke_access_update_grant(&config, &tokens.refresh_token);
                 return Err(error);
             }
         };
+        let committed = guard.write(&replacement);
+        if committed.is_err() || !current() || expires_at <= (self.clock)() {
+            // A rename can succeed before a directory sync fails. If rollback
+            // also fails, keep both proofs and let refresh resolve the epoch.
+            if let Err(error) = guard.write(&record) {
+                self.access = None;
+                self.mark_remote_logout_unconfirmed();
+                return Err(error);
+            }
+            self.revoke_access_update_grant(&config, &tokens.refresh_token);
+            committed?;
+            return Err(Failure::Cancelled);
+        }
         self.access = Some(Access {
             token: tokens.access_token,
             expires_at,
-            epoch,
+            epoch: replacement.epoch,
             session,
         });
         self.status = AuthStatus::SignedIn;
+        self.cleanup = replacement.cleanup;
         self.access_update = None;
         self.revoke_access_update_grant(&config, &saved.refresh_token);
         Ok(())
     }
 
+    /// Do not use the detached slot here. Explicit sign-out may need that slot
+    /// for the active grant as soon as the access update returns.
     fn revoke_access_update_grant(&self, config: &Config, proof: &str) {
         if self.transport.revoke(config, proof).is_err() {
-            Self::record_remote_logout_failure(
-                &self.state.remote_logout_warning_path(),
-                &self.remote_logout_failed,
-            );
+            self.mark_remote_logout_unconfirmed();
         }
+    }
+
+    fn mark_remote_logout_unconfirmed(&self) {
+        Self::record_remote_logout_failure(
+            &self.state.remote_logout_warning_path(),
+            &self.remote_logout_failed,
+        );
     }
 
     /// Verify token authority with independent grant and Personal destination reads.
@@ -1077,7 +1101,13 @@ impl Engine {
     /// A durable closed marker permits retrying a failed keyring deletion.
     pub(super) fn sign_out(&mut self) -> Result<Option<RemoteLogout>, Failure> {
         self.access = None;
-        self.attempt = None;
+        if self
+            .attempt
+            .take()
+            .is_some_and(|attempt| attempt.upgrade.is_some())
+        {
+            self.mark_remote_logout_unconfirmed();
+        }
         self.access_update = None;
         self.sign_out_marker_failed = true;
         self.status = AuthStatus::CredentialFailed;

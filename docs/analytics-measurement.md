@@ -533,8 +533,9 @@ Authentication rejection and invalid responses both emit `failed`; do not count 
 outcome as a sync failure. Measure Start syncing among installations viewing folders
 and Done among installations viewing completion. **Continue locally** from
 handoff, identity, or folders uses `use_locally` on that screen. It does not
-imply content consent. Start syncing confirms the selected folders before
-opening completion. Background uploads do not block Done.
+imply content consent. After Start syncing, onboarding opens completion only
+when Desktop confirms the selected folders for each workspace. If confirmation
+fails, onboarding stays on the folders screen. Background uploads do not block Done.
 There is no separate sync screen, Check status action, or Cancel sync action in
 onboarding. Background status updates do not create another screen view. Production
 sync outcomes are not recorded until the separately gated backend is implemented.

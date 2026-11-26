@@ -7,6 +7,7 @@ import {
   type CloudWorkspaceRecovery,
 } from "../../lib/cloud"
 import { CloudSession } from "../../onboarding/CloudSession"
+import { cloudCaptureUnsupported } from "../../onboarding/cloudProjectScope"
 import { CloudAccount } from "./CloudAccount"
 import {
   cloudProjectFixture,
@@ -190,6 +191,39 @@ it("refreshes eligible workspaces without signing in again or changing a saved T
   expect(ongoing.setEnabled).not.toHaveBeenCalled()
 })
 
+it("recovers workspace access without reading folders when capture is unsupported", async () => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  emit({ captureEnabled: false, setupError: cloudCaptureUnsupported })
+  const personal = { id: "synthetic-personal", name: "Personal", kind: "personal" } as const
+  const team = { id: "joined-team", name: "Joined Team", kind: "team" } as const
+  const workspaces = vi.fn<NonNullable<typeof port.workspaces>>().mockResolvedValue([personal])
+  port.workspaces = workspaces
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  await screen.findByText("1 workspace")
+
+  const refresh = screen.getByRole("button", { name: "Refresh workspaces" })
+  const accessDenied = "You do not have access to the selected Cloud workspace."
+  workspaces.mockRejectedValueOnce(new Error("Cloud workspace access denied."))
+  fireEvent.click(refresh)
+  expect(await screen.findByText(accessDenied)).toBeVisible()
+
+  workspaces.mockResolvedValue([personal, team])
+  fireEvent.click(refresh)
+
+  expect(await screen.findByText("2 workspaces")).toBeVisible()
+  expect(screen.queryByText(accessDenied)).toBeNull()
+  expect(workspaces).toHaveBeenCalledTimes(3)
+  expect(workspaces).toHaveBeenLastCalledWith({
+    accountId: "synthetic-account",
+    destinationId: personal.id,
+  })
+  expect(ongoing.groups).not.toHaveBeenCalled()
+  expect(session.getSnapshot().projects?.loaded).toBe(false)
+  expect(port.save).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
 it("opens the configured dashboard without changing the desktop account", async () => {
   const { port, emit } = cloudProjectFixture()
   emit({ dashboardAvailable: true })
@@ -232,7 +266,7 @@ it("offers browser workspace setup in Settings even without the dashboard shortc
 
 it("requests session access without signing out the current connection", async () => {
   const { port, emit } = cloudProjectFixture()
-  emit({ sessionReadsAllowed: false })
+  emit({ sessionReadsAllowed: false, sessionReadUpdateAvailable: true })
   const signOut = vi.spyOn(port, "signOut")
   const current = await port.read()
   const begin = vi.spyOn(port, "begin").mockResolvedValueOnce({
@@ -380,8 +414,13 @@ it.each([
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   await waitFor(() => expect(session.getSnapshot().loaded).toBe(true))
-  const start = screen.queryByRole("button", { name: "Start syncing" })
-  if (start) expect(start).toHaveAttribute("aria-disabled", "true")
+  if ("setupError" in patch) {
+    const start = screen.getByRole("button", { name: "Start syncing" })
+    expect(start).toHaveAttribute("aria-disabled", "true")
+    await act(async () => fireEvent.click(start))
+  } else {
+    expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
+  }
   await act(async () => session.startPendingProjects(session.getSnapshot(), false))
   expect(ongoing.enable).not.toHaveBeenCalled()
   expect(ongoing.setProject).not.toHaveBeenCalled()

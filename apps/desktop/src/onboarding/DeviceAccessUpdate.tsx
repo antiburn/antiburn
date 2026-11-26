@@ -32,7 +32,7 @@ export function DeviceAccessUpdate({ value, busy, update, cancel, onboarding }: 
   const options = [
     {
       action: "session_reads",
-      show: !onboarding && value.sessionReadsAllowed === false,
+      show: !onboarding && value.sessionReadUpdateAvailable,
       description: "Approve this device to search and read Cloud sessions in the CLI.",
       label: "Update device access to search and read Cloud sessions",
     },

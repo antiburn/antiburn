@@ -399,6 +399,7 @@ export interface CloudSnapshot {
   /** A configured system-browser dashboard can open without device approval. */
   dashboardAvailable?: boolean
   sessionReadsAllowed?: boolean
+  sessionReadUpdateAvailable?: boolean
   captureUpdateAvailable?: boolean
   accessUpdate?: "waiting" | "denied" | "failed" | null
   grantId?: string | null

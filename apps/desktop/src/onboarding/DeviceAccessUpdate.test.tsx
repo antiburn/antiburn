@@ -10,6 +10,7 @@ const connection: CloudSnapshot = {
   dashboardAvailable: true,
   captureUpdateAvailable: true,
   sessionReadsAllowed: false,
+  sessionReadUpdateAvailable: true,
   captureEnabled: true,
   syncEnabled: false,
   status: "signed_in",
@@ -32,6 +33,25 @@ test("requests only the access the user chose", () => {
     }),
   )
   expect(update).toHaveBeenLastCalledWith("session_reads")
+})
+
+test("does not offer CLI access where the session read update is unavailable", () => {
+  render(
+    <DeviceAccessUpdate
+      value={{ ...connection, sessionReadUpdateAvailable: false }}
+      busy={false}
+      update={vi.fn()}
+      cancel={vi.fn()}
+    />,
+  )
+  expect(
+    screen.queryByRole("button", {
+      name: "Update device access to search and read Cloud sessions",
+    }),
+  ).toBeNull()
+  expect(
+    screen.getByRole("button", { name: "Update device access to upload sessions" }),
+  ).toBeEnabled()
 })
 
 test("keeps the current connection visible while access is pending or denied", () => {

@@ -135,9 +135,23 @@ refresh credential. A changed grant, account, scope, or fixed deadline
 cannot restore the saved connection. To add missing actions, choose
 **Update device access**. Desktop asks the same account to approve its current
 actions and the missing actions in the browser. It keeps the current grant
-until it verifies and securely saves the replacement, then requests revocation
-of the old grant. Denial or cancellation leaves the old grant connected. The
-update does not change folder settings.
+until it verifies and securely saves the replacement. It records unconfirmed
+revocation with the replacement epoch, then tries to revoke the old grant
+before returning from the callback. That request can take up to 15 seconds.
+It leaves the detached logout slot free for sign-out. Both proofs share one
+keyring entry until Desktop replaces or deletes the entry, for example during
+credential rotation or sign-out. Desktop does not queue a revocation retry.
+The revocation flag does not identify grants, so a confirmed revoke cannot
+safely clear it.
+If Desktop cannot confirm rollback to the old epoch, it leaves both proofs
+in place. A later refresh selects the proof that matches the active epoch.
+
+Denial or cancellation leaves the old grant connected. If Desktop abandons
+an update after the browser may have opened, it records revocation uncertainty
+without blocking the current grant. This also applies if a verified callback
+fails before Desktop has proof it can use to revoke the replacement. Explicit
+denial and confirmed launch failure do not add uncertainty. The update does not
+change folder settings.
 
 Device authentication requests use the configured API origin:
 
@@ -259,7 +273,8 @@ credential cleanup.
 Loopback accept, read, write, cancellation polling, and expiry use Tokio async I/O
 outside the controller mutex and blocking-work permit. The existing HTTP transport
 remains synchronous with a 15-second timeout per request. Normal requests use
-admitted blocking work. Best-effort logout uses a separate blocking worker.
+admitted blocking work, including access update revocation. Best-effort logout
+for sign-out and older Team slots uses a separate blocking worker.
 
 A process-wide mutex serializes credential operations. One lifetime OS lock owns
 the vault namespace. A second process cannot write credentials until that owner

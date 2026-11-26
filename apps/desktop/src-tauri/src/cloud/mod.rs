@@ -81,6 +81,11 @@ pub enum AccessUpdate {
 }
 
 impl AccessUpdate {
+    /// The CLI uses a local socket broker, which only starts on Unix.
+    fn platform_available(&self) -> bool {
+        cfg!(unix) || !matches!(self, Self::SessionReads)
+    }
+
     fn actions(&self) -> &'static [auth::DeviceAction] {
         use auth::DeviceAction::*;
         match self {
@@ -171,6 +176,7 @@ pub struct Snapshot {
     auth_enabled: bool,
     dashboard_available: bool,
     session_reads_allowed: bool,
+    session_read_update_available: bool,
     capture_update_available: bool,
     access_update: Option<AccessUpdateStatus>,
     capture_enabled: bool,
@@ -329,16 +335,20 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
                 expires_at,
             });
     }
+    let session_reads_allowed = session.is_some_and(|session| {
+        session.allows(auth::DeviceAction::SessionList)
+            && session.allows(auth::DeviceAction::SessionRead)
+    });
     Snapshot {
         auth_enabled: engine.config.is_some(),
         dashboard_available: engine
             .config
             .as_ref()
             .is_some_and(|config| config.dashboard.is_some()),
-        session_reads_allowed: session.is_some_and(|session| {
-            session.allows(auth::DeviceAction::SessionList)
-                && session.allows(auth::DeviceAction::SessionRead)
-        }),
+        session_reads_allowed,
+        session_read_update_available: AccessUpdate::SessionReads.platform_available()
+            && session.is_some()
+            && !session_reads_allowed,
         capture_update_available: cfg!(unix)
             && setup_error.is_none()
             && session.is_some_and(|session| !session.allows(auth::DeviceAction::CaptureWrite)),
@@ -587,6 +597,12 @@ pub async fn cloud_begin(
     app: tauri::AppHandle,
     access_update: Option<AccessUpdate>,
 ) -> Result<Snapshot, String> {
+    if access_update
+        .as_ref()
+        .is_some_and(|update| !update.platform_available())
+    {
+        return Err("Cloud CLI session reads are not supported on this platform.".into());
+    }
     let expected_generation = app
         .state::<Controller>()
         .attempt_generation
