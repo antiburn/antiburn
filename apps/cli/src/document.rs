@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 mod local;
-pub(crate) use local::{LocalSource, read_local};
+pub(crate) use local::{IndexedDatabase, LocalSource, read_local};
 
 const SCHEMA_VERSION: u8 = 1;
 pub(crate) const MAX_DOCUMENT_BYTES: usize = 20 * 1024 * 1024;

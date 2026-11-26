@@ -146,12 +146,16 @@ unreadable database gives an error on stderr and a non-zero exit code.
 
 Local session commands do not write logs or check state or make network requests.
 
-`get` reads the source file for the exact local identity. It supports indexed
-Claude Code, Codex CLI, Pi, and Cursor CLI JSONL files in the native environment.
-It returns an error for missing files, unsupported formats, ambiguous IDs, and
-sources over 16 MiB. The local document includes projected messages and reports
-which parts of the source it could not cover. It does not follow attachments or
-read child sessions.
+`get` reads the source for the exact local identity. In the native environment,
+it supports indexed Claude Code, Codex CLI, Pi, and Cursor CLI JSONL files up to
+16 MiB. It also supports indexed OpenCode V2 SQLite sessions with a verified
+database path and fingerprint. If Desktop's fingerprint is missing or no longer
+matches, refresh the session in Desktop and try again. The CLI does not try
+another database or an older format.
+
+Missing sources, unsupported formats, ambiguous IDs, and sources over the read
+limits return errors. The local document includes projected messages and reports
+coverage limits. It does not return child sessions or follow attachments.
 
 ## Search and read Cloud sessions
 

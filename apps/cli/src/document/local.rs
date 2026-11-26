@@ -1,11 +1,16 @@
-//! Project only the exact indexed local source. Never follow attachments or links.
+//! Project one indexed local session. Never follow attachments or links.
 
-use std::{fs::OpenOptions, io::Read, path::Path};
+use std::{
+    fs::OpenOptions,
+    io::Read,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use antiburn_local::analysis::{
-    ClaudeSessionReader, ContentKind, NormalizedRecord, PartialReason, RawSource, RecordSink,
-    Role as LocalRole, SessionInput, SessionReader, SessionSummary, SourceFormat, TurnContent,
-    reader_for_input,
+    ClaudeSessionReader, ContentKind, NormalizedRecord, OpenCodeV2SnapshotError, PartialReason,
+    RawSource, RecordSink, Role as LocalRole, SessionInput, SessionReader, SessionSummary,
+    SourceFormat, TurnContent, VisitOutcome, reader_for_input,
 };
 
 use crate::checks::SessionIdentity;
@@ -25,39 +30,116 @@ pub(crate) struct LocalSource {
     pub label: String,
     pub format: Option<String>,
     pub title: Option<String>,
+    pub database: Option<IndexedDatabase>,
 }
 
-/// Read one bounded file snapshot and project it with the local engine's reader.
+/// Desktop's stored path and fingerprint of an admitted provider database session.
+pub(crate) struct IndexedDatabase {
+    pub path: String,
+    pub fingerprint: String,
+}
+
+impl LocalSource {
+    pub(crate) fn is_opencode_v2(&self) -> bool {
+        self.identity.environment_key == "native"
+            && self.identity.agent == "opencode"
+            && self.kind == "providerDb"
+            && self.source_format() == Some(SourceFormat::OpenCodeSqliteV2)
+    }
+
+    fn source_format(&self) -> Option<SourceFormat> {
+        self.format
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok())
+    }
+}
+
+/// Read a bounded snapshot and project it with the local engine's reader.
 pub(crate) fn read_local(source: LocalSource) -> Result<SessionDocument, String> {
-    let format = supported_format(&source)?;
-    let path = Path::new(&source.label);
-    let (content, tail_incomplete) = read_snapshot(path)?;
+    let (format, raw, tail_incomplete, fingerprint) = if source.is_opencode_v2() {
+        let binding = source.database.ok_or("the indexed OpenCode V2 database is not ready; refresh the session in Antiburn Desktop")?;
+        let path = Path::new(&binding.path);
+        if !path.is_absolute()
+            || !path
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.is_file())
+        {
+            return Err("the indexed OpenCode V2 database is missing or unreadable".into());
+        }
+        (
+            SourceFormat::OpenCodeSqliteV2,
+            RawSource::Sqlite(path.to_path_buf()),
+            false,
+            Some(binding.fingerprint),
+        )
+    } else {
+        let format = supported_file_format(&source)?;
+        let (content, tail_incomplete) = read_snapshot(Path::new(&source.label))?;
+        (format, RawSource::Jsonl(content), tail_incomplete, None)
+    };
     let input = SessionInput {
         agent: source.identity.agent,
         session_id: source.identity.session_id,
-        source: RawSource::Jsonl(content),
+        source: raw,
         source_format: format,
         fork_parent_session_id: None,
     };
     let mut sink = Projection {
         partial: tail_incomplete,
+        database_session_id: fingerprint.as_ref().map(|_| input.session_id.clone()),
+        ignore_source: fingerprint.is_some(),
         ..Projection::default()
     };
-    let reader: &dyn SessionReader = if format == SourceFormat::ClaudeJsonl {
-        &ClaudeSessionReader
-    } else {
-        reader_for_input(&input)
-    };
-    reader
-        .visit(&input, &mut sink)
-        .map_err(|_| "the local session source could not be parsed")?;
+    visit_source(&input, fingerprint.as_deref(), &mut sink)?;
     if sink.oversized {
         return Err("local session document exceeds the size limit".into());
     }
     if sink.messages.is_empty() {
         return Err("the local session source has no supported message content".into());
     }
-    Ok(SessionDocument {
+    Ok(local_document(input, source.title, sink))
+}
+
+fn visit_source(
+    input: &SessionInput,
+    fingerprint: Option<&str>,
+    sink: &mut Projection,
+) -> Result<(), String> {
+    if let Some(fingerprint) = fingerprint {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let cancel = || Instant::now() >= deadline;
+        return match reader_for_input(input).visit_db_claimed(input, fingerprint, &cancel, sink) {
+            Ok(VisitOutcome::AcceptedFull) => Ok(()),
+            Ok(_) => Err(
+                "the indexed OpenCode V2 source changed; refresh the session in Antiburn Desktop"
+                    .into(),
+            ),
+            Err(_) if cancel() => Err("the local OpenCode V2 read exceeded the time limit".into()),
+            Err(error)
+                if error.downcast_ref::<OpenCodeV2SnapshotError>()
+                    == Some(&OpenCodeV2SnapshotError::SourceLimit) =>
+            {
+                Err("the local OpenCode V2 source exceeds the size limit".into())
+            }
+            Err(_) => Err(
+                "the indexed OpenCode V2 database could not be read or has an unsupported schema"
+                    .into(),
+            ),
+        };
+    }
+    let reader: &dyn SessionReader = if input.source_format == SourceFormat::ClaudeJsonl {
+        &ClaudeSessionReader
+    } else {
+        reader_for_input(input)
+    };
+    reader
+        .visit(input, sink)
+        .map_err(|_| "the local session source could not be parsed")?;
+    Ok(())
+}
+
+fn local_document(input: SessionInput, title: Option<String>, sink: Projection) -> SessionDocument {
+    SessionDocument {
         schema_version: SCHEMA_VERSION,
         source: Source::Local,
         workspace_id: None,
@@ -71,7 +153,7 @@ pub(crate) fn read_local(source: LocalSource) -> Result<SessionDocument, String>
                     name: input.agent,
                     version: None,
                 },
-                title: source.title,
+                title,
                 execution_origin: None,
                 collection_route: None,
                 started_at: None,
@@ -113,10 +195,10 @@ pub(crate) fn read_local(source: LocalSource) -> Result<SessionDocument, String>
             messages: sink.messages,
             sections: Sections::default(),
         },
-    })
+    }
 }
 
-fn supported_format(source: &LocalSource) -> Result<SourceFormat, String> {
+fn supported_file_format(source: &LocalSource) -> Result<SourceFormat, String> {
     let unsupported = "this local session source format is not supported by get";
     if source.identity.environment_key != "native" {
         return Err("get cannot read this local session environment".into());
@@ -124,11 +206,7 @@ fn supported_format(source: &LocalSource) -> Result<SourceFormat, String> {
     if source.kind != "file" {
         return Err(unsupported.into());
     }
-    let format = source
-        .format
-        .as_deref()
-        .and_then(|value| serde_json::from_str(value).ok());
-    match (source.identity.agent.as_str(), format) {
+    match (source.identity.agent.as_str(), source.source_format()) {
         ("claude-code", Some(format @ SourceFormat::ClaudeJsonl))
         | ("codex", Some(format @ SourceFormat::CodexRolloutJsonl))
         | ("pi", Some(format @ SourceFormat::PiV3Jsonl))
@@ -191,6 +269,8 @@ struct Projection {
     bytes: usize,
     partial: bool,
     oversized: bool,
+    database_session_id: Option<String>,
+    ignore_source: bool,
 }
 
 impl Projection {
@@ -257,12 +337,26 @@ impl Projection {
 }
 
 impl RecordSink for Projection {
+    fn begin_source(&mut self, session_id: &str) {
+        self.ignore_source = self
+            .database_session_id
+            .as_deref()
+            .is_some_and(|id| id != session_id);
+        self.role = None;
+    }
+
+    fn source_summary(&mut self, session_id: &str, summary: SessionSummary) {
+        if self.database_session_id.as_deref() == Some(session_id) {
+            self.partial |= !summary.coverage_gaps.is_empty();
+        }
+    }
+
     fn tool_results_requested(&self) -> bool {
         false
     }
 
     fn record(&mut self, record: NormalizedRecord) {
-        if self.oversized {
+        if self.oversized || self.ignore_source {
             return;
         }
         match record {
@@ -276,7 +370,9 @@ impl RecordSink for Projection {
             }
             NormalizedRecord::TurnContent(turn) => self.message(*turn),
             NormalizedRecord::Unusable(reason) => {
-                self.oversized = reason == PartialReason::Oversized;
+                self.oversized = reason == PartialReason::Oversized
+                    || (self.database_session_id.is_some()
+                        && reason == PartialReason::CapacityExceeded);
                 self.partial = true;
             }
             _ => {}
@@ -284,6 +380,8 @@ impl RecordSink for Projection {
     }
 
     fn finish(&mut self, summary: SessionSummary) {
-        self.partial |= !summary.coverage_gaps.is_empty();
+        if self.database_session_id.is_none() {
+            self.partial |= !summary.coverage_gaps.is_empty();
+        }
     }
 }

@@ -2,13 +2,13 @@
 
 use std::time::Instant;
 
-use rusqlite::{Connection, Row, limits::Limit, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Row, limits::Limit, params, params_from_iter};
 use serde::Serialize;
 
 use crate::{
     checks::{SessionIdentity, database::open_read_only, discovery::find_database_path},
     config::Config,
-    document::{LocalSource, SessionDocument, read_local},
+    document::{IndexedDatabase, LocalSource, SessionDocument, read_local},
 };
 
 const SESSION_METADATA: &str = "WITH session_metadata AS (
@@ -70,9 +70,10 @@ pub(crate) async fn get_local_document(
     config: Config,
 ) -> Result<SessionDocument, String> {
     tokio::task::spawn_blocking(move || {
-        let connection = open_session_database(&config)?;
+        let mut connection = open_session_database(&config)?;
+        let snapshot = connection.transaction().map_err(|_| "could not open the local session index")?;
         let mut matches = read_exact_matches(
-            &connection,
+            &snapshot,
             &session_id,
             agent.as_deref(),
             environment.as_deref(),
@@ -83,9 +84,14 @@ pub(crate) async fn get_local_document(
                 "session ID {session_id:?} matches multiple local Antiburn sessions; use --agent and --environment to select one"
             ));
         }
-        let source = matches.pop().ok_or_else(|| {
+        let mut source = matches.pop().ok_or_else(|| {
             format!("session ID {session_id:?} was not found in the local Antiburn database")
         })?;
+        if source.is_opencode_v2() {
+            source.database = read_indexed_database(&snapshot, &source.identity)
+                .map_err(|_| "could not read the indexed OpenCode V2 database binding; update Antiburn Desktop")?;
+        }
+        drop(snapshot);
         drop(connection);
         read_local(source)
     })
@@ -171,9 +177,35 @@ fn read_exact_matches(
             label: row.get(4)?,
             format: row.get(5)?,
             title: row.get(6)?,
+            database: None,
         })
     })?;
     rows.collect()
+}
+
+/// Read the provider database binding from the same snapshot as the exact index row.
+fn read_indexed_database(
+    connection: &Connection,
+    identity: &SessionIdentity,
+) -> rusqlite::Result<Option<IndexedDatabase>> {
+    connection
+        .query_row(
+            "SELECT fingerprint_source_path, source_fingerprint FROM session
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND fingerprint_source_path IS NOT NULL AND source_fingerprint IS NOT NULL",
+            params![
+                identity.environment_key,
+                identity.agent,
+                identity.session_id
+            ],
+            |row| {
+                Ok(IndexedDatabase {
+                    path: row.get(0)?,
+                    fingerprint: row.get(1)?,
+                })
+            },
+        )
+        .optional()
 }
 
 /// Read only the session table, which has one row per full session identity.

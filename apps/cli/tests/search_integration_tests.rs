@@ -336,6 +336,105 @@ fn local_get_refuses_an_oversized_or_empty_source() {
     }
 }
 
+fn opencode_v2_fixture(path: &std::path::Path) -> Connection {
+    let database = Connection::open(path).unwrap();
+    database.execute_batch(
+        r#"CREATE TABLE session_v2 (
+               id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL DEFAULT '/synthetic',
+               title TEXT, time_created INTEGER NOT NULL DEFAULT 0,
+               time_updated INTEGER NOT NULL DEFAULT 0
+           );
+           CREATE TABLE session_message (
+               id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
+               seq INTEGER NOT NULL, time_created INTEGER NOT NULL DEFAULT 0,
+               time_updated INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL
+           );
+           CREATE UNIQUE INDEX session_message_session_seq_idx ON session_message(session_id, seq);
+           CREATE TABLE event_sequence (aggregate_id TEXT PRIMARY KEY NOT NULL, seq INTEGER NOT NULL);
+           INSERT INTO session_v2 (id, parent_id) VALUES ('plain-id', NULL), ('child', 'plain-id');
+           INSERT INTO session_message (id, session_id, type, seq, data) VALUES
+               ('request', 'plain-id', 'user', 0, '{"time":{"created":1},"text":"Synthetic request."}'),
+               ('reply', 'plain-id', 'assistant', 1,
+                '{"time":{"created":2},"model":{"id":"synthetic-model","providerID":"synthetic"},"content":[{"type":"text","text":"Synthetic reply."}]}'),
+               ('child-reply', 'child', 'assistant', 0,
+                '{"time":{"created":3},"model":{"id":"synthetic-model","providerID":"synthetic"},"content":[{"type":"text","text":"Synthetic child content."}]}');"#,
+    ).unwrap();
+    database
+}
+
+#[test]
+fn local_get_reads_only_the_indexed_opencode_v2_session() {
+    use antiburn_local::discovery::agents::opencode::db_session_fingerprint_snapshot;
+
+    let fixture = Fixture::new();
+    fixture.create_database();
+    let path = fixture.root.path().join("opencode-v2.db");
+    let source = opencode_v2_fixture(&path);
+    let (_, (hash, rows)) = db_session_fingerprint_snapshot(&path, "plain-id", &|| false).unwrap();
+    let indexed = Connection::open(&fixture.database).unwrap();
+    indexed
+        .execute_batch(
+            "ALTER TABLE session ADD COLUMN fingerprint_source_path TEXT;
+         ALTER TABLE session ADD COLUMN source_fingerprint TEXT;",
+        )
+        .unwrap();
+    indexed.execute(
+        r#"UPDATE session SET agent='opencode', source_kind='providerDb',
+           source_label='opencode:plain-id:open_code_v2_sqlite', source_format='"open_code_v2_sqlite"',
+           fingerprint_source_path=?1, source_fingerprint=?2 WHERE session_id='plain-id'"#,
+        [path.to_str().unwrap(), &format!("sv1:db:{hash}:{rows}")],
+    ).unwrap();
+    let get = || {
+        Command::new(env!("CARGO_BIN_EXE_antiburn"))
+            .arg("--config")
+            .arg(&fixture.config)
+            .args(["get", "plain-id", "--source", "local", "--json"])
+            .output()
+            .unwrap()
+    };
+    let before = fs::read(&path).unwrap();
+    let output = get();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["source"], "local");
+    assert_eq!(envelope["session_id"], "plain-id");
+    assert_eq!(envelope["document"]["header"]["agent"]["name"], "opencode");
+    let messages = envelope["document"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["parts"][0]["text"], "Synthetic request.");
+    assert_eq!(messages[1]["parts"][0]["text"], "Synthetic reply.");
+    assert_eq!(fs::read(&path).unwrap(), before);
+
+    source
+        .execute(
+            "UPDATE session_message SET data=?1 WHERE id='reply'",
+            [r#"{"content":[{"type":"text","text":"Changed reply."}]}"#],
+        )
+        .unwrap();
+    let stale = get();
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(stale.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("indexed OpenCode V2 source changed"));
+
+    indexed
+        .execute(
+            "UPDATE session SET source_fingerprint=NULL WHERE session_id='plain-id'",
+            [],
+        )
+        .unwrap();
+    let unverified = get();
+    assert_eq!(unverified.status.code(), Some(1));
+    assert!(unverified.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&unverified.stderr)
+            .contains("indexed OpenCode V2 database is not ready")
+    );
+}
+
 #[test]
 fn default_search_output_is_a_text_summary_without_terminal_controls() {
     let fixture = Fixture::new();
