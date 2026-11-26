@@ -421,6 +421,10 @@ export interface CloudSnapshot {
   dashboardAvailable?: boolean
   /** The current device approval includes Team joining. */
   teamJoinAllowed?: boolean
+  sessionReadsAllowed?: boolean
+  captureUpdateAvailable?: boolean
+  accessUpdate?: "waiting" | "denied" | "failed" | null
+  grantId?: string | null
   syncEnabled: boolean
   captureEnabled?: boolean
   status: CloudStatus
@@ -436,6 +440,8 @@ export interface CloudSnapshot {
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
+/** Additional actions a signed-in device can request in the browser. */
+export type CloudAccessUpdate = "team_join" | "session_reads" | "capture"
 /** Cleanup state for a legacy Team connection. Upload failure alone does not allow reset. */
 export interface CloudWorkspaceRecovery {
   accountId: string
@@ -509,7 +515,7 @@ export interface CloudPort {
   /** Observe safe snapshots until the returned stop function is called. */
   watch(listener: (value: CloudSnapshot) => void): Promise<() => void>
   /** Open browser approval, or the information page when service config is absent. */
-  begin(): Promise<CloudSnapshot>
+  begin(accessUpdate?: CloudAccessUpdate): Promise<CloudSnapshot>
   /** Cancel a pending browser attempt only; keep established auth and saved requests. */
   cancel(): Promise<CloudSnapshot>
   /** Save preferences only for the exact current personal account binding. */
@@ -642,7 +648,7 @@ export const desktopCloudPort: CloudPort = {
     (await cloudBuildEnabled())
       ? listen<CloudSnapshot>("cloud:changed", (event) => listener(event.payload))
       : () => {},
-  begin: () => cloudCommand("cloud_begin"),
+  begin: (accessUpdate) => cloudCommand("cloud_begin", { accessUpdate }),
   cancel: () => cloudCommand("cloud_cancel"),
   save: (value, binding, foldersEdited = true) =>
     cloudCommand("cloud_save_draft", { value, binding, foldersEdited }),

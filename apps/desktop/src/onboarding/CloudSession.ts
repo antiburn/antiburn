@@ -4,6 +4,7 @@ import {
   desktopCloudPort,
   cloudSourceKind,
   cloudProjectChoices,
+  type CloudAccessUpdate,
   type CloudDraft,
   type CloudPort,
   type CloudScreen,
@@ -1021,9 +1022,11 @@ export class CloudSession {
       return false
     }
   }
-  /** Start explicit browser approval; authentication alone never starts capture. */
-  begin = () =>
-    this.run(this.snapshot.cloud.authEnabled ? "sign_in" : "learn_more", this.port.begin)
+  /** Start browser approval, optionally for an action missing from the active grant. */
+  begin = (update?: CloudAccessUpdate) =>
+    this.run(update ? null : this.snapshot.cloud.authEnabled ? "sign_in" : "learn_more", () =>
+      this.port.begin(update),
+    )
   retry = () =>
     !this.snapshot.cloud.authEnabled ? this.begin() : this.run("retry", this.port.begin)
   /** Record explicit browser cancellation without cancelling saved source requests. */

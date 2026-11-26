@@ -3,7 +3,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{ffi::OsStr, io::Read, time::Duration};
+use std::{collections::BTreeSet, ffi::OsStr, io::Read, time::Duration};
 use url::Url;
 
 const DEFAULT_DEVICE_NAME: &str = "Antiburn Desktop";
@@ -33,20 +33,49 @@ fn short_hostname(hostname: &OsStr) -> Option<&str> {
         && !label.eq_ignore_ascii_case("localhost"))
     .then_some(label)
 }
-/// Scope for existing capture-only account grants.
+#[cfg(test)]
 pub const CAPTURE_SCOPE: &str = "capture:write";
-/// Scope for account grants that can also search and read sessions.
+#[cfg(test)]
 pub const CAPTURE_AND_SESSION_SCOPE: &str = "capture:write sessions:list sessions:read";
-/// Scope for new account grants that can also join a Team with an invite.
+#[cfg(test)]
 pub const CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE: &str =
     "capture:write sessions:list sessions:read workspaces:join";
 
-/// Accept only the service's exact scope strings. Do not normalize or split them.
-fn supported_scope(scope: &str) -> bool {
-    matches!(
-        scope,
-        CAPTURE_SCOPE | CAPTURE_AND_SESSION_SCOPE | CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE
-    )
+/// Device actions this version understands. Unknown names never enable a feature.
+#[derive(Clone, Copy)]
+pub(super) enum DeviceAction {
+    CaptureWrite,
+    SessionList,
+    SessionRead,
+    WorkspaceJoin,
+}
+
+impl DeviceAction {
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::CaptureWrite => "capture:write",
+            Self::SessionList => "sessions:list",
+            Self::SessionRead => "sessions:read",
+            Self::WorkspaceJoin => "workspaces:join",
+        }
+    }
+}
+
+/// Keep unknown names when comparing grants so refresh cannot widen their scope.
+pub(super) fn scope_names(scope: &str) -> Option<BTreeSet<&str>> {
+    if !bounded(scope, 256) {
+        return None;
+    }
+    let names: BTreeSet<_> = scope.split_ascii_whitespace().collect();
+    (!names.is_empty()
+        && names
+            .iter()
+            .all(|name| name.bytes().all(|b| b.is_ascii_graphic())))
+    .then_some(names)
+}
+
+fn same_actions(left: &str, right: &str) -> bool {
+    scope_names(left).is_some_and(|names| scope_names(right).as_ref() == Some(&names))
 }
 
 /// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
@@ -234,7 +263,7 @@ impl Session {
             || self.workspace.kind != WorkspaceKind::Personal
             || !self.workspace.valid()
             || self.resource != config.resource
-            || !supported_scope(&self.scope)
+            || scope_names(&self.scope).is_none()
             || self.iss != config.issuer
             || self.expires_at <= now
             || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
@@ -244,6 +273,11 @@ impl Session {
         Ok(())
     }
 
+    /// Check one known action, independently of new actions sent by the service.
+    pub(super) fn allows(&self, action: DeviceAction) -> bool {
+        scope_names(&self.scope).is_some_and(|names| names.contains(action.name()))
+    }
+
     /// Pin account grant authority and the local Personal anchor across rotation.
     pub fn same_grant(&self, other: &Self) -> bool {
         self.user.id == other.user.id
@@ -251,7 +285,7 @@ impl Session {
             && self.workspace.id == other.workspace.id
             && self.workspace.kind == other.workspace.kind
             && self.resource == other.resource
-            && self.scope == other.scope
+            && same_actions(&self.scope, &other.scope)
             && self.iss == other.iss
             && self.expires_at == other.expires_at
     }
@@ -331,7 +365,7 @@ impl Tokens {
         if !bounded(&self.grant_id, 256)
             || !bounded(&self.user_id, 256)
             || self.legacy_workspace_claim
-            || !supported_scope(&self.scope)
+            || scope_names(&self.scope).is_none()
             || self.resource != config.resource
             || self.iss != config.issuer
             || expires_at <= now
@@ -348,7 +382,7 @@ impl Tokens {
             && self.user_id == session.user_id
             && deadline(&self.grant_expires_at)
                 .is_ok_and(|expires_at| deadline(&session.grant_expires_at) == Ok(expires_at))
-            && self.scope == session.scope
+            && same_actions(&self.scope, &session.scope)
             && self.resource == session.resource
             && self.iss == session.iss
     }
@@ -421,6 +455,15 @@ pub struct Attempt {
     pub expires_at: i64,
     pub epoch: String,
     pub generation: u64,
+    pub(super) upgrade: Option<AccessUpgrade>,
+}
+
+/// Pin a replacement to the grant and account that requested the additional actions.
+#[derive(Clone)]
+pub(super) struct AccessUpgrade {
+    pub grant_id: String,
+    pub account_id: String,
+    pub requested_scope: String,
 }
 
 /// OS-only refresh record. `session: None` permits logout only, never authentication;
@@ -438,6 +481,36 @@ pub struct Credential {
     #[serde(default)]
     pub account_grant: bool,
     pub session: Option<Session>,
+    /// Keep the previous credential intact until the new epoch is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) replacement: Option<ReplacementCredential>,
+}
+
+/// Verified candidate saved alongside the previous credential in the same OS entry.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReplacementCredential {
+    pub epoch: String,
+    pub refresh_token: String,
+    pub session: Session,
+}
+
+impl Credential {
+    /// Resolve authority using only the committed nonsecret state epoch.
+    pub(super) fn for_epoch(mut self, epoch: &str) -> Option<Self> {
+        if self.epoch == epoch {
+            self.replacement = None;
+            return Some(self);
+        }
+        let replacement = self
+            .replacement
+            .take()
+            .filter(|replacement| replacement.epoch == epoch)?;
+        self.epoch = replacement.epoch;
+        self.refresh_token = replacement.refresh_token;
+        self.session = Some(replacement.session);
+        Some(self)
+    }
 }
 
 /// Store one engine's rotating refresh credential and logout-only proofs.
@@ -491,6 +564,10 @@ impl Vault for KeyringVault {
                     serde_json::from_str(&value).map_err(|_| Failure::CredentialFailed)?;
                 if credential.cleanup_refresh_tokens.len() > 1
                     || !bounded(&credential.refresh_token, 16_384)
+                    || credential
+                        .replacement
+                        .as_ref()
+                        .is_some_and(|replacement| !bounded(&replacement.refresh_token, 16_384))
                     || credential
                         .cleanup_refresh_tokens
                         .iter()

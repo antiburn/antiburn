@@ -115,33 +115,38 @@ workspace. Reset permits a new connection without waiting for remote
 revocation. An unresolved team approval does not block Personal sign-in. An
 explicit browser denial does not need a reset.
 
-The browser must name the workspace, permitted action, and device before the user
+The browser must show the account, permitted actions, and device before the user
 approves the connection. The approved scope covers the first-party device
 connection only. It does not grant general API-client or third-party authorization.
 Token responses bind opaque credentials to an account grant, user,
 fixed grant deadline, scope, resource, and issuer. The session
 response supplies those same bindings, a nullable display name,
 the device label, and the access deadline. Deadlines use RFC 3339 strings.
-Desktop accepts only these exact scope strings:
+Desktop checks each action in the space-delimited `scope` field:
 
-- New approvals use `capture:write sessions:list sessions:read workspaces:join`.
-  This scope permits capture, search and reads, and joining a Team with an
-  invite. The service still checks current access and Team admission rules.
-- `capture:write sessions:list sessions:read` permits capture, search and reads.
-  It does not permit Team joining.
-- `capture:write` permits capture only. Older account grants keep this scope
-  when refreshed.
+- `capture:write` permits session uploads to workspaces that allow uploads.
+- `sessions:list` permits session search and metadata lists.
+- `sessions:read` permits reading complete session documents.
+- `workspaces:join` permits using a Team invite in Desktop.
+
+The service still checks current workspace access. Unknown action names do
+not enable or disable any known action. Desktop checks that the action set,
+including any unknown actions, stays the same across refresh.
 
 Desktop requires the token and session bindings to match before it saves a
 refresh credential. A changed grant, account, scope, or fixed deadline
-cannot restore the saved connection. To receive the broader scope on an older
-connection, sign out and sign in again instead of refreshing the old grant.
+cannot restore the saved connection. To add missing actions, choose
+**Update device access**. Desktop asks the same account to approve its current
+actions and the missing actions in the browser. It keeps the current grant
+until it verifies and securely saves the replacement, then requests revocation
+of the old grant. Denial or cancellation leaves the old grant connected. The
+update does not change folder settings or move a pending Team join to the new grant.
 
 Device authentication requests use the configured API origin:
 
 | Request | Proof |
 | --- | --- |
-| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
+| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name`. For an access update, also send the requested `scope` and current `account_id`. |
 | `POST /v1/devices/token` | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
 | `GET /v1/devices/grants/current` | Access bearer |
 | `GET /v1/captures/destinations` | Access bearer |

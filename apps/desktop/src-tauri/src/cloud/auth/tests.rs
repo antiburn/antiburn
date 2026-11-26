@@ -648,6 +648,7 @@ mod debug_http {
                 cleanup_refresh_tokens: cleanup_refresh_tokens.clone(),
                 account_grant: true,
                 session: Some(session),
+                replacement: None,
             };
             let mut engine = Engine::new(
                 Config::from_origins(None, None),

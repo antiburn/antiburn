@@ -40,6 +40,7 @@ export function createCloudAccountActions(
           after.status !== "signed_in" ||
           !after.teamJoinAllowed ||
           after.identity?.id !== before.identity?.id ||
+          after.grantId !== before.grantId ||
           after.grantExpiresAt !== before.grantExpiresAt
         )
           throw new Error("team_join_account_changed")

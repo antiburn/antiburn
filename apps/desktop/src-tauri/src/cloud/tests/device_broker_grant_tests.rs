@@ -1,6 +1,9 @@
 use super::*;
 use crate::cloud::{
-    auth::{AccountSession, CAPTURE_SCOPE, Config, EligibleWorkspace, TokenRequest, Tokens},
+    auth::{
+        AccountSession, CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE,
+        CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE, Config, EligibleWorkspace, TokenRequest, Tokens,
+    },
     engine::Access,
     state::{Cleanup, Phase, StateStore},
     tests::{MemoryVault, session},

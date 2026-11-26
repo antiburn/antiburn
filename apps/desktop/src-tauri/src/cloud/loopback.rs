@@ -152,6 +152,7 @@ mod tests {
                 epoch: "synthetic-epoch".into(),
                 expires_at: super::super::now() + 600,
                 generation: 0,
+                upgrade: None,
             };
             (listener, attempt)
         })

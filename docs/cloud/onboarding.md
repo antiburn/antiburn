@@ -27,8 +27,10 @@ If the owner has not opened the Team yet, it will not appear as an upload
 destination. Use **Refresh workspaces** in **Settings > Sessions** to check again.
 
 Joining does not approve folders, start uploads, or change saved destinations.
-If your device approval did not include Team joining, sign out and sign in
-again to approve it. You do not need to reconnect just to keep using capture.
+If your device approval did not include Team joining, choose **Update device
+access**. Review the request in your browser with the same account. You stay
+connected if you cancel or decline. After approval, start the Team join in
+Desktop.
 
 ## Choose folders
 

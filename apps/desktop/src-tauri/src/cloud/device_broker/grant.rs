@@ -3,10 +3,7 @@
 
 use super::Engine;
 use crate::cloud::AuthStatus;
-use crate::cloud::auth::{
-    self, CAPTURE_AND_SESSION_SCOPE, CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE, Config, Failure,
-    WorkspaceKind,
-};
+use crate::cloud::auth::{self, Config, DeviceAction, Failure, WorkspaceKind};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
@@ -35,10 +32,8 @@ impl Engine {
             return Err(Failure::Cancelled);
         }
         let session = self.session().ok_or(Failure::ReauthRequired)?;
-        if !matches!(
-            session.scope.as_str(),
-            CAPTURE_AND_SESSION_SCOPE | CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE
-        ) || session.workspace.kind != WorkspaceKind::Personal
+        if !(session.allows(DeviceAction::SessionList) || session.allows(DeviceAction::SessionRead))
+            || session.workspace.kind != WorkspaceKind::Personal
         {
             return Err(Failure::Unavailable);
         }

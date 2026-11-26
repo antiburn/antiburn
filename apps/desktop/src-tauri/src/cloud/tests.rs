@@ -124,6 +124,7 @@ pub(super) struct MemoryVault {
     value: Mutex<Option<Credential>>,
     fail_read: AtomicBool,
     fail_write: AtomicBool,
+    fail_after_staging: AtomicBool,
     on_credential_write: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -139,6 +140,11 @@ impl Vault for Arc<MemoryVault> {
             return Err(Failure::CredentialFailed);
         }
         *self.value.lock().unwrap() = value.cloned();
+        if value.is_some_and(|credential| credential.replacement.is_some())
+            && self.fail_after_staging.load(Ordering::Acquire)
+        {
+            return Err(Failure::CredentialFailed);
+        }
         if value.is_some_and(|credential| credential.session.is_some())
             && let Some(action) = &self.on_credential_write
         {
@@ -1082,17 +1088,14 @@ fn cloud_refresh_uses_the_grant_deadline_not_the_previous_access_deadline() {
 }
 
 #[test]
-fn cloud_sign_in_rejects_mismatched_or_unsupported_scopes() {
+fn cloud_sign_in_rejects_mismatched_or_malformed_scopes() {
     use auth::{CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE};
 
     for (token_scope, session_scope) in [
         (CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE),
         (CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE),
-        ("capture:write sessions:list", "capture:write sessions:list"),
-        (
-            "sessions:list sessions:read capture:write",
-            "sessions:list sessions:read capture:write",
-        ),
+        ("capture:write future:read", "capture:write"),
+        ("", ""),
     ] {
         let mut fixture = Fixture::new();
         *fixture.transport.token_scope.lock().unwrap() = Some(token_scope);
@@ -1117,6 +1120,160 @@ fn cloud_sign_in_rejects_mismatched_or_unsupported_scopes() {
         assert_eq!(
             *fixture.transport.revoked.lock().unwrap(),
             ["synthetic-refresh-0"]
+        );
+    }
+}
+
+#[test]
+fn cloud_sign_in_keeps_known_actions_when_a_new_action_is_present() {
+    let mut fixture = Fixture::new();
+    *fixture.transport.token_scope.lock().unwrap() =
+        Some("capture:write future:read workspaces:join");
+    *fixture.transport.returned_session.lock().unwrap() = Some(Session {
+        scope: "future:read workspaces:join capture:write".into(),
+        ..session()
+    });
+    fixture.sign_in();
+    let session = fixture.engine.session().unwrap();
+    assert!(session.allows(auth::DeviceAction::CaptureWrite));
+    assert!(session.allows(auth::DeviceAction::WorkspaceJoin));
+    assert!(!session.allows(auth::DeviceAction::SessionRead));
+}
+
+fn begin_team_access_update(fixture: &mut Fixture) -> auth::Attempt {
+    let (url, _listener, attempt) = fixture
+        .engine
+        .begin_access_update(102, 1, &[auth::DeviceAction::WorkspaceJoin], || true)
+        .unwrap();
+    let url = url::Url::parse(&url).unwrap();
+    let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+    assert_eq!(query["scope"], "capture:write workspaces:join");
+    assert_eq!(query["account_id"], "synthetic-user");
+    assert_eq!(
+        fixture.engine.session().unwrap().grant_id,
+        "synthetic-grant"
+    );
+    attempt
+}
+
+fn return_team_access_update(
+    fixture: &mut Fixture,
+    attempt: &auth::Attempt,
+) -> Result<(), Failure> {
+    fixture.engine.callback(
+        attempt,
+        auth::Callback::Code("synthetic-replacement".into()),
+        103,
+        || true,
+    )
+}
+
+fn offer_team_access_update(fixture: &Fixture, account_id: &str) {
+    let grant_id = "replacement-grant";
+    let scope = "capture:write workspaces:join";
+    *fixture.transport.token_grant.lock().unwrap() = Some(grant_id.into());
+    *fixture.transport.token_scope.lock().unwrap() = Some(scope);
+    let mut replacement = session();
+    replacement.user.id = account_id.into();
+    replacement.grant_id = grant_id.into();
+    replacement.scope = scope.into();
+    *fixture.transport.returned_session.lock().unwrap() = Some(replacement);
+}
+
+#[test]
+fn successful_access_update_commits_and_only_then_revokes_the_prior_grant() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let attempt = begin_team_access_update(&mut fixture);
+    offer_team_access_update(&fixture, "synthetic-user");
+    return_team_access_update(&mut fixture, &attempt).unwrap();
+    assert!(
+        fixture
+            .engine
+            .session()
+            .unwrap()
+            .allows(auth::DeviceAction::WorkspaceJoin)
+    );
+    assert_eq!(
+        *fixture.transport.revoked.lock().unwrap(),
+        ["synthetic-refresh-0"]
+    );
+
+    fixture.restart();
+    fixture.engine.refresh(104, || true).unwrap();
+    assert_eq!(
+        fixture.transport.seen.lock().unwrap().last().unwrap(),
+        "synthetic-refresh-1"
+    );
+    assert_eq!(
+        fixture.engine.session().unwrap().grant_id,
+        "replacement-grant"
+    );
+}
+
+#[test]
+fn rejected_or_uncertain_access_update_keeps_the_previous_connection() {
+    for failure in ["denied", "cancelled", "wrong account", "save uncertainty"] {
+        let mut fixture = Fixture::new();
+        fixture.sign_in();
+        let attempt = begin_team_access_update(&mut fixture);
+        match failure {
+            "denied" => fixture
+                .engine
+                .callback(&attempt, auth::Callback::Cancelled, 103, || true)
+                .unwrap(),
+            "cancelled" => {
+                fixture.engine.cancel(1).unwrap();
+                assert_eq!(
+                    return_team_access_update(&mut fixture, &attempt),
+                    Err(Failure::Cancelled)
+                );
+            }
+            "wrong account" => {
+                offer_team_access_update(&fixture, "other-account");
+                assert_eq!(
+                    return_team_access_update(&mut fixture, &attempt),
+                    Err(Failure::InvalidResponse)
+                );
+            }
+            "save uncertainty" => {
+                offer_team_access_update(&fixture, "synthetic-user");
+                fixture
+                    .vault
+                    .fail_after_staging
+                    .store(true, Ordering::Release);
+                assert_eq!(
+                    return_team_access_update(&mut fixture, &attempt),
+                    Err(Failure::CredentialFailed)
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            fixture.engine.session().unwrap().grant_id,
+            "synthetic-grant"
+        );
+        assert!(
+            !fixture
+                .transport
+                .revoked
+                .lock()
+                .unwrap()
+                .contains(&"synthetic-refresh-0".to_owned())
+        );
+
+        *fixture.transport.token_grant.lock().unwrap() = None;
+        *fixture.transport.token_scope.lock().unwrap() = None;
+        *fixture.transport.returned_session.lock().unwrap() = None;
+        fixture.restart();
+        fixture.engine.refresh(104, || true).unwrap();
+        assert_eq!(
+            fixture.transport.seen.lock().unwrap().last().unwrap(),
+            "synthetic-refresh-0"
+        );
+        assert_eq!(
+            fixture.engine.session().unwrap().grant_id,
+            "synthetic-grant"
         );
     }
 }
@@ -1488,12 +1645,16 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         auth_enabled: true,
         dashboard_available: true,
         team_join_allowed: true,
+        session_reads_allowed: true,
+        capture_update_available: false,
+        access_update: None,
         capture_enabled: true,
         sync_enabled: false,
         status: AuthStatus::SignedIn,
         identity: Some(Identity::from(&session())),
         expires_at: None,
         grant_expires_at: Some(10_000),
+        grant_id: Some(session().grant_id),
         destination: Some(session().workspace),
         revocation_pending: false,
         local_cleanup_pending: false,

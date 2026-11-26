@@ -64,6 +64,35 @@ pub enum AuthStatus {
     RevocationUnconfirmed,
 }
 
+/// Status of a browser access update while the old grant stays active.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum AccessUpdateStatus {
+    Waiting,
+    Denied,
+    Failed,
+}
+
+/// Extra actions a Desktop control can request. The native engine binds the account.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessUpdate {
+    TeamJoin,
+    SessionReads,
+    Capture,
+}
+
+impl AccessUpdate {
+    fn actions(&self) -> &'static [auth::DeviceAction] {
+        use auth::DeviceAction::*;
+        match self {
+            Self::TeamJoin => &[WorkspaceJoin],
+            Self::SessionReads => &[SessionList, SessionRead],
+            Self::Capture => &[CaptureWrite],
+        }
+    }
+}
+
 impl From<Failure> for AuthStatus {
     fn from(value: Failure) -> Self {
         match value {
@@ -145,12 +174,16 @@ pub struct Snapshot {
     auth_enabled: bool,
     dashboard_available: bool,
     team_join_allowed: bool,
+    session_reads_allowed: bool,
+    capture_update_available: bool,
+    access_update: Option<AccessUpdateStatus>,
     capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
     identity: Option<Identity>,
     expires_at: Option<i64>,
     grant_expires_at: Option<i64>,
+    grant_id: Option<String>,
     destination: Option<Workspace>,
     revocation_pending: bool,
     local_cleanup_pending: bool,
@@ -326,8 +359,20 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             .as_ref()
             .is_some_and(|config| config.dashboard.is_some()),
         team_join_allowed: session
-            .is_some_and(|session| session.scope == auth::CAPTURE_SESSION_AND_TEAM_JOIN_SCOPE),
-        capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
+            .is_some_and(|session| session.allows(auth::DeviceAction::WorkspaceJoin)),
+        session_reads_allowed: session.is_some_and(|session| {
+            session.allows(auth::DeviceAction::SessionList)
+                && session.allows(auth::DeviceAction::SessionRead)
+        }),
+        capture_update_available: cfg!(unix)
+            && setup_error.is_none()
+            && session.is_some_and(|session| !session.allows(auth::DeviceAction::CaptureWrite)),
+        access_update: engine
+            .access_update
+            .filter(|_| current && session.is_some()),
+        capture_enabled: cfg!(unix)
+            && setup_error.is_none()
+            && session.is_some_and(|session| session.allows(auth::DeviceAction::CaptureWrite)),
         sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
             AuthStatus::Cancelled
@@ -343,6 +388,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             .filter(|_| current)
             .map(|attempt| attempt.expires_at),
         grant_expires_at: session.map(|session| session.expires_at),
+        grant_id: session.map(|session| session.grant_id.clone()),
         destination: session.map(|session| session.workspace.clone()),
         revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
         local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
@@ -579,7 +625,10 @@ pub async fn cloud_open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
 /// the existing attempt intact. Cleanup can invalidate an admitted replacement
 /// before its blocking closure starts, so it must claim the observed generation.
 #[tauri::command]
-pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
+pub async fn cloud_begin(
+    app: tauri::AppHandle,
+    access_update: Option<AccessUpdate>,
+) -> Result<Snapshot, String> {
     let expected_generation = app
         .state::<Controller>()
         .attempt_generation
@@ -620,30 +669,34 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
             };
             return Ok(publish(&app, &engine));
         }
-        let (url, listener, attempt) = match engine.begin(now(), generation) {
+        let begun = match &access_update {
+            Some(update) => engine.begin_access_update(now(), generation, update.actions(), || {
+                controller.attempt_generation.load(Ordering::Acquire) == generation
+                    && controller.account_generation.load(Ordering::Acquire) == account_generation
+            }),
+            None => engine.begin(now(), generation),
+        };
+        let (url, listener, attempt) = match begun {
             Ok(value) => value,
             Err(error) => {
-                engine.status = error.into();
+                if access_update.is_some() && engine.session().is_some() {
+                    engine.access_update = Some(AccessUpdateStatus::Failed);
+                } else {
+                    engine.status = error.into();
+                }
                 return Ok(publish(&app, &engine));
             }
         };
         // A replacement sign-in cannot inherit queued account work from the
         // previous connection, even for the same user.
-        let next_account_generation = account_generation + 1;
-        if controller
-            .account_generation
-            .compare_exchange(
-                account_generation,
-                next_account_generation,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return Ok(snapshot(&app, &engine));
-        }
-        let account_generation = next_account_generation;
-        engine.generation = account_generation;
+        let account_generation = if attempt.upgrade.is_some() {
+            account_generation
+        } else {
+            if !advance_account_generation(controller.inner(), &mut engine, account_generation) {
+                return Ok(snapshot(&app, &engine));
+            }
+            engine.generation
+        };
         if !launch_account_browser(
             &mut engine,
             &attempt,
@@ -657,7 +710,9 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         {
             return Ok(publish(&app, &engine));
         }
-        engine.status = AuthStatus::Waiting;
+        if attempt.upgrade.is_none() {
+            engine.status = AuthStatus::Waiting;
+        }
         let config = engine.config.clone().ok_or("Cloud is unavailable.")?;
         let result = publish(&app, &engine);
         let callback_app = app.clone();
@@ -687,7 +742,7 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                     if !current() {
                         return Ok(());
                     }
-                    if let Some(callback) = callback {
+                    let replaced = if let Some(callback) = callback {
                         complete_browser_return(
                             &mut engine,
                             &attempt,
@@ -697,10 +752,12 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                             |engine| {
                                 publish(&callback_app, engine);
                             },
-                        );
+                        )
                     } else {
                         if let Err(error) = engine.cancel(generation) {
                             engine.status = error.into();
+                        } else if attempt.upgrade.is_some() {
+                            engine.access_update = Some(AccessUpdateStatus::Failed);
                         } else {
                             engine.status = if engine.cleanup.blocks_connection() {
                                 AuthStatus::RevocationUnconfirmed
@@ -708,8 +765,16 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                                 AuthStatus::Expired
                             };
                         }
-                    }
-                    if current() {
+                        false
+                    };
+                    if (replaced
+                        && advance_account_generation(
+                            controller.inner(),
+                            &mut engine,
+                            account_generation,
+                        ))
+                        || (!replaced && current())
+                    {
                         publish(&callback_app, &engine);
                     }
                     Ok(())
@@ -724,6 +789,18 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
     .await
 }
 
+fn advance_account_generation(controller: &Controller, engine: &mut Engine, current: u64) -> bool {
+    if controller
+        .account_generation
+        .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+    engine.generation = current + 1;
+    true
+}
+
 /// Report a validated browser return before the token exchange can block.
 fn complete_browser_return(
     engine: &mut Engine,
@@ -732,16 +809,24 @@ fn complete_browser_return(
     returned_at: i64,
     current: impl Fn() -> bool,
     notify_returned: impl FnOnce(&Engine),
-) {
+) -> bool {
     if !current() {
-        return;
+        return false;
     }
-    if matches!(callback, auth::Callback::Code(_)) {
+    if attempt.upgrade.is_none() && matches!(callback, auth::Callback::Code(_)) {
         engine.status = AuthStatus::Returned;
         notify_returned(engine);
     }
-    if let Err(error) = engine.callback(attempt, callback, returned_at, current) {
-        engine.status = error.into();
+    match engine.callback(attempt, callback, returned_at, current) {
+        Ok(()) => attempt.upgrade.is_some() && engine.access_update.is_none(),
+        Err(_) if attempt.upgrade.is_some() => {
+            engine.access_update = Some(AccessUpdateStatus::Failed);
+            false
+        }
+        Err(error) => {
+            engine.status = error.into();
+            false
+        }
     }
 }
 
@@ -755,7 +840,9 @@ fn launch_account_browser(
 ) -> Result<bool, Failure> {
     if !current() {
         engine.abort_browser_launch(attempt)?;
-        engine.status = AuthStatus::Cancelled;
+        if attempt.upgrade.is_none() {
+            engine.status = AuthStatus::Cancelled;
+        }
         return Ok(false);
     }
     if let Err(error) = open() {
@@ -764,7 +851,11 @@ fn launch_account_browser(
         } else {
             engine.cancel(attempt.generation)?;
         }
-        engine.status = AuthStatus::BrowserFailed;
+        if attempt.upgrade.is_some() {
+            engine.access_update = Some(AccessUpdateStatus::Failed);
+        } else {
+            engine.status = AuthStatus::BrowserFailed;
+        }
         return Ok(false);
     }
     Ok(true)

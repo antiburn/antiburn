@@ -11,6 +11,7 @@ import {
   UserRound,
 } from "lucide-react"
 import appIcon from "../assets/app-icon.png"
+import { DeviceAccessUpdate } from "./DeviceAccessUpdate"
 import {
   cloudSourceKey,
   cloudSourceKind,
@@ -356,11 +357,18 @@ export function CloudOnboarding({
             </h1>
             {session.accountActions.canJoinTeam() && (
               <CloudTeamJoin
-                key={`${value.cloud.identity?.id}:${value.cloud.grantExpiresAt}`}
+                key={`${value.cloud.identity?.id}:${value.cloud.grantId ?? value.cloud.grantExpiresAt}`}
                 send={joinTeam}
                 onboarding
               />
             )}
+            <DeviceAccessUpdate
+              value={value.cloud}
+              busy={value.busy}
+              update={session.begin}
+              cancel={session.cancel}
+              onboarding
+            />
             {value.cloud.setupError && (
               <>
                 <p className="type-callout text-onboarding-muted" role="status">
