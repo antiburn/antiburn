@@ -91,13 +91,23 @@ pub(crate) fn read_local(source: LocalSource) -> Result<SessionDocument, String>
         ..Projection::default()
     };
     visit_source(&input, fingerprint.as_deref(), &mut sink)?;
-    if sink.oversized {
+    if sink.capacity_exceeded {
         return Err("local session document exceeds the size limit".into());
     }
     if sink.messages.is_empty() {
-        return Err("the local session source has no supported message content".into());
+        if tail_incomplete {
+            return Err("the local session file has an incomplete record; try again".into());
+        }
+        if !sink.record_oversized {
+            return Err("the local session source has no supported message content".into());
+        }
     }
-    Ok(local_document(input, source.title, sink))
+    Ok(local_document(
+        input,
+        source.identity.environment_key,
+        source.title,
+        sink,
+    ))
 }
 
 fn visit_source(
@@ -138,12 +148,18 @@ fn visit_source(
     Ok(())
 }
 
-fn local_document(input: SessionInput, title: Option<String>, sink: Projection) -> SessionDocument {
+fn local_document(
+    input: SessionInput,
+    environment_key: String,
+    title: Option<String>,
+    sink: Projection,
+) -> SessionDocument {
     SessionDocument {
         schema_version: SCHEMA_VERSION,
         source: Source::Local,
         workspace_id: None,
         session_id: input.session_id,
+        environment_key: Some(environment_key),
         revision: None,
         stale: None,
         document: Document {
@@ -268,7 +284,8 @@ struct Projection {
     role: Option<Role>,
     bytes: usize,
     partial: bool,
-    oversized: bool,
+    record_oversized: bool,
+    capacity_exceeded: bool,
     database_session_id: Option<String>,
     ignore_source: bool,
 }
@@ -287,7 +304,7 @@ impl Projection {
                 + part.text.len()
                 + part.tool_name.as_ref().map_or(0, String::len);
             if self.bytes > MAX_DOCUMENT_BYTES {
-                self.oversized = true;
+                self.capacity_exceeded = true;
                 return;
             }
             let mut details = PartDetails::default();
@@ -356,7 +373,7 @@ impl RecordSink for Projection {
     }
 
     fn record(&mut self, record: NormalizedRecord) {
-        if self.oversized || self.ignore_source {
+        if self.capacity_exceeded || self.ignore_source {
             return;
         }
         match record {
@@ -370,9 +387,9 @@ impl RecordSink for Projection {
             }
             NormalizedRecord::TurnContent(turn) => self.message(*turn),
             NormalizedRecord::Unusable(reason) => {
-                self.oversized = reason == PartialReason::Oversized
-                    || (self.database_session_id.is_some()
-                        && reason == PartialReason::CapacityExceeded);
+                self.record_oversized |= reason == PartialReason::Oversized;
+                self.capacity_exceeded =
+                    self.database_session_id.is_some() && reason == PartialReason::CapacityExceeded;
                 self.partial = true;
             }
             _ => {}

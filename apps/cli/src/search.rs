@@ -2,7 +2,9 @@
 
 use std::time::Instant;
 
-use rusqlite::{Connection, OptionalExtension, Row, limits::Limit, params, params_from_iter};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension, Row, limits::Limit, params, params_from_iter,
+};
 use serde::Serialize;
 
 use crate::{
@@ -71,14 +73,14 @@ pub(crate) async fn get_local_document(
 ) -> Result<SessionDocument, String> {
     tokio::task::spawn_blocking(move || {
         let mut connection = open_session_database(&config)?;
-        let snapshot = connection.transaction().map_err(|_| "could not open the local session index")?;
+        let snapshot = connection.transaction().map_err(|error| local_index_error(&error))?;
         let mut matches = read_exact_matches(
             &snapshot,
             &session_id,
             agent.as_deref(),
             environment.as_deref(),
         )
-        .map_err(|_| "could not read the local session source index; update Antiburn Desktop")?;
+        .map_err(|error| local_index_error(&error))?;
         if matches.len() > 1 {
             return Err(format!(
                 "session ID {session_id:?} matches multiple local Antiburn sessions; use --agent and --environment to select one"
@@ -89,7 +91,7 @@ pub(crate) async fn get_local_document(
         })?;
         if source.is_opencode_v2() {
             source.database = read_indexed_database(&snapshot, &source.identity)
-                .map_err(|_| "could not read the indexed OpenCode V2 database binding; update Antiburn Desktop")?;
+                .map_err(|error| local_index_error(&error))?;
         }
         drop(snapshot);
         drop(connection);
@@ -97,6 +99,15 @@ pub(crate) async fn get_local_document(
     })
     .await
     .map_err(|error| format!("local Antiburn session lookup task failed: {error}"))?
+}
+
+fn local_index_error(error: &rusqlite::Error) -> &'static str {
+    match error.sqlite_error_code() {
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
+            "the local session index is busy; try again"
+        }
+        _ => "could not read the local session source index",
+    }
 }
 
 /// Read matches and optional accepted source keys from the same SQLite snapshot.

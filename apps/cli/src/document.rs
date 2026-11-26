@@ -12,7 +12,12 @@ pub(crate) use local::{IndexedDatabase, LocalSource, read_local};
 
 const SCHEMA_VERSION: u8 = 1;
 pub(crate) const MAX_DOCUMENT_BYTES: usize = 20 * 1024 * 1024;
+// DEL is one byte in the response but takes six bytes in either output format.
+// Leave extra room for labels and framing.
+const MAX_DOCUMENT_OUTPUT_BYTES: usize = 6 * MAX_DOCUMENT_BYTES + 1024;
 const DOCUMENT_LIMIT_ERROR: &str = "could not encode the session document within the size limit";
+#[cfg(feature = "cloud")]
+const INVALID_CLOUD_RESPONSE: &str = "Cloud returned an invalid response";
 
 /// One public document. No raw records or source locators enter this type.
 #[derive(Serialize)]
@@ -23,6 +28,8 @@ pub(crate) struct SessionDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     workspace_id: Option<String>,
     session_id: String,
+    #[serde(skip)]
+    environment_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,6 +154,17 @@ enum CoverageLevel {
     Complete,
     Partial,
     Unknown,
+}
+
+impl CoverageLevel {
+    fn label(&self) -> &'static str {
+        match self {
+            #[cfg(feature = "cloud")]
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -285,15 +303,45 @@ enum Role {
 }
 
 impl SessionDocument {
+    /// Check both version fields before interpreting the v1 document fields.
+    #[cfg(feature = "cloud")]
+    pub(crate) fn decode_cloud(bytes: &[u8]) -> Result<Self, String> {
+        #[derive(Deserialize)]
+        struct EnvelopeVersion {
+            schema_version: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct DocumentEnvelope {
+            document: DocumentVersion,
+        }
+
+        #[derive(Deserialize)]
+        struct DocumentVersion {
+            version: u64,
+        }
+
+        let envelope: EnvelopeVersion =
+            serde_json::from_slice(bytes).map_err(|_| INVALID_CLOUD_RESPONSE)?;
+        let supported = u64::from(SCHEMA_VERSION);
+        let unsupported = "Cloud returned an unsupported document version";
+        if envelope.schema_version != supported {
+            return Err(unsupported.into());
+        }
+        let envelope: DocumentEnvelope =
+            serde_json::from_slice(bytes).map_err(|_| INVALID_CLOUD_RESPONSE)?;
+        if envelope.document.version != supported {
+            return Err(unsupported.into());
+        }
+        serde_json::from_slice(bytes).map_err(|_| INVALID_CLOUD_RESPONSE.into())
+    }
+
     #[cfg(feature = "cloud")]
     pub(crate) fn validate_cloud(
         &self,
         workspace_id: uuid::Uuid,
         session_id: uuid::Uuid,
     ) -> Result<(), String> {
-        if self.schema_version != SCHEMA_VERSION || self.document.version != SCHEMA_VERSION {
-            return Err("Cloud returned an unsupported document version".into());
-        }
         if self.source != Source::Cloud
             || self
                 .workspace_id
@@ -319,7 +367,7 @@ impl SessionDocument {
         let mut serializer = serde_json::Serializer::with_formatter(&mut output, SafeJson);
         self.serialize(&mut serializer)
             .map_err(|_| DOCUMENT_LIMIT_ERROR)?;
-        output.0.push(b'\n');
+        output.write_all(b"\n").map_err(|_| DOCUMENT_LIMIT_ERROR)?;
         Ok(output.0)
     }
 
@@ -332,18 +380,37 @@ impl SessionDocument {
     }
 
     fn write_text(&self, output: &mut impl Write) -> io::Result<()> {
+        let header = &self.document.header;
+        writeln!(
+            output,
+            "{}",
+            header
+                .title
+                .as_deref()
+                .unwrap_or("Untitled session")
+                .escape_debug()
+        )?;
         writeln!(
             output,
             "Session {} ({})",
             self.session_id.escape_debug(),
             self.source.label(),
         )?;
+        writeln!(output, "Agent: {}", header.agent.name.escape_debug())?;
+        if let Some(environment) = &self.environment_key {
+            writeln!(output, "Environment: {}", environment.escape_debug())?;
+        }
         if self.stale == Some(true) {
             output.write_all(b"Cloud returned an older publication.\n")?;
         }
         if let Some(revision) = &self.revision {
             writeln!(output, "Revision: {revision}")?;
         }
+        writeln!(
+            output,
+            "Source coverage: {}",
+            self.document.coverage.source.label()
+        )?;
         if self.document.coverage.projection == CoverageLevel::Partial {
             output.write_all(b"Document projection is partial.\n")?;
         }
@@ -375,7 +442,7 @@ struct DocumentBytes(Vec<u8>);
 
 impl Write for DocumentBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > MAX_DOCUMENT_BYTES - self.0.len() {
+        if bytes.len() > MAX_DOCUMENT_OUTPUT_BYTES - self.0.len() {
             return Err(io::Error::other("session document exceeds the size limit"));
         }
         self.0.extend_from_slice(bytes);

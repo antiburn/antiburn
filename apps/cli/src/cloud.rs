@@ -94,8 +94,8 @@ pub(crate) async fn get(session_id: &str, client: CloudClient) -> Result<Session
     if session_id.is_nil() {
         return Err("select a non-nil Cloud session UUID".into());
     }
-    let document: SessionDocument =
-        read_json(client.sessions(Some(session_id)), MAX_DOCUMENT_BYTES).await?;
+    let body = read_body(client.sessions(Some(session_id)), MAX_DOCUMENT_BYTES).await?;
+    let document = SessionDocument::decode_cloud(&body)?;
     document.validate_cloud(client.workspace_id, session_id)?;
     Ok(document)
 }
@@ -119,11 +119,16 @@ fn validate_origin(value: &str) -> Result<Url, String> {
     Ok(origin)
 }
 
-/// Read only the expected success body. Never put transport or response details in diagnostics.
 async fn read_json<T: DeserializeOwned>(
     request: RequestBuilder,
     max_bytes: usize,
 ) -> Result<T, String> {
+    let bytes = read_body(request, max_bytes).await?;
+    serde_json::from_slice(&bytes).map_err(|_| "Cloud returned an invalid response".into())
+}
+
+/// Read only the expected success body. Never put transport or response details in diagnostics.
+async fn read_body(request: RequestBuilder, max_bytes: usize) -> Result<Vec<u8>, String> {
     let mut response = request.send().await.map_err(|_| "Cloud request failed")?;
     match response.status() {
         StatusCode::OK => {}
@@ -155,5 +160,5 @@ async fn read_json<T: DeserializeOwned>(
         }
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| "Cloud returned an invalid response".into())
+    Ok(bytes)
 }

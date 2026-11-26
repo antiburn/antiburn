@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Output},
+};
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -77,6 +81,16 @@ impl Fixture {
         );
         assert!(output.stderr.is_empty());
         serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn get(&self, session_id: &str, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_antiburn"))
+            .arg("--config")
+            .arg(&self.config)
+            .args(["get", session_id])
+            .args(args)
+            .output()
+            .unwrap()
     }
 }
 
@@ -168,15 +182,7 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     )
     .unwrap();
     drop(db);
-    let get = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_antiburn"))
-            .arg("--config")
-            .arg(&fixture.config)
-            .args(["get", "example-shared"])
-            .args(args)
-            .output()
-            .unwrap()
-    };
+    let get = |args: &[&str]| fixture.get("example-shared", args);
     let ambiguous = get(&["--json"]);
     assert!(!ambiguous.status.success());
     assert!(ambiguous.stdout.is_empty());
@@ -201,6 +207,7 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     assert_eq!(result["session_id"], "example-shared");
     assert!(result.get("workspace_id").is_none());
     assert!(result.get("revision").is_none());
+    assert!(result.get("environment_key").is_none());
     assert_eq!(result["document"]["header"]["title"], "Example migration");
     assert_eq!(result["document"]["header"]["agent"]["name"], "claude-code");
     assert_eq!(result["document"]["coverage"]["source"], "partial");
@@ -223,7 +230,11 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     let text = get(&["--agent", "claude-code", "--environment", "native"]);
     assert!(text.status.success(), "{:?}", text.stderr);
     let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.starts_with("Example migration\n"));
     assert!(text.contains("Session example-shared (local)"));
+    assert!(text.contains("Agent: claude-code\n"));
+    assert!(text.contains("Environment: native\n"));
+    assert!(text.contains("Source coverage: partial\n"));
     assert!(text.contains("Assistant: \"Synthetic reply\""));
     assert!(!text.contains('\x1b'));
 
@@ -236,6 +247,18 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     let unsupported = get(&["--agent", "codex", "--environment", "native"]);
     assert!(String::from_utf8_lossy(&unsupported.stderr).contains("format is not supported"));
     assert!(unsupported.stdout.is_empty());
+
+    for (id, agent, environment) in [
+        ("EXAMPLE-shared", "claude-code", "native"),
+        ("example-shared", "CLAUDE-code", "native"),
+        ("example-shared", "claude-code", "Native"),
+        ("example-shared", "claude-code", "wsl:example"),
+    ] {
+        let output = fixture.get(id, &["--agent", agent, "--environment", environment]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("was not found"));
+    }
 
     fs::remove_file(&path).unwrap();
     let missing = get(&["--agent", "claude-code", "--environment", "native"]);
@@ -286,12 +309,7 @@ fn local_get_uses_each_supported_jsonl_reader() {
                 [agent, path.to_str().unwrap(), &json!(format).to_string()],
             )
             .unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_antiburn"))
-            .arg("--config")
-            .arg(&fixture.config)
-            .args(["get", "plain-id", "--source", "local", "--json"])
-            .output()
-            .unwrap();
+        let output = fixture.get("plain-id", &["--source", "local", "--json"]);
         assert!(
             output.status.success(),
             "{agent}: {}",
@@ -307,7 +325,7 @@ fn local_get_uses_each_supported_jsonl_reader() {
 }
 
 #[test]
-fn local_get_refuses_an_oversized_or_empty_source() {
+fn local_get_reports_jsonl_size_and_coverage_limits() {
     let fixture = Fixture::new();
     fixture.create_database();
     let path = fixture.root.path().join("plain-id.jsonl");
@@ -324,16 +342,48 @@ fn local_get_refuses_an_oversized_or_empty_source() {
         (0, "no supported message content"),
     ] {
         fs::File::create(&path).unwrap().set_len(size).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_antiburn"))
-            .arg("--config")
-            .arg(&fixture.config)
-            .args(["get", "plain-id", "--json"])
-            .output()
-            .unwrap();
+        let output = fixture.get("plain-id", &["--json"]);
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
     }
+
+    fs::write(&path, r#"{"type":"user","message":"incomplete"#).unwrap();
+    let output = fixture.get("plain-id", &["--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete record; try again"));
+
+    let oversized = format!(
+        "{{\"type\":\"user\",\"message\":{{\"content\":\"{}\"}}}}\n",
+        "x".repeat(8 * 1024 * 1024)
+    );
+    fs::write(&path, oversized).unwrap();
+    let output = fixture.get("plain-id", &["--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["document"]["coverage"]["source"], "partial");
+    assert_eq!(response["document"]["messages"], json!([]));
+}
+
+#[test]
+fn local_get_reports_a_locked_index_as_retryable() {
+    let fixture = Fixture::new();
+    fixture.create_database();
+    let mut config: Value = serde_json::from_slice(&fs::read(&fixture.config).unwrap()).unwrap();
+    config["busy_timeout_ms"] = json!(0);
+    fs::write(&fixture.config, config.to_string()).unwrap();
+    let writer = Connection::open(&fixture.database).unwrap();
+    writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+    let output = fixture.get("plain-id", &["--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("index is busy; try again"));
 }
 
 fn opencode_v2_fixture(path: &std::path::Path) -> Connection {
@@ -370,6 +420,21 @@ fn local_get_reads_only_the_indexed_opencode_v2_session() {
     fixture.create_database();
     let path = fixture.root.path().join("opencode-v2.db");
     let source = opencode_v2_fixture(&path);
+    let long_part = "x".repeat(300 * 1024);
+    let reply = json!({
+        "time": {"created": 2},
+        "model": {"id": "synthetic-model", "providerID": "synthetic"},
+        "content": [
+            {"type": "text", "text": "Synthetic reply."},
+            {"type": "text", "text": long_part}
+        ]
+    });
+    source
+        .execute(
+            "UPDATE session_message SET data=?1 WHERE id='reply'",
+            [reply.to_string()],
+        )
+        .unwrap();
     let (_, (hash, rows)) = db_session_fingerprint_snapshot(&path, "plain-id", &|| false).unwrap();
     let indexed = Connection::open(&fixture.database).unwrap();
     indexed
@@ -384,14 +449,7 @@ fn local_get_reads_only_the_indexed_opencode_v2_session() {
            fingerprint_source_path=?1, source_fingerprint=?2 WHERE session_id='plain-id'"#,
         [path.to_str().unwrap(), &format!("sv1:db:{hash}:{rows}")],
     ).unwrap();
-    let get = || {
-        Command::new(env!("CARGO_BIN_EXE_antiburn"))
-            .arg("--config")
-            .arg(&fixture.config)
-            .args(["get", "plain-id", "--source", "local", "--json"])
-            .output()
-            .unwrap()
-    };
+    let get = || fixture.get("plain-id", &["--source", "local", "--json"]);
     let before = fs::read(&path).unwrap();
     let output = get();
     assert!(
@@ -403,10 +461,17 @@ fn local_get_reads_only_the_indexed_opencode_v2_session() {
     assert_eq!(envelope["source"], "local");
     assert_eq!(envelope["session_id"], "plain-id");
     assert_eq!(envelope["document"]["header"]["agent"]["name"], "opencode");
+    assert_eq!(envelope["document"]["coverage"]["source"], "partial");
     let messages = envelope["document"]["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["parts"][0]["text"], "Synthetic request.");
     assert_eq!(messages[1]["parts"][0]["text"], "Synthetic reply.");
+    let clipped = &messages[1]["parts"][1];
+    assert_eq!(clipped["content_state"], "partial");
+    assert_eq!(
+        clipped["text"].as_str().unwrap().len() + "Synthetic reply.".len(),
+        256 * 1024
+    );
     assert_eq!(fs::read(&path).unwrap(), before);
 
     source
