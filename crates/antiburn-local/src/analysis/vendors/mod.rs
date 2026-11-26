@@ -169,14 +169,25 @@ mod tests {
 
     #[test]
     fn claude_code_uses_the_claude_reader_for_claude_jsonl() {
+        use crate::analysis::{SourceCapabilities, model::Role};
+
         let mut input = crate::analysis::SessionInput {
             agent: "claude-code".to_owned(),
             session_id: "test".to_owned(),
-            source: RawSource::Jsonl(String::new()),
+            source: RawSource::Jsonl(
+                r#"{"type":"assistant","uuid":"synthetic-record","timestamp":"2026-01-01T00:00:00Z","message":{"id":"synthetic-message","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"Synthetic reply"}]}}"#
+                    .to_owned(),
+            ),
             source_format: crate::analysis::SourceFormat::ClaudeJsonl,
             fork_parent_session_id: None,
         };
-        assert_eq!(reader_for_input(&input).agent(), "claude");
+        let reader = reader_for_input(&input);
+        assert_eq!(reader.agent(), "claude");
+        assert_eq!(reader.capabilities(&input), SourceCapabilities::claude());
+        let session = reader.normalize(&input).unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert_eq!(session.events[0].role, Role::Assistant);
+        assert_eq!(session.events[0].usage.output_tokens, 5);
 
         input.source_format = crate::analysis::SourceFormat::PiV3Jsonl;
         assert_eq!(reader_for_input(&input).agent(), GENERIC.agent());

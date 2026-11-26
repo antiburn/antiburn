@@ -862,16 +862,45 @@ fn reports_cloud_version_errors_even_if_v1_fields_are_invalid() {
 #[test]
 fn rejects_overlong_cloud_requests_before_network_io() {
     let fixture = Fixture::new("http://127.0.0.1:1");
+    assert_private_error(
+        fixture.run(&["search", "sample", "--source", "cloud", "--limit", "51"]),
+        "Cloud search allows 1 to 50 results and queries up to 200 bytes",
+    );
     for args in [
-        vec!["search", "sample", "--source", "cloud", "--limit", "51"],
-        vec!["search", &"a".repeat(201), "--source", "cloud"],
-        vec!["search", &"©".repeat(101), "--source", "cloud"],
+        ["search", &"a".repeat(201), "--source", "cloud"],
+        ["search", &"©".repeat(101), "--source", "cloud"],
     ] {
         assert_private_error(
             fixture.run(&args),
-            "Cloud search allows 1 to 50 results and queries up to 200 bytes",
+            "Cloud search allows queries up to 200 bytes; use --source local",
         );
     }
+}
+
+#[test]
+fn overlong_default_search_requires_explicit_local_source() {
+    let fixture = Fixture::new("http://127.0.0.1:1");
+    let query = "a".repeat(201);
+    let database = fixture.local_database(&fixture.origin);
+    Connection::open(database)
+        .unwrap()
+        .execute(
+            "UPDATE session SET title=?1 WHERE session_id=?2",
+            params![query, SESSION],
+        )
+        .unwrap();
+
+    assert_private_error(
+        fixture.run(&["search", &query]),
+        "Cloud search allows queries up to 200 bytes; use --source local",
+    );
+    let local = read_success(fixture.run(&["search", &query, "--source", "local"]));
+    assert_eq!(local["source"], "local");
+    assert_eq!(local["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        local["sessions"][0]["local"]["identity"]["session_id"],
+        SESSION
+    );
 }
 
 #[test]

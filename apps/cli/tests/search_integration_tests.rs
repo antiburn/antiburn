@@ -240,17 +240,20 @@ fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     assert!(!text.contains('\x1b'));
 
     let downstream = get(&["--agent", "pi", "--environment", "wsl:example"]);
+    assert_eq!(downstream.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&downstream.stderr)
             .contains("cannot read this local session environment")
     );
     assert!(downstream.stdout.is_empty());
     let unsupported = get(&["--agent", "codex", "--environment", "native"]);
+    assert_eq!(unsupported.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&unsupported.stderr).contains("format is not supported"));
     assert!(unsupported.stdout.is_empty());
 
     fs::remove_file(&path).unwrap();
     let missing = get(&["--agent", "claude-code", "--environment", "native"]);
+    assert_eq!(missing.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("missing or unreadable"));
     assert!(missing.stdout.is_empty());
 }
@@ -512,7 +515,7 @@ fn local_get_limits_index_rows_and_hides_non_display_titles() {
     assert!(output.stdout.is_empty());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("could not read the local session source index")
+            .contains("raise local_search_sqlite_length_limit_bytes if it is below the maximum")
     );
 
     let mut config: Value = serde_json::from_slice(&fs::read(&fixture.config).unwrap()).unwrap();

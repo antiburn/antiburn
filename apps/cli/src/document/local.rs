@@ -238,8 +238,25 @@ fn read_snapshot(path: &Path) -> Result<(String, bool), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // Open the final component itself so the handle can identify a reparse point.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let mut file = options.open(path).map_err(|_| unavailable)?;
     let before = file.metadata().map_err(|_| unavailable)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if before.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(unavailable.into());
+        }
+    }
     if !before.is_file() {
         return Err(unavailable.into());
     }
@@ -418,3 +435,7 @@ impl RecordSink for Projection {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/local_tests.rs"]
+mod tests;

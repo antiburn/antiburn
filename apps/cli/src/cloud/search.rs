@@ -71,9 +71,14 @@ pub(crate) async fn search(
     client: CloudClient,
 ) -> Result<SearchResponse, String> {
     let limit = limit.unwrap_or(config.search_limit.min(MAX_LIMIT));
-    if limit > MAX_LIMIT || query.len() > MAX_QUERY_BYTES {
+    if limit > MAX_LIMIT {
         return Err(format!(
             "Cloud search allows 1 to {MAX_LIMIT} results and queries up to {MAX_QUERY_BYTES} bytes"
+        ));
+    }
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(format!(
+            "Cloud search allows queries up to {MAX_QUERY_BYTES} bytes; use --source local to search only the local index"
         ));
     }
     let page: SearchPage = read_json(

@@ -109,6 +109,9 @@ fn local_index_error(error: &rusqlite::Error) -> &'static str {
         Some(ErrorCode::OperationInterrupted) => {
             "the local session index read exceeded the time limit; increase local_search_timeout_ms"
         }
+        Some(ErrorCode::TooBig) => {
+            "the local session index read exceeded the size limit; raise local_search_sqlite_length_limit_bytes if it is below the maximum"
+        }
         _ => "could not read the local session source index",
     }
 }
