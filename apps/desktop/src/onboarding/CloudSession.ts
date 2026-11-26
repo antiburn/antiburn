@@ -2,7 +2,6 @@ import {
   emptyCloudSnapshot,
   CLOUD_BUSY_MESSAGE,
   desktopCloudPort,
-  cloudSourceKind,
   cloudProjectChoices,
   type CloudAccessUpdate,
   type CloudDraft,
@@ -33,6 +32,12 @@ import { CloudProjectReader } from "./cloudProjectReader"
 import { retryCloudRead } from "./cloudReadRetry"
 import { createCloudAccountActions } from "./cloudAccountActions"
 import {
+  addDraftFolders,
+  editDraftFolder,
+  startSavedRequest,
+  type SavedRequestState,
+} from "./cloudSavedRequest"
+import {
   cloudFolderReadChanged,
   savedUploadStatusBecameUnavailable,
   shouldRecheckCloudFolders,
@@ -50,7 +55,6 @@ import {
   folderSaveError,
   hasSavedProjectPermission,
   isCloudBusy,
-  legacyCaptureConsent,
   matchesUploadPolicy,
   ongoingDestination,
   projectBinding,
@@ -59,7 +63,6 @@ import {
   projectSyncChoices,
   retryTarget,
   reviewableProjectSelections,
-  selectedFoldersKey,
   selectedProjects,
   supportedProjectSelections,
   teamFoldersToConfirm,
@@ -128,8 +131,7 @@ export class CloudSession {
   private active = false
   private visible = true
   private viewed: CloudScreen | null = null
-  private requestId: string | null = null
-  private preparedRequestId: string | null = null
+  private readonly savedRequest: SavedRequestState = { id: null, preparedId: null }
   private syncInFlight = false
   private consentRevision = 0
   private folderMoveScope = { authority: 0, account: 0 }
@@ -294,7 +296,7 @@ export class CloudSession {
       contextChanged,
       ongoing: !!this.port.ongoing,
       projectSyncState: this.projectSyncState,
-      preparedRequestId: this.preparedRequestId,
+      preparedRequestId: this.savedRequest.preparedId,
     })
     if (!resetProjects && (sourcesChanged || setupFailed) && this.snapshot.projects)
       patch.projects = {
@@ -307,14 +309,14 @@ export class CloudSession {
         hasMore: sourcesChanged ? false : this.snapshot.projects.hasMore,
       }
     if (contextChanged) {
-      this.requestId = null
-      this.preparedRequestId = null
+      this.savedRequest.id = null
+      this.savedRequest.preparedId = null
       this.folderMoveScope = advanceFolderMoveScope(this.folderMoveScope, previous, value)
       this.consentRevision++
     }
     if (!this.port.ongoing && value.identity && value.pendingSync) {
-      this.requestId = value.pendingSync.requestId
-      this.preparedRequestId = value.pendingSync.requestId
+      this.savedRequest.id = value.pendingSync.requestId
+      this.savedRequest.preparedId = value.pendingSync.requestId
     }
     this.publish(patch)
   }
@@ -501,14 +503,14 @@ export class CloudSession {
       const appliedRead = readRevision === this.revision
       if (appliedRead) this.receive(value)
       if (!this.port.ongoing && appliedRead && value.identity && value.pendingSync) {
-        this.requestId = value.pendingSync.requestId
+        this.savedRequest.id = value.pendingSync.requestId
         this.publish({
           screen: "complete",
           busy: false,
           sync: value.pendingSync.result,
         })
         const reconcileRevision = this.revision
-        const sync = await this.port.reconcile(this.requestId)
+        const sync = await this.port.reconcile(this.savedRequest.id)
         if (!currentLoad()) return
         if (reconcileRevision !== this.revision) {
           this.publish({ busy: false })
@@ -1128,25 +1130,8 @@ export class CloudSession {
         destination !== this.snapshot.cloud.destination?.id
       )
         return this.snapshot.cloud
-      const folders = this.snapshot.cloud.draft.folders.map((folder) => ({ ...folder }))
-      let changed = false
-      for (const path of paths) {
-        const existing = folders.find(
-          (folder) => folder.path === path && cloudSourceKind(folder) === sourceKind,
-        )
-        if (existing && !existing.selected) {
-          existing.selected = true
-          changed = true
-        } else if (!existing && folders.length < 100) {
-          folders.push({
-            path,
-            selected: true,
-            ...(sourceKind === "opencode_sqlite_v2" ? { sourceKind } : {}),
-          })
-          changed = true
-        }
-      }
-      if (!changed) return this.snapshot.cloud
+      const folders = addDraftFolders(this.snapshot.cloud.draft.folders, paths, sourceKind)
+      if (!folders) return this.snapshot.cloud
       this.invalidateContentConfirmation()
       return this.saveDraft({ ...this.snapshot.cloud.draft, folders })
     })
@@ -1162,11 +1147,7 @@ export class CloudSession {
     return this.run("select_folder", () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
-        folders: this.snapshot.cloud.draft.folders.map((folder) =>
-          folder.path === path && cloudSourceKind(folder) === sourceKind
-            ? { ...folder, selected }
-            : folder,
-        ),
+        folders: editDraftFolder(this.snapshot.cloud.draft.folders, path, sourceKind, selected),
       }),
     )
   }
@@ -1176,9 +1157,7 @@ export class CloudSession {
     return this.run(null, () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
-        folders: this.snapshot.cloud.draft.folders.filter(
-          (folder) => folder.path !== path || cloudSourceKind(folder) !== sourceKind,
-        ),
+        folders: editDraftFolder(this.snapshot.cloud.draft.folders, path, sourceKind),
       }),
     )
   }
@@ -1188,99 +1167,20 @@ export class CloudSession {
   startSync = async (context: CloudViewSnapshot = this.snapshot) => {
     if (!this.isCurrentConfirmation(context)) return
     if (this.port.ongoing) return this.startProjectSync()
-    const selected = this.snapshot.cloud.draft.folders.filter((folder) => folder.selected)
-    const selectionKey = selectedFoldersKey(this.snapshot.cloud)
-    const destination = personalCloudDestination(this.snapshot.cloud.destination ?? null)
-    if (
-      this.snapshot.busy ||
-      this.syncInFlight ||
-      (!this.snapshot.cloud.captureEnabled && this.snapshot.screen !== "folders") ||
-      !(this.snapshot.cloud.captureEnabled || this.snapshot.cloud.syncEnabled) ||
-      this.snapshot.cloud.status !== "signed_in" ||
-      !!this.snapshot.cloud.setupError ||
-      !this.snapshot.cloud.identity ||
-      !destination ||
-      this.snapshot.cloud.pendingSync?.result.status === "cancelled" ||
-      !selected.length
-    )
-      return
-    if (this.analytics)
-      noteCloudAction(
-        this.snapshot.cloud.captureEnabled ? this.snapshot.screen : "folders",
-        "start_sync",
-      )
-    const generation = this.generation
-    const revision = this.revision
-    const account = this.snapshot.cloud.identity.id
-    const desktopCapture = this.snapshot.cloud.captureEnabled === true
-    const destinationId = destination.id
-    const consent = legacyCaptureConsent({ accountId: account, destinationId }, selected)
-    const requestId = this.requestId ?? crypto.randomUUID()
-    this.requestId = requestId
-    const existing = this.preparedRequestId === requestId
-    const consentRevision = this.consentRevision
-    const current = () =>
-      this.active &&
-      generation === this.generation &&
-      this.requestId === requestId &&
-      this.snapshot.cloud.status === "signed_in" &&
-      !this.snapshot.cloud.setupError &&
-      this.snapshot.cloud.identity?.id === account &&
-      personalCloudDestination(this.snapshot.cloud.destination ?? null)?.id === destinationId &&
-      selectedFoldersKey(this.snapshot.cloud) === selectionKey &&
-      consentRevision === this.consentRevision &&
-      !(
-        this.snapshot.cloud.pendingSync?.requestId === requestId &&
-        this.snapshot.cloud.pendingSync.result.status === "cancelled"
-      )
-    this.syncInFlight = true
-    const starting: SyncResult = { status: "starting" }
-    this.publish({
-      screen: "complete",
-      busy: false,
-      sync: starting,
-      error: null,
-      accountReadFailed: false,
-      sourceListingNeedsRetry: false,
+    return startSavedRequest({
+      port: this.port,
+      request: this.savedRequest,
+      getSnapshot: this.getSnapshot,
+      generation: () => (this.active ? this.generation : undefined),
+      revision: () => this.revision,
+      consentRevision: () => this.consentRevision,
+      syncInFlight: this.syncInFlight,
+      setSyncInFlight: (value) => {
+        this.syncInFlight = value
+      },
+      publish: (patch) => this.publish(patch),
+      analytics: this.analytics,
     })
-    try {
-      if (!existing) {
-        await this.port.prepareSync(selected, requestId, consent)
-        if (!current()) return
-        this.preparedRequestId = requestId
-      }
-      if (!current()) return
-      const sync =
-        existing && !desktopCapture
-          ? await this.port.reconcile(requestId)
-          : await this.port.start(selected, requestId, consent)
-      if (current() && (desktopCapture || revision === this.revision))
-        this.publish({ sync, busy: false, screen: "complete" })
-    } catch (error) {
-      if (current() && (desktopCapture || revision === this.revision)) {
-        const saved = desktopCapture && this.preparedRequestId === requestId
-        const busy = isCloudBusy(error)
-        this.publish({
-          sync: { status: saved ? "upload_unavailable" : busy ? "unavailable" : "ambiguous" },
-          busy: false,
-          screen: "complete",
-          sourceListingNeedsRetry: saved,
-          ...(busy
-            ? { error: CLOUD_BUSY_MESSAGE }
-            : saved
-              ? {
-                  error:
-                    "Could not finish listing sources. Your request is saved. Retry in Settings > Sessions.",
-                }
-              : {}),
-        })
-      }
-    } finally {
-      this.syncInFlight = false
-      // Clear only this operation's progress, not state from a newer desktop event.
-      if (this.active && generation === this.generation && this.snapshot.sync === starting)
-        this.publish({ sync: { status: "unavailable" } })
-    }
   }
   private isCurrentConfirmation(context: CloudViewSnapshot) {
     return (
