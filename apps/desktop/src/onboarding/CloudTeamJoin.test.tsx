@@ -26,8 +26,8 @@ test("checks the invite, verifies email, and waits for an explicit join", async 
   fireEvent.change(invite, { target: { value: inviteLink } })
   fireEvent.click(screen.getByRole("button", { name: "Check invite" }))
 
-  const workEmail = await screen.findByRole("textbox", { name: "Work email" })
-  expect(workEmail).toHaveValue(email)
+  const emailField = await screen.findByRole("textbox", { name: "Email for this Team" })
+  expect(emailField).toHaveValue(email)
   fireEvent.click(screen.getByRole("button", { name: "Use this email" }))
 
   const verification = await screen.findByRole("button", { name: "Check verification" })
@@ -51,6 +51,31 @@ test("checks the invite, verifies email, and waits for an explicit join", async 
   fireEvent.click(screen.getByRole("button", { name: "Done" }))
   expect(open).toHaveFocus()
   expect(screen.queryByRole("status")).not.toBeInTheDocument()
+})
+
+test("reuses an email verified in the browser and only claims after the user's click", async () => {
+  const emailedInvite = `${inviteLink}&proof=${"b".repeat(43)}`
+  const send = vi.fn<(action: CloudTeamJoinAction) => Promise<CloudTeamJoinResult>>()
+  send.mockResolvedValueOnce({ status: "started", attemptId })
+  send.mockResolvedValueOnce({ status: "needsEmail", attemptId, teamName })
+  send.mockResolvedValueOnce({ status: "ready", attemptId, teamName, email, emailId })
+  send.mockResolvedValueOnce({ status: "joined", teamName, inSetup: false })
+  render(<CloudTeamJoin send={send} />)
+  fireEvent.click(screen.getByRole("button", { name: "Join a Team" }))
+  fireEvent.change(screen.getByRole("textbox", { name: "Team invite link" }), {
+    target: { value: emailedInvite },
+  })
+  fireEvent.click(screen.getByRole("button", { name: "Check invite" }))
+  const field = await screen.findByRole("textbox", { name: "Email for this Team" })
+  expect(screen.getByText("Verify email for Desktop")).toBeVisible()
+  expect(screen.queryByDisplayValue(emailedInvite)).not.toBeInTheDocument()
+  fireEvent.change(field, { target: { value: email } })
+  fireEvent.click(screen.getByRole("button", { name: "Use this email" }))
+  const join = await screen.findByRole("button", { name: "Join Team" })
+  expect(screen.queryByRole("button", { name: "Check verification" })).not.toBeInTheDocument()
+  expect(send).toHaveBeenCalledTimes(3)
+  fireEvent.click(join)
+  expect(send).toHaveBeenLastCalledWith({ action: "claim", attemptId, emailId })
 })
 
 test("checks the same attempt when its first resume is not confirmed", async () => {
@@ -166,7 +191,7 @@ test("requests verification again and lets the user change the pending address",
     resend: true,
   })
   fireEvent.click(screen.getByRole("button", { name: "Change email" }))
-  const field = screen.getByRole("textbox", { name: "Work email" })
+  const field = screen.getByRole("textbox", { name: "Email for this Team" })
   expect(field).toHaveFocus()
   expect(field).toHaveValue(email)
   fireEvent.change(field, { target: { value: otherEmail } })

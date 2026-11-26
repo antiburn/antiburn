@@ -231,20 +231,30 @@ fn valid_id(value: &str) -> bool {
         })
 }
 
-/// Accept only an exact link at the configured dashboard. The fragment never
-/// becomes part of the API request URL.
+/// Accept copied and emailed links at the exact configured dashboard.
+/// Return only the Team invite token. The recipient proof belongs in the browser.
 fn invite_token<'a>(config: &Config, input: &'a str) -> Option<&'a str> {
     if input.len() > 4096 {
         return None;
     }
     let expected = config.dashboard.as_ref()?.join("/join").ok()?;
-    let (address, token) = input.trim().split_once("#token=")?;
-    (address == expected.as_str()
-        && token.len() == 43
-        && token
+    let (address, fragment) = input.trim().split_once("#token=")?;
+    if address != expected.as_str() {
+        return None;
+    }
+    let token = match fragment.split_once("&proof=") {
+        Some((token, proof)) if valid_invite_secret(proof) => token,
+        Some(_) => return None,
+        None => fragment,
+    };
+    valid_invite_secret(token).then_some(token)
+}
+
+fn valid_invite_secret(value: &str) -> bool {
+    value.len() == 43
+        && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
-    .then_some(token)
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 #[cfg(test)]
@@ -260,6 +270,11 @@ mod tests {
         config.dashboard = Some("https://dashboard.example".parse().unwrap());
         assert_eq!(
             invite_token(&config, &format!("  {invite}\n")),
+            Some(token.as_str())
+        );
+        let proof = "_".repeat(43);
+        assert_eq!(
+            invite_token(&config, &format!("{invite}&proof={proof}")),
             Some(token.as_str())
         );
         for address in [
@@ -281,6 +296,10 @@ mod tests {
             "too-short".to_owned(),
             format!("{token}%2f"),
             format!("{token}&token=duplicate"),
+            format!("{token}&proof=too-short"),
+            format!("{token}&proof={proof}&proof={proof}"),
+            format!("{token}&proof={proof}&other={token}"),
+            format!("{token}&proof={proof}%2f"),
             "a".repeat(4096),
         ] {
             assert_eq!(

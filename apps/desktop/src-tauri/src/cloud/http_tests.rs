@@ -96,6 +96,7 @@ fn cloud_http_team_join_uses_only_the_resource_and_device_proof() {
     let id = "11111111-2222-4333-8444-555555555555";
     let email_id = "22222222-2222-4333-8444-555555555555";
     let invite = "a".repeat(43);
+    let recipient_proof = "b".repeat(43);
     let wire = json!({
         "status": "ready", "email_id": email_id, "team_name": "Example Studio",
         "email": "member@example.com",
@@ -107,7 +108,9 @@ fn cloud_http_team_join_uses_only_the_resource_and_device_proof() {
     for (action, path, body, reply, expected) in [
         (
             Action::Start {
-                link: format!("https://dashboard.example/join#token={invite}"),
+                link: format!(
+                    "https://dashboard.example/join#token={invite}&proof={recipient_proof}"
+                ),
             },
             "POST /v1/devices/team-join-attempts HTTP/1.1".to_owned(),
             Some(json!({"token": invite})),

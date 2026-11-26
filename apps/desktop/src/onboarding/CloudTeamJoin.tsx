@@ -37,13 +37,13 @@ function joinErrorMessage(error: unknown) {
   if (isCloudBusy(error)) return CLOUD_BUSY_MESSAGE
   switch (error instanceof Error ? error.message : error) {
     case "team_join_invalid_invite":
-      return "Paste the full invite link from your Team admin."
+      return "Paste the full invite link from your email or Team admin."
     case "team_join_inactive_invite":
       return "This invite or join attempt is no longer active. Check the current invite link."
     case "team_join_invalid_email":
-      return "Check your work email address and try again."
+      return "Check your email address and try again."
     case "team_join_reapproval_required":
-      return "Sign out and sign in again to approve Team joining on this device."
+      return "Use Update device access to approve Team joining on this device."
     case "team_join_rate_limited":
       return "Wait a minute before trying again."
     case "team_join_unavailable":
@@ -199,12 +199,20 @@ export function CloudTeamJoin({
           ) : step?.status !== "started" ? (
             <>
               {step && (
-                <p className="wrap-anywhere type-footnote">
-                  Choose the work email you want to use for {step.teamName}.
-                </p>
+                <div className="flex flex-col gap-2">
+                  <p className="wrap-anywhere type-footnote">
+                    Choose the email you want to use for {step.teamName}.
+                  </p>
+                  <p className="wrap-anywhere type-footnote">
+                    If you got this invite by email, open the original link in your browser.
+                    Sign in with the same account and choose{" "}
+                    <strong>Verify email for Desktop</strong>. Then return here and enter that
+                    email address.
+                  </p>
+                </div>
               )}
               <label htmlFor={`${id}-input`} className="type-callout font-medium">
-                {step ? "Work email" : "Team invite link"}
+                {step ? "Email for this Team" : "Team invite link"}
               </label>
               <input
                 key={step?.status ?? "invite"}

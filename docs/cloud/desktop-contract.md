@@ -188,12 +188,17 @@ grant it belongs to.
 ### Join a Team in Desktop
 
 The browser handles GitHub sign-in and device approval. A signed-in user joins
-in Desktop with a reusable invite link and a verified work email. Desktop accepts
-the exact `/join#token=…` link at the configured dashboard origin. It never
-visits the invite link. It sends the token in a JSON body to the resource origin.
-Desktop keeps the invite and attempt in memory and excludes them from diagnostics
-and analytics. If email verification is needed, the browser proves mailbox
-ownership only. Desktop checks that proof before the user can claim membership.
+in Desktop with an invite link and a verified email. Desktop accepts
+`/join#token=…` and emailed `/join#token=…&proof=…` links at the configured
+dashboard origin. It never visits the invite link. Desktop sends only the token
+in a JSON body to the resource origin. It does not send or log the recipient
+proof. Desktop keeps invite input and attempt state in memory and excludes
+them from diagnostics and analytics.
+
+To use emailed proof, open the original link in the browser and choose
+**Verify email for Desktop** on the same account. This step verifies the
+address, not Team membership. Enter the verified address in Desktop, then
+choose **Join Team** to claim membership.
 
 | Request | JSON body |
 | --- | --- |

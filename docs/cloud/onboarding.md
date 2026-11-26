@@ -11,11 +11,14 @@ approval. Return to Desktop and choose **Join a Team** after sign-in or in
 **Settings > Sessions**. This action needs a build with a
 [configured Cloud dashboard origin](desktop-contract.md#desktop-build-gate).
 
-1. Copy the invite link from your Team admin. Paste it in Desktop and select
+1. Paste the invite link from your email or Team admin in Desktop and select
    **Check invite**.
-2. Choose the work email you want to use. If Desktop asks you to verify it, open
-   the link in your email and confirm your address in your browser. Return to
-   Desktop and select **Check verification**. If the address is wrong, select
+2. If you received the invite by email, open the original link in your browser.
+   Sign in with the same account and choose **Verify email for Desktop**.
+   This verifies your email without joining the Team. Return to Desktop and
+   enter that email address. If you want to use another address, enter it
+   instead. If Desktop sends a verification email, open its link in your browser,
+   then return and select **Check verification**. If the address is wrong, select
    **Change email**. If the link expired, select **Request another email**.
 3. Confirm the Team and email shown in Desktop, then select **Join Team**.
 
