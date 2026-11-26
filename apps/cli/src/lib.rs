@@ -6,6 +6,7 @@ mod cloud;
 mod cloud_identity;
 mod config;
 mod delivery;
+mod document;
 mod logging;
 pub mod search;
 mod sessions;

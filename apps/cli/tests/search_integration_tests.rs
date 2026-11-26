@@ -43,12 +43,15 @@ impl Fixture {
                      environment_key TEXT NOT NULL,
                      agent TEXT NOT NULL,
                      session_id TEXT NOT NULL,
-                     title TEXT,
-                     title_source TEXT,
-                     updated_at_epoch INTEGER,
+                      title TEXT,
+                      title_source TEXT,
+                      updated_at_epoch INTEGER,
+                      source_kind TEXT NOT NULL DEFAULT 'file',
+                      source_label TEXT NOT NULL DEFAULT '',
+                      source_format TEXT,
                      PRIMARY KEY (environment_key, agent, session_id)
                  ) STRICT;
-                 INSERT INTO session VALUES
+                 INSERT INTO session (environment_key, agent, session_id, title, title_source, updated_at_epoch) VALUES
                      ('wsl:example', 'pi', 'example-shared', 'Example run', 'explicit', 20),
                      ('native', 'pi', 'example-shared', 'Example migration', 'userRename', 20),
                      ('native', 'codex', 'example-shared', NULL, NULL, 30),
@@ -145,10 +148,26 @@ fn matches_literal_titles_but_not_first_message_excerpts() {
 }
 
 #[test]
-fn local_get_uses_the_identity_from_search_and_does_not_return_a_document() {
+fn local_get_uses_the_exact_indexed_source_and_escapes_captured_text() {
     let fixture = Fixture::new();
     fixture.create_database();
-    let search = fixture.search(&["example-shared", "--limit", "3"]);
+    let path = fixture.root.path().join("example-shared.jsonl");
+    let contents = concat!(
+        r#"{"type":"user","sessionId":"example-shared","uuid":"first","parentUuid":null,"message":{"role":"user","content":"Synthetic prompt \u001b[2J\u009b\u202e"}}"#,
+        "\n",
+        r#"{"type":"assistant","sessionId":"example-shared","uuid":"second","parentUuid":"first","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Synthetic private reasoning"},{"type":"text","text":"Synthetic reply"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"content":"Uncommitted tail"}}"#,
+    );
+    fs::write(&path, contents).unwrap();
+    let db = Connection::open(&fixture.database).unwrap();
+    db.execute(
+        "UPDATE session SET agent='claude-code', source_label=?1, source_format='\"claude_jsonl\"'
+           WHERE session_id='example-shared' AND environment_key='native' AND agent='pi'",
+        [path.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(db);
     let get = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_antiburn"))
             .arg("--config")
@@ -166,19 +185,155 @@ fn local_get_uses_the_identity_from_search_and_does_not_return_a_document() {
         "--source",
         "local",
         "--agent",
-        "pi",
+        "claude-code",
         "--environment",
         "native",
         "--json",
     ]);
     assert!(selected.status.success(), "{:?}", selected.stderr);
+    let json = String::from_utf8_lossy(&selected.stdout);
+    for omitted in ['\x1b', '\u{009b}', '\u{202e}'] {
+        assert!(!json.contains(omitted));
+    }
     let result: Value = serde_json::from_slice(&selected.stdout).unwrap();
-    assert_eq!(result, json!({"session": search["sessions"][1]}));
-    let text = get(&["--agent", "pi", "--environment", "native"]);
+    assert_eq!(result["schema_version"], 1);
+    assert_eq!(result["source"], "local");
+    assert_eq!(result["session_id"], "example-shared");
+    assert!(result.get("workspace_id").is_none());
+    assert!(result.get("revision").is_none());
+    assert_eq!(result["document"]["header"]["title"], "Example migration");
+    assert_eq!(result["document"]["header"]["agent"]["name"], "claude-code");
+    assert_eq!(result["document"]["coverage"]["source"], "partial");
+    assert_eq!(result["document"]["coverage"]["projection"], "partial");
+    assert_eq!(result["document"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(result["document"]["messages"][0]["role"], "user");
+    assert_eq!(
+        result["document"]["messages"][0]["parts"][0]["text"],
+        "Synthetic prompt \x1b[2J\u{009b}\u{202e}"
+    );
+    assert_eq!(
+        result["document"]["messages"][1]["parts"][1]["text"],
+        "Synthetic reply"
+    );
+    assert!(!json.contains("Uncommitted tail"));
+    assert_eq!(
+        result["document"]["messages"][1]["parts"][0]["type"],
+        "thinking"
+    );
+    let text = get(&["--agent", "claude-code", "--environment", "native"]);
     assert!(text.status.success(), "{:?}", text.stderr);
     let text = String::from_utf8(text.stdout).unwrap();
-    assert!(text.contains("Example migration"));
-    assert!(text.contains("Local: example-shared · pi · native"));
+    assert!(text.contains("Session example-shared (local)"));
+    assert!(text.contains("Assistant: \"Synthetic reply\""));
+    assert!(!text.contains('\x1b'));
+
+    let downstream = get(&["--agent", "pi", "--environment", "wsl:example"]);
+    assert!(
+        String::from_utf8_lossy(&downstream.stderr)
+            .contains("cannot read this local session environment")
+    );
+    assert!(downstream.stdout.is_empty());
+    let unsupported = get(&["--agent", "codex", "--environment", "native"]);
+    assert!(String::from_utf8_lossy(&unsupported.stderr).contains("format is not supported"));
+    assert!(unsupported.stdout.is_empty());
+
+    fs::remove_file(&path).unwrap();
+    let missing = get(&["--agent", "claude-code", "--environment", "native"]);
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("missing or unreadable"));
+    assert!(missing.stdout.is_empty());
+}
+
+#[test]
+fn local_get_uses_each_supported_jsonl_reader() {
+    for (agent, format, source) in [
+        (
+            "codex",
+            "codex_rollout_jsonl",
+            concat!(
+                r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"plain-id"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic question."}]}}"#,
+                "\n",
+            ),
+        ),
+        (
+            "pi",
+            "pi_v3_jsonl",
+            concat!(
+                r#"{"type":"session","version":3,"id":"plain-id","timestamp":"2026-01-01T00:00:00Z"}"#,
+                "\n",
+                r#"{"type":"message","id":"turn","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"Synthetic question."}}"#,
+                "\n",
+            ),
+        ),
+        (
+            "cursor",
+            "cursor_cli_agent_jsonl",
+            concat!(
+                r#"{"role":"user","message":{"content":[{"type":"text","text":"Synthetic question."}]}}"#,
+                "\n",
+            ),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.create_database();
+        let path = fixture.root.path().join("plain-id.jsonl");
+        fs::write(&path, source).unwrap();
+        Connection::open(&fixture.database)
+            .unwrap()
+            .execute(
+                "UPDATE session SET agent=?1, source_label=?2, source_format=?3 WHERE session_id='plain-id'",
+                [agent, path.to_str().unwrap(), &json!(format).to_string()],
+            )
+            .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_antiburn"))
+            .arg("--config")
+            .arg(&fixture.config)
+            .args(["get", "plain-id", "--source", "local", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{agent}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(document["document"]["header"]["agent"]["name"], agent);
+        assert_eq!(
+            document["document"]["messages"][0]["parts"][0]["text"],
+            "Synthetic question."
+        );
+    }
+}
+
+#[test]
+fn local_get_refuses_an_oversized_or_empty_source() {
+    let fixture = Fixture::new();
+    fixture.create_database();
+    let path = fixture.root.path().join("plain-id.jsonl");
+    Connection::open(&fixture.database)
+        .unwrap()
+        .execute(
+            "UPDATE session SET agent='claude-code', source_label=?1, source_format='\"claude_jsonl\"'
+               WHERE session_id='plain-id'",
+            [path.to_str().unwrap()],
+        )
+        .unwrap();
+    for (size, expected) in [
+        (16 * 1024 * 1024 + 1, "exceeds the size limit"),
+        (0, "no supported message content"),
+    ] {
+        fs::File::create(&path).unwrap().set_len(size).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_antiburn"))
+            .arg("--config")
+            .arg(&fixture.config)
+            .args(["get", "plain-id", "--json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+    }
 }
 
 #[test]

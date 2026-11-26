@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::{
     checks::{SessionIdentity, database::open_read_only, discovery::find_database_path},
     config::Config,
+    document::{LocalSource, SessionDocument, read_local},
 };
 
 const SESSION_METADATA: &str = "WITH session_metadata AS (
@@ -61,13 +62,13 @@ pub(crate) async fn lookup(
     .map_err(|error| format!("Antiburn session search task failed: {error}"))?
 }
 
-/// Read metadata for one exact identity match. Missing selectors do not set defaults.
-pub(crate) async fn get_local_session(
+/// Resolve one exact identity and read the indexed source off the runtime thread.
+pub(crate) async fn get_local_document(
     session_id: String,
     agent: Option<String>,
     environment: Option<String>,
     config: Config,
-) -> Result<SearchSession, String> {
+) -> Result<SessionDocument, String> {
     tokio::task::spawn_blocking(move || {
         let connection = open_session_database(&config)?;
         let mut matches = read_exact_matches(
@@ -76,15 +77,17 @@ pub(crate) async fn get_local_session(
             agent.as_deref(),
             environment.as_deref(),
         )
-        .map_err(|error| format!("could not read local Antiburn session metadata: {error}"))?;
+        .map_err(|_| "could not read the local session source index; update Antiburn Desktop")?;
         if matches.len() > 1 {
             return Err(format!(
                 "session ID {session_id:?} matches multiple local Antiburn sessions; use --agent and --environment to select one"
             ));
         }
-        matches.pop().ok_or_else(|| {
+        let source = matches.pop().ok_or_else(|| {
             format!("session ID {session_id:?} was not found in the local Antiburn database")
-        })
+        })?;
+        drop(connection);
+        read_local(source)
     })
     .await
     .map_err(|error| format!("local Antiburn session lookup task failed: {error}"))?
@@ -140,7 +143,7 @@ fn read_exact_matches(
     session_id: &str,
     agent: Option<&str>,
     environment: Option<&str>,
-) -> rusqlite::Result<Vec<SearchSession>> {
+) -> rusqlite::Result<Vec<LocalSource>> {
     // Keep equality terms visible so SQLite can use the composite primary key.
     let agent_filter = if agent.is_some() {
         " AND agent = ?"
@@ -153,12 +156,23 @@ fn read_exact_matches(
         ""
     };
     let mut statement = connection.prepare(&format!(
-        "{SESSION_METADATA}
+        "SELECT environment_key, agent, session_id, source_kind, source_label, source_format,
+               CASE WHEN title_source IN ('userRename', 'aiGenerated', 'explicit')
+                    THEN title END
+           FROM session
          WHERE session_id = ?{agent_filter}{environment_filter}
          LIMIT 2"
     ))?;
     let selectors = [Some(session_id), agent, environment].into_iter().flatten();
-    let rows = statement.query_map(params_from_iter(selectors), read_metadata)?;
+    let rows = statement.query_map(params_from_iter(selectors), |row| {
+        Ok(LocalSource {
+            identity: read_identity(row)?,
+            kind: row.get(3)?,
+            label: row.get(4)?,
+            format: row.get(5)?,
+            title: row.get(6)?,
+        })
+    })?;
     rows.collect()
 }
 
@@ -189,16 +203,16 @@ fn read_sessions(
 
 fn read_metadata(row: &Row<'_>) -> rusqlite::Result<SearchSession> {
     Ok(SearchSession {
-        identity: SessionIdentity {
-            environment_key: row.get(0)?,
-            agent: row.get(1)?,
-            session_id: row.get(2)?,
-        },
+        identity: read_identity(row)?,
         title: row.get(3)?,
         updated_at_epoch: row.get(4)?,
     })
 }
 
-#[cfg(test)]
-#[path = "tests/search_integration_tests.rs"]
-mod tests;
+fn read_identity(row: &Row<'_>) -> rusqlite::Result<SessionIdentity> {
+    Ok(SessionIdentity {
+        environment_key: row.get(0)?,
+        agent: row.get(1)?,
+        session_id: row.get(2)?,
+    })
+}

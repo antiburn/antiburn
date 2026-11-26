@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -23,9 +22,8 @@ const OTHER: &str = "2f22d7cc-0b57-4080-a61a-0bd01e6a56bd";
 const THIRD: &str = "ba31b6f6-6541-4767-91ab-b22b68c760dd";
 const REVISION: &str = "e352e672-d152-4e97-a063-428bdeefb26a";
 const KEY: &str = "synthetic-device-read-token";
-const CURSOR: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ROUTE_PREFIX: &str = "/v1/workspaces";
-const DOCUMENT_PAGE_BYTES: usize = 1024 * 1024;
+const DOCUMENT_BYTES: usize = 20 * 1024 * 1024;
 
 struct Fixture {
     root: TempDir,
@@ -129,7 +127,7 @@ impl Fixture {
             "CREATE TABLE session (
                  environment_key TEXT NOT NULL, agent TEXT NOT NULL, session_id TEXT NOT NULL,
                  title TEXT, title_source TEXT, updated_at_epoch INTEGER,
-                 source_kind TEXT, source_label TEXT,
+                 source_kind TEXT, source_label TEXT, source_format TEXT,
                  PRIMARY KEY(environment_key, agent, session_id)
              ) STRICT;
                CREATE TABLE cloud_sync_service_scope (
@@ -160,7 +158,7 @@ impl Fixture {
         ] {
             let source = project.join(format!("{id}.jsonl"));
             db.execute(
-                "INSERT INTO session VALUES (?1, 'claude-code', ?2, ?3, 'explicit', ?4, 'file', ?5)",
+                "INSERT INTO session VALUES (?1, 'claude-code', ?2, ?3, 'explicit', ?4, 'file', ?5, '\"claude_jsonl\"')",
                 params![environment, id, title, time, source.to_str().unwrap()],
             )
             .unwrap();
@@ -350,11 +348,33 @@ fn a_cloud_access_denial_never_returns_local_content() {
     let (origin, server) = serve(http("403 Forbidden", "private-synthetic-body"));
     let fixture = Fixture::new(&origin);
     fixture.local_database(&origin);
+    let project = fixture.root.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        project.join(format!("{SESSION}.jsonl")),
+        format!(
+            "{{\"type\":\"user\",\"sessionId\":\"{SESSION}\",\"uuid\":\"first\",\"parentUuid\":null,\
+            \"message\":{{\"role\":\"user\",\"content\":\"Synthetic local content.\"}}}}\n"
+        ),
+    )
+    .unwrap();
+    let local = read_success(
+        fixture
+            .command()
+            .args(["get", SESSION, "--source", "local", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(local["source"], "local");
+    assert_eq!(
+        local["document"]["messages"][0]["parts"][0]["text"],
+        "Synthetic local content."
+    );
     let output = fixture.run(&["get", SESSION, "--source", "cloud"]);
     assert_private_error(output, "Cloud access denied");
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
@@ -507,15 +527,12 @@ fn opencode_merging_requires_the_exact_bound_database_path() {
     let source_path = fixture.root.path().join("opencode.db");
     let other_path = fixture.root.path().join("another").join("opencode.db");
     let db = Connection::open(fixture.local_database(&origin)).unwrap();
-    db.execute_batch(
-        r#"ALTER TABLE session ADD COLUMN fingerprint_source_path TEXT;
-           ALTER TABLE session ADD COLUMN source_format TEXT;"#,
-    )
-    .unwrap();
+    db.execute_batch("ALTER TABLE session ADD COLUMN fingerprint_source_path TEXT;")
+        .unwrap();
     db.execute(
         r#"INSERT INTO session VALUES ('native', 'opencode', 'sample', 'Select this', 'explicit', 30,
                 'providerDb', 'opencode:sample:open_code_v2_sqlite',
-                ?1, '"open_code_v2_sqlite"');"#,
+                 '"open_code_v2_sqlite"', ?1);"#,
         [source_path.to_str().unwrap()],
     )
     .unwrap();
@@ -593,104 +610,109 @@ fn rejects_the_wrong_workspace_and_duplicate_cloud_ids() {
     }
 }
 
-fn document(session: &str, revision: &str, cursor: Option<&str>) -> String {
-    let cursor = serde_json::to_string(&cursor).unwrap();
-    http(
-        "200 OK",
-        &format!(
-            r#"{{"workspace_id":"{WORKSPACE}","session_id":"{session}","revision":"{revision}","stale":true,"messages":[{{"role":"user","sequence":90071992547409931234567890}}],"page":{{"next_cursor":{cursor}}}}}"#
-        ),
-    )
+fn document(session: &str, text: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "source": "cloud",
+        "workspace_id": WORKSPACE,
+        "session_id": session,
+        "revision": REVISION,
+        "stale": true,
+        "document": {
+            "version": 1,
+            "header": {"agent": {"name": "claude-code", "version": null}},
+            "coverage": {"source": "unknown", "projection": "partial", "ordering": "presentation"},
+            "messages": [
+                {"id": "message:1", "role": "assistant",
+                 "parts": [{"id": "part:1", "type":"text", "content_state":"complete", "text":text}]}
+            ]
+        }
+    })
 }
 
 fn large_document_body(size: usize) -> (String, String) {
     let mut content = String::from("private-synthetic-body \"quoted\"\n");
-    let mut page = json!({
-        "workspace_id": WORKSPACE,
-        "session_id": SESSION,
-        "revision": REVISION,
-        "stale": false,
-        "messages": [{"role": "assistant", "content": content}],
-        "page": {"next_cursor": CURSOR},
-    });
-    content.push_str(&"x".repeat(size - page.to_string().len()));
-    page["messages"][0]["content"] = json!(content);
-    let body = page.to_string();
+    content.push_str(&"x".repeat(size - document(SESSION, &content).to_string().len()));
+    let body = document(SESSION, &content).to_string();
     assert_eq!(body.len(), size);
     (body, content)
 }
 
 #[test]
-fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
-    let server = serve_on(
-        listener.try_clone().unwrap(),
-        document(SESSION, REVISION, Some(CURSOR)),
-    );
+fn reads_one_document_and_drops_unknown_fields() {
+    let mut body = document(SESSION, "Synthetic reply.");
+    body["future_envelope_field"] = json!("synthetic");
+    body["document"]["messages"][0]["future_message_field"] = json!({"sample": 1});
+    body["document"]["messages"][0]["parts"][0]["future_part_field"] = json!("synthetic");
+    let (origin, server) = serve(http("200 OK", &body.to_string()));
     let fixture = Fixture::new(&origin);
-    let output = fixture.run(&["get", SESSION, "--source", "cloud"]);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("90071992547409931234567890"));
-    let first = read_success(output);
-    assert_eq!(first["session"]["cloud"]["id"], SESSION);
-    assert!(first["session"].get("local").is_none());
-    assert_eq!(first["document"]["revision"], REVISION);
-    assert_eq!(first["document"]["stale"], true);
-    assert_eq!(first["document"]["messages"][0]["role"], "user");
+    let result = read_success(fixture.run(&["get", SESSION, "--source", "cloud"]));
+    assert_eq!(result, document(SESSION, "Synthetic reply."));
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
-    );
-
-    let cursor = first["document"]["next_cursor"].as_str().unwrap();
-    for (revision, expected) in [(REVISION, true), (OTHER, false)] {
-        let server = serve_on(
-            listener.try_clone().unwrap(),
-            document(SESSION, revision, None),
-        );
-        let output = fixture.run(&["get", SESSION, "--source", "cloud", "--after", cursor]);
-        if expected {
-            assert!(read_success(output)["document"]["next_cursor"].is_null());
-        } else {
-            assert_private_error(output, "does not match the request");
-        }
-        assert_cloud_request(
-            server,
-            &format!(
-                "{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages?page%5Bafter%5D={CURSOR}"
-            ),
-        );
-    }
-    let other_connection = Fixture::new("http://127.0.0.1:1");
-    assert_private_error(
-        other_connection.run(&["get", SESSION, "--source", "cloud", "--after", cursor]),
-        "invalid document cursor",
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
 #[test]
-fn reads_a_complete_document_page_at_the_size_limit() {
-    let (body, content) = large_document_body(DOCUMENT_PAGE_BYTES);
+fn preserves_projected_sections_and_semantic_numbers() {
+    let mut body = document(SESSION, "Synthetic reply.");
+    let number = "90071992547409931234567890";
+    body["document"]["messages"][0]["parts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": "part:2",
+            "type": "tool_call",
+            "name": "synthetic-tool",
+            "content_state": "complete",
+            "input": {"format": "json", "value": {"count": serde_json::from_str::<Value>(number).unwrap()}},
+        }));
+    body["document"]["messages"][0]["parts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": "part:3",
+            "type": "tool_result",
+            "content_state": "complete",
+            "tool_call_part_id": "part:2",
+            "output": [{"format": "text", "value": "Synthetic result."}],
+        }));
+    body["document"]["native_only"] =
+        json!([{"id": "native:1", "native_type": "synthetic", "reason": "unsupported"}]);
+    body["document"]["usage"] = json!({"summaries": [{"id": "usage:1", "scope": {"kind": "session"}, "tokens": {"total": "42"}}]});
+    body["document"]["coverage"]["limitations"] =
+        json!([{"area": "messages", "reason": "synthetic_gap"}]);
+    let (origin, server) = serve(http("200 OK", &body.to_string()));
+    let fixture = Fixture::new(&origin);
+    let result = read_success(fixture.run(&["get", SESSION, "--source", "cloud"]));
+    assert_eq!(result, body);
+    assert_cloud_request(
+        server,
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+    );
+}
+
+#[test]
+fn reads_a_document_at_the_wire_size_limit() {
+    let (body, content) = large_document_body(DOCUMENT_BYTES);
     let (origin, server) = serve(http("200 OK", &body));
     let fixture = Fixture::new(&origin);
     let output = read_success(fixture.run(&["get", SESSION, "--source", "cloud"]));
-    let document = &output["document"];
-    assert_eq!(document["messages"][0]["content"], content);
-    assert_eq!(document["messages"].as_array().unwrap().len(), 1);
-    let origin_key = URL_SAFE_NO_PAD.encode(Sha256::digest(&origin));
     assert_eq!(
-        document["next_cursor"],
-        format!("{origin_key}.{WORKSPACE}.{SESSION}.{REVISION}.{CURSOR}")
+        output["document"]["messages"][0]["parts"][0]["text"],
+        content
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
 #[test]
-fn displays_one_cloud_document_page_in_text_mode() {
-    let (origin, server) = serve(document(SESSION, REVISION, Some(CURSOR)));
+fn displays_document_status_and_escapes_text() {
+    let body = document(SESSION, "Synthetic reply.\x1b[2J");
+    let (origin, server) = serve(http("200 OK", &body.to_string()));
     let fixture = Fixture::new(&origin);
     let output = fixture.run_connected(
         fixture
@@ -699,61 +721,39 @@ fn displays_one_cloud_document_page_in_text_mode() {
     );
     assert!(output.status.success(), "{:?}", output.stderr);
     let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains(&format!("Cloud: {SESSION}")));
-    assert!(text.contains(&format!("Document revision: {REVISION}")));
-    assert!(text.contains("Messages on this page: 1"));
-    let origin_key = URL_SAFE_NO_PAD.encode(Sha256::digest(&origin));
-    assert!(text.contains(&format!(
-        "Next page: --after {origin_key}.{WORKSPACE}.{SESSION}.{REVISION}.{CURSOR}"
-    )));
+    assert!(text.contains(&format!("Session {SESSION} (cloud)")));
+    assert!(text.contains(&format!("Revision: {REVISION}")));
+    assert!(text.contains("Cloud returned an older publication."));
+    assert!(text.contains("Document projection is partial."));
+    assert!(text.contains("Assistant: \"Synthetic reply.\\u{1b}[2J\""));
+    assert!(!text.contains('\x1b'));
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
 #[test]
-fn rejects_a_different_document() {
-    let (origin, server) = serve(document(OTHER, REVISION, None));
-    let fixture = Fixture::new(&origin);
-    assert_private_error(
-        fixture.run(&["get", SESSION, "--source", "cloud"]),
-        "does not match the request",
-    );
-    assert_cloud_request(
-        server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
-    );
-}
-
-#[test]
-fn restarts_without_the_cursor_after_publication_replacement() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
-    let route = format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages");
-    let args = ["get", SESSION, "--source", "cloud"];
-
-    let server = serve_on(
-        listener.try_clone().unwrap(),
-        document(SESSION, REVISION, Some(CURSOR)),
-    );
-    let first = read_success(fixture.run(&args));
-    let cursor = first["document"]["next_cursor"].as_str().unwrap();
-    assert_cloud_request(server, &route);
-
-    let server = serve_on(
-        listener.try_clone().unwrap(),
-        http("409 Conflict", "private-synthetic-body"),
-    );
-    let mut continuation = args.to_vec();
-    continuation.extend(["--after", cursor]);
-    assert_private_error(fixture.run(&continuation), "Start again without --after");
-    assert_cloud_request(server, &format!("{route}?page%5Bafter%5D={CURSOR}"));
-
-    let server = serve_on(listener, document(SESSION, OTHER, None));
-    let replacement = read_success(fixture.run(&args));
-    assert_eq!(replacement["document"]["revision"], OTHER);
-    assert_cloud_request(server, &route);
+fn rejects_wrong_document_identity_and_version() {
+    for (field, value, expected) in [
+        ("session_id", json!(OTHER), "does not match the request"),
+        ("workspace_id", json!(OTHER), "does not match the request"),
+        ("schema_version", json!(2), "unsupported document version"),
+        ("source", json!("local"), "does not match the request"),
+    ] {
+        let mut body = document(SESSION, "Synthetic message.");
+        body[field] = value;
+        let (origin, server) = serve(http("200 OK", &body.to_string()));
+        let fixture = Fixture::new(&origin);
+        assert_private_error(
+            fixture.run(&["get", SESSION, "--source", "cloud"]),
+            expected,
+        );
+        assert_cloud_request(
+            server,
+            &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
+        );
+    }
 }
 
 #[test]
@@ -761,20 +761,26 @@ fn rejects_overlong_cloud_requests_before_network_io() {
     let fixture = Fixture::new("http://127.0.0.1:1");
     for args in [
         vec!["search", "sample", "--source", "cloud", "--limit", "51"],
-        vec!["search", &"a".repeat(257), "--source", "cloud"],
+        vec!["search", &"a".repeat(201), "--source", "cloud"],
+        vec!["search", &"©".repeat(101), "--source", "cloud"],
     ] {
         assert_private_error(fixture.run(&args), "Cloud search allows 1 to 50");
     }
-    assert_private_error(
-        fixture.run(&[
-            "get",
-            SESSION,
-            "--source",
-            "cloud",
-            "--after",
-            "private-synthetic-body",
-        ]),
-        "invalid document cursor",
+}
+
+#[test]
+fn accepts_a_cloud_query_of_200_utf8_bytes() {
+    let query = "©".repeat(100);
+    let (origin, server) = serve(list(WORKSPACE, Vec::new()));
+    let fixture = Fixture::new(&origin);
+    let result = read_success(fixture.run(&["search", &query, "--source", "cloud"]));
+    assert_eq!(result["sessions"], json!([]));
+    assert_cloud_request(
+        server,
+        &format!(
+            "{ROUTE_PREFIX}/{WORKSPACE}/sessions?q={}&page%5Bsize%5D=20",
+            "%C2%A9".repeat(100)
+        ),
     );
 }
 
@@ -782,7 +788,7 @@ fn rejects_overlong_cloud_requests_before_network_io() {
 fn rejects_an_oversized_declared_document_body_before_reading_it() {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        DOCUMENT_PAGE_BYTES + 1
+        DOCUMENT_BYTES + 1
     );
     let (origin, server) = serve(response);
     let fixture = Fixture::new(&origin);
@@ -792,13 +798,13 @@ fn rejects_an_oversized_declared_document_body_before_reading_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
 #[test]
 fn rejects_an_oversized_chunked_document_body_without_showing_it() {
-    let (body, _) = large_document_body(DOCUMENT_PAGE_BYTES + 1);
+    let (body, _) = large_document_body(DOCUMENT_BYTES + 1);
     let response = format!(
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
         body.len()
@@ -819,7 +825,7 @@ fn rejects_an_oversized_chunked_document_body_without_showing_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
@@ -833,6 +839,6 @@ fn rejects_a_malformed_success_body_without_showing_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/messages"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }

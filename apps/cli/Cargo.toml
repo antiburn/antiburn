@@ -23,7 +23,7 @@ dirs = "7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 rusqlite = { version = "0.32.1", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = "0.11"
 time = { version = "0.3", features = ["parsing"], optional = true }
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "rt"] }
@@ -32,7 +32,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["a
 uuid = { version = "1", features = ["serde"], optional = true }
 
 [features]
-cloud = ["dep:base64", "dep:reqwest", "dep:time", "dep:uuid", "serde_json/raw_value", "tokio/net", "tokio/time"]
+cloud = ["dep:base64", "dep:reqwest", "dep:time", "dep:uuid", "tokio/net", "tokio/time"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

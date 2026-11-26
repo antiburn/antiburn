@@ -5,10 +5,11 @@ use std::fmt::Write;
 use serde::Serialize;
 
 #[cfg(feature = "cloud")]
-use crate::cloud::{self, CloudDocument, CloudSession};
+use crate::cloud::{self, CloudSession};
 use crate::{
     cli::{GetArgs, GetSource, SearchArgs, SearchMode},
     config::Config,
+    document::SessionDocument,
     search::{self, SearchSession},
 };
 
@@ -84,18 +85,6 @@ pub(crate) struct SearchResponse {
     pub truncated: bool,
 }
 
-/// Exact session metadata with a document page only for an explicit Cloud read.
-#[derive(Serialize)]
-pub(crate) struct GetResponse {
-    pub session: SessionMatch,
-    #[cfg(feature = "cloud")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<uuid::Uuid>,
-    #[cfg(feature = "cloud")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub document: Option<CloudDocument>,
-}
-
 /// Keep the requested display mode with the typed session result.
 pub struct SessionOutput {
     json: bool,
@@ -104,7 +93,7 @@ pub struct SessionOutput {
 
 enum SessionResult {
     Search(SearchResponse),
-    Get(Box<GetResponse>),
+    Get(Box<SessionDocument>),
 }
 
 impl SessionOutput {
@@ -115,7 +104,9 @@ impl SessionOutput {
         if self.json {
             return match self.result {
                 SessionResult::Search(response) => super::write_response(writer, &response).await,
-                SessionResult::Get(response) => super::write_response(writer, &response).await,
+                SessionResult::Get(response) => {
+                    super::write_output(writer, &response.to_json()?).await
+                }
             };
         }
         let mut text = String::new();
@@ -136,11 +127,7 @@ impl SessionOutput {
                 }
             }
             SessionResult::Get(response) => {
-                response.session.write_summary(&mut text);
-                #[cfg(feature = "cloud")]
-                if let Some(document) = response.document {
-                    document.write_text(&mut text);
-                }
+                return super::write_output(writer, &response.to_text()?).await;
             }
         }
         super::write_output(writer, text.as_bytes()).await
@@ -198,31 +185,18 @@ async fn local_search(
     })
 }
 
-/// Read one exact local identity or one explicit Cloud publication page.
+/// Read one document for the exact identity without falling back to another source.
 pub(crate) async fn get(args: GetArgs, config: Config) -> Result<SessionOutput, String> {
     let GetArgs {
         session_id,
         source,
         agent,
         environment,
-        #[cfg(feature = "cloud")]
-        after,
         json,
     } = args;
     let response = match source {
         GetSource::Local => {
-            #[cfg(feature = "cloud")]
-            if after.is_some() {
-                return Err("--after requires --source cloud".into());
-            }
-            let row = search::get_local_session(session_id, agent, environment, config).await?;
-            GetResponse {
-                session: SessionMatch::local(row),
-                #[cfg(feature = "cloud")]
-                workspace_id: None,
-                #[cfg(feature = "cloud")]
-                document: None,
-            }
+            search::get_local_document(session_id, agent, environment, config).await?
         }
         #[cfg(feature = "cloud")]
         GetSource::Cloud => {
@@ -230,7 +204,7 @@ pub(crate) async fn get(args: GetArgs, config: Config) -> Result<SessionOutput, 
                 return Err("--agent and --environment select a local session only".into());
             }
             let client = cloud_client(&config).await?;
-            cloud::get(&session_id, after.as_deref(), client).await?
+            cloud::get(&session_id, client).await?
         }
     };
     Ok(SessionOutput {

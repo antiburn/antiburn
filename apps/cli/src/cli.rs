@@ -42,7 +42,7 @@ pub enum Command {
     },
     /// Search session IDs and titles. Use --json for structured results.
     Search(SearchArgs),
-    /// Read exact session metadata or one page of Cloud session messages.
+    /// Read one session document. Use --json for the versioned response.
     Get(GetArgs),
 }
 
@@ -90,7 +90,7 @@ pub(crate) enum SearchMode {
 pub struct GetArgs {
     /// The local session ID or the Cloud UUID returned by search.
     pub(crate) session_id: String,
-    /// Select local metadata or one page of Cloud session messages.
+    /// Select the source of the session document.
     #[arg(long, value_enum, default_value_t = GetSource::Local)]
     pub(crate) source: GetSource,
     /// Narrow a local ID to the agent returned by search.
@@ -99,10 +99,6 @@ pub struct GetArgs {
     /// Narrow a local ID to the environment_key returned by search.
     #[arg(long)]
     pub(crate) environment: Option<String>,
-    /// Continue with the next cursor from the previous page.
-    #[cfg(feature = "cloud")]
-    #[arg(long, hide = !cfg!(unix), allow_hyphen_values = true)]
-    pub(crate) after: Option<String>,
     /// Print structured JSON instead of a text summary.
     #[arg(long)]
     pub(crate) json: bool,
@@ -110,9 +106,9 @@ pub struct GetArgs {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub(crate) enum GetSource {
-    /// Read local metadata, not the transcript.
+    /// Read the local session source without using the network.
     Local,
-    /// Read one page of Cloud session messages. Never substitute local data.
+    /// Read one Cloud session document. Never substitute local data.
     #[cfg(feature = "cloud")]
     #[value(hide = !cfg!(unix))]
     Cloud,
@@ -133,17 +129,11 @@ fn parse_search_query(value: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "cloud")]
     #[test]
-    fn accepts_a_cloud_cursor_that_starts_with_a_hyphen() {
-        let cli = Cli::try_parse_from([
-            "antiburn", "get", "session", "--source", "cloud", "--after", "-cursor",
-        ])
-        .unwrap();
-        let Command::Get(args) = cli.command else {
-            panic!("expected get");
-        };
-        assert_eq!(args.after.as_deref(), Some("-cursor"));
+    fn rejects_retired_get_cursor() {
+        let error =
+            Cli::try_parse_from(["antiburn", "get", "session", "--after", "cursor"]).unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
