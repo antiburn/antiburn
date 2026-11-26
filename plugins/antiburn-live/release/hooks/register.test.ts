@@ -3333,3 +3333,29 @@ test("overlapping limit checks share one account request", async ($, on) => {
   await Promise.all([attaching, measuring])
   expect(fake.requests.length).toBe(1)
 })
+
+test("detach clears an account reading that joined a limit check", async ($, on) => {
+  const fake = fakeEngine(on)
+  await start($)
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: "terminal", component: "AbovePrompt", props: props() })
+  fake.rateLimits = [{ kind: "seven_day", percentUsed: 7 }]
+  const response = deferred<HttpResponse>()
+  const fetching = deferred<void>()
+  fake.fetch = () => {
+    fetching.resolve()
+    return response.promise
+  }
+  const attaching = $.session.attach({ surface: "desktop", clientId: "desktop:limits" })
+  await fetching.promise
+  fake.rateLimits = []
+  const refreshing = $.command.run(command(PLUGIN, "refresh"))
+  await settle()
+  response.resolve(accountResponse(JSON.stringify({ five_hour: { utilization: 31 }, seven_day: { utilization: 42 } })))
+  await Promise.all([attaching, refreshing])
+  await band.redraw()
+  expect(await band.find({ text: "31%" })).toBeDefined()
+  await $.session.detach({ surface: "desktop", clientId: "desktop:limits", reason: "detach" })
+  await band.redraw()
+  expect(await band.find({ text: "31%" })).toBeUndefined()
+  expect(fake.requests.length).toBe(1)
+})

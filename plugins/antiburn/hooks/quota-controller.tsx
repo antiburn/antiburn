@@ -94,6 +94,7 @@ let accountRequest:
   | {
       state: typeof accountState
       epoch: number
+      display: boolean
       promise: Promise<AccountUsageResult>
     }
   | undefined
@@ -234,7 +235,7 @@ function startAccountRequest(
     }
     return result
   })()
-  const request = { state, epoch, promise }
+  const request = { state, epoch, display, promise }
   accountRequest = request
   void promise
     .finally(() => {
@@ -307,13 +308,19 @@ async function readAccountUsage(
     return
   }
   if (!accountRequest) startAccountRequest($, state, epoch)
-  const result = await accountRequest!.promise
+  const request = accountRequest!
+  const result = await request.promise
   if (
     state !== accountState ||
     epoch !== state.epoch ||
     !usageOrder.isCurrent(ticket)
   )
     return
+  // A joined limit check does not keep its result. Keep it here, because this read shows it.
+  if (!request.display) {
+    state.lastResult = result
+    if (result.status === "ready") state.snapshot = result.snapshot
+  }
   await applyAccountResult($, result, ticket)
 }
 
