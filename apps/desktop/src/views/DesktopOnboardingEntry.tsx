@@ -7,42 +7,52 @@ import { OnboardingView } from "../onboarding/OnboardingView"
 
 const CLOUD_CAPABILITY_TIMEOUT_MS = 5_000
 
-/** Use the informational screen if the build lookup cannot finish in time. */
-async function readCloudCapability(): Promise<boolean> {
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      appInfo().then(
-        (info) => info?.cloudEnabled === true,
-        () => false,
-      ),
-      new Promise<boolean>((resolve) => {
-        timeout = setTimeout(() => resolve(false), CLOUD_CAPABILITY_TIMEOUT_MS)
-      }),
-    ])
-  } finally {
-    clearTimeout(timeout)
+/** Read the build flag once. Limit the wait only while the Cloud step is open. */
+function createCloudCapability() {
+  let lookup: Promise<boolean> | undefined
+  let finishLookup: ((enabled: boolean) => void) | undefined
+  const store = createExternalStore<boolean | null>({
+    initial: null,
+    load: () =>
+      (lookup ??= new Promise<boolean>((resolve) => {
+        finishLookup = resolve
+        void appInfo().then(
+          (info) => resolve(info?.cloudEnabled === true),
+          () => resolve(false),
+        )
+      }).finally(() => {
+        finishLookup = undefined
+      })),
+  })
+  return {
+    getSnapshot: store.getSnapshot,
+    subscribe: store.subscribe,
+    subscribeAtCloud(listener: () => void) {
+      const unsubscribe = store.subscribe(listener)
+      if (!finishLookup) return unsubscribe
+      const timeout = setTimeout(() => finishLookup?.(false), CLOUD_CAPABILITY_TIMEOUT_MS)
+      void lookup?.then(() => clearTimeout(timeout))
+      return () => {
+        clearTimeout(timeout)
+        unsubscribe()
+      }
+    },
   }
 }
 
 /** Read the desktop Cloud build capability once for this introduction. */
 export function DesktopOnboardingEntry() {
-  const [cloudCapability] = useState(() => {
-    let lookup: Promise<boolean> | undefined
-    return createExternalStore<boolean | null>({
-      initial: null,
-      load: () => (lookup ??= readCloudCapability()),
-    })
-  })
-  const cloudEnabled = useSyncExternalStore(
-    cloudCapability.subscribe,
-    cloudCapability.getSnapshot,
-  )
+  const [cloudCapability] = useState(createCloudCapability)
   const [session] = useState(() => new DesktopOnboardingSession())
   const snapshot = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
+  )
+  const atCloudStep = snapshot.state === "cloud" || snapshot.state === "cloudUnavailable"
+  const cloudEnabled = useSyncExternalStore(
+    atCloudStep ? cloudCapability.subscribeAtCloud : cloudCapability.subscribe,
+    cloudCapability.getSnapshot,
   )
   if (snapshot.state === "completed")
     return (
@@ -60,9 +70,7 @@ export function DesktopOnboardingEntry() {
         </button>
       </main>
     )
-  const checkingCloud =
-    cloudEnabled === null &&
-    (snapshot.state === "cloud" || snapshot.state === "cloudUnavailable")
+  const checkingCloud = atCloudStep && cloudEnabled === null
   return (
     <div className="h-full">
       {snapshot.state === null || checkingCloud ? (

@@ -272,12 +272,12 @@ it.each(["enabled", "disabled", "failed"] as const)(
   },
 )
 
-it.each(["stalled", "late true"] as const)(
-  "keeps local completion available after the Cloud lookup times out (%s)",
+it.each(["stalled", "late true", "enabled before Cloud"] as const)(
+  "starts the lookup deadline at the Cloud step (%s)",
   async (outcome) => {
     vi.useFakeTimers()
     try {
-      commands(true, "cloud")
+      commands(true, outcome === "late true" ? "cloud" : "checks")
       let resolveInfo!: (value: AppInfo) => void
       const pendingInfo = new Promise<AppInfo>((resolve) => {
         resolveInfo = resolve
@@ -287,6 +287,23 @@ it.each(["stalled", "late true"] as const)(
         command === "app_info" ? pendingInfo : native(command, args),
       )
       render(<DesktopOnboardingEntry />)
+
+      if (outcome !== "late true") {
+        await act(() => vi.advanceTimersByTimeAsync(6_000))
+        if (outcome === "enabled before Cloud") {
+          await act(async () => resolveInfo({ ...info, cloudEnabled: true }))
+        }
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+        })
+        if (outcome === "enabled before Cloud") {
+          expect(screen.getByRole("button", { name: "Set up Cloud" })).toBeEnabled()
+          expect(invoke.mock.calls.filter(([command]) => command === "app_info")).toHaveLength(
+            1,
+          )
+          return
+        }
+      }
 
       await act(() => vi.advanceTimersByTimeAsync(4_999))
       expect(screen.getByRole("status")).toHaveTextContent("Checking Cloud availability")

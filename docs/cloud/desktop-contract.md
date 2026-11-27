@@ -48,8 +48,8 @@ this does not move credentials between service origins.
 
 Desktop reads `AppInfo.cloudEnabled` once per onboarding window. Earlier steps
 remain available during the lookup. After Checks or when resuming a saved Cloud
-step, Desktop shows a loading status for up to five seconds after starting the
-lookup. A true result makes the Cloud teaching and setup screens available.
+step, Desktop waits up to five seconds if the lookup is still pending.
+A true result makes the Cloud teaching and setup screens available.
 A false result, a failure, or a timeout shows the informational screen. Late
 replies do not change that screen. **Learn more** opens the public Cloud page in
 the system browser. **Done** opens Sessions. Service configuration, offline
