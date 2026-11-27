@@ -31,6 +31,24 @@ async fn ids_resolve_in_plain_and_nested_desktop_roots() {
 }
 
 #[tokio::test]
+async fn ids_and_extensions_match_without_letter_case() {
+    let home = TempDir::new().unwrap();
+    let dir = home.path().join("projects/-repo");
+    write(&dir.join("abc-def.jsonl")).await;
+    write(&dir.join("UPPER-ID.JSONL")).await;
+    let index = TranscriptIndex::new(std::slice::from_ref(&dir));
+
+    assert_eq!(
+        index.resolve("ABC-DEF").await,
+        Some(dir.join("abc-def.jsonl"))
+    );
+    assert_eq!(
+        index.resolve("upper-id").await,
+        Some(dir.join("UPPER-ID.JSONL"))
+    );
+}
+
+#[tokio::test]
 async fn the_first_project_dir_wins_like_the_probe() {
     let home = TempDir::new().unwrap();
     let first = home.path().join("projects/-a");

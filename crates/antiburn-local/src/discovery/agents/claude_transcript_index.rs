@@ -52,8 +52,10 @@ impl TranscriptIndex {
 
     /// Find the CLI transcript for `session_id`.
     ///
-    /// Returns `None` for an unsafe id, an audit log name, or an id with no
-    /// transcript. Each returned path passed the source safety check.
+    /// The match ignores ASCII letter case in the id and in the `.jsonl`
+    /// extension, as a probe does on the default macOS and Windows file
+    /// systems. Returns `None` for an unsafe id, an audit log name, or an id
+    /// with no transcript. Each returned path passed the source safety check.
     pub(super) async fn resolve(&self, session_id: &str) -> Option<PathBuf> {
         if !is_cli_session_id(session_id) {
             return None;
@@ -69,7 +71,7 @@ impl TranscriptIndex {
                 }
             })
             .await;
-        let candidates = by_id.get(session_id)?.clone();
+        let candidates = by_id.get(&session_id.to_ascii_lowercase())?.clone();
         tokio::task::spawn_blocking(move || {
             candidates.into_iter().find(|candidate| {
                 crate::discovery::source_fs::try_exists(candidate).unwrap_or(false)
@@ -81,7 +83,8 @@ impl TranscriptIndex {
     }
 }
 
-/// List each project directory one time and group `<id>.jsonl` entries by id.
+/// List each project directory one time and group `<id>.jsonl` entries by
+/// ASCII-lowercase id. Each path keeps the file name from the directory.
 /// Run this only in a blocking context.
 fn index_blocking(project_dirs: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
     let mut by_id: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -93,10 +96,10 @@ fn index_blocking(project_dirs: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
         };
         for entry in entries.flatten() {
             let file_name = entry.file_name();
-            let Some(session_id) = file_name
-                .to_str()
-                .and_then(|name| name.strip_suffix(".jsonl"))
-            else {
+            let Some(name) = file_name.to_str().map(str::to_ascii_lowercase) else {
+                continue;
+            };
+            let Some(session_id) = name.strip_suffix(".jsonl") else {
                 continue;
             };
             let path = project_dir.join(&file_name);
