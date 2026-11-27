@@ -5,17 +5,33 @@ import { appInfo } from "../lib/ipc"
 import { isMacOS } from "../lib/platform"
 import { OnboardingView } from "../onboarding/OnboardingView"
 
+const CLOUD_CAPABILITY_TIMEOUT_MS = 5_000
+
+/** Use the informational screen if the build lookup cannot finish in time. */
+async function readCloudCapability(): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      appInfo().then(
+        (info) => info?.cloudEnabled === true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), CLOUD_CAPABILITY_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 /** Read the desktop Cloud build capability once for this introduction. */
 export function DesktopOnboardingEntry() {
   const [cloudCapability] = useState(() => {
     let lookup: Promise<boolean> | undefined
     return createExternalStore<boolean | null>({
       initial: null,
-      load: () =>
-        (lookup ??= appInfo().then(
-          (info) => info?.cloudEnabled === true,
-          () => false,
-        )),
+      load: () => (lookup ??= readCloudCapability()),
     })
   })
   const cloudEnabled = useSyncExternalStore(

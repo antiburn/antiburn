@@ -271,3 +271,46 @@ it.each(["enabled", "disabled", "failed"] as const)(
     expect(invoke.mock.calls.some(([command]) => command.startsWith("cloud_"))).toBe(false)
   },
 )
+
+it.each(["stalled", "late true"] as const)(
+  "keeps local completion available after the Cloud lookup times out (%s)",
+  async (outcome) => {
+    vi.useFakeTimers()
+    try {
+      commands(true, "cloud")
+      let resolveInfo!: (value: AppInfo) => void
+      const pendingInfo = new Promise<AppInfo>((resolve) => {
+        resolveInfo = resolve
+      })
+      const native = invoke.getMockImplementation()!
+      invoke.mockImplementation((command: string, args?: Record<string, unknown>) =>
+        command === "app_info" ? pendingInfo : native(command, args),
+      )
+      render(<DesktopOnboardingEntry />)
+
+      await act(() => vi.advanceTimersByTimeAsync(4_999))
+      expect(screen.getByRole("status")).toHaveTextContent("Checking Cloud availability")
+      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument()
+
+      await act(() => vi.advanceTimersByTimeAsync(1))
+      expect(screen.getByRole("button", { name: "Learn more" })).toBeEnabled()
+      const done = screen.getByRole("button", { name: "Done" })
+      expect(done).toBeEnabled()
+      done.focus()
+
+      if (outcome === "late true") {
+        await act(async () => resolveInfo({ ...info, cloudEnabled: true }))
+        expect(screen.queryByRole("button", { name: "Set up Cloud" })).not.toBeInTheDocument()
+        expect(done).toHaveFocus()
+      }
+
+      await act(async () => {
+        fireEvent.click(done)
+      })
+      expect(screen.getByRole("button", { name: "Open Sessions" })).toBeVisible()
+      expect(invoke.mock.calls.filter(([command]) => command === "app_info")).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  },
+)
