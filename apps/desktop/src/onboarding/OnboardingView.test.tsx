@@ -11,14 +11,13 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
-it("finishes ordinary onboarding without showing a Cloud entry point", () => {
+it("advances from Checks to Cloud in ordinary builds", () => {
   const onComplete = vi.fn()
   const onStepChange = vi.fn()
   render(<OnboardingView step="checks" onStepChange={onStepChange} onComplete={onComplete} />)
-  fireEvent.click(screen.getByRole("button", { name: "Done" }))
-  expect(onComplete).toHaveBeenCalledOnce()
-  expect(onStepChange).not.toHaveBeenCalled()
-  expect(screen.queryByRole("button", { name: /cloud/i })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+  expect(onStepChange).toHaveBeenCalledExactlyOnceWith("cloud")
+  expect(onComplete).not.toHaveBeenCalled()
 })
 
 it("navigates from welcome and offers local completion without a Cloud operation", () => {

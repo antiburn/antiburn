@@ -1,12 +1,12 @@
 import { useState, useSyncExternalStore } from "react"
-import { CloudOnboarding } from "./CloudOnboarding"
+import { CloudOnboarding, CloudWaitlist } from "./CloudOnboarding"
 import appIcon from "../assets/app-icon.png"
 import { renderAgentIcon } from "../lib/agentIcon"
 import "./onboarding.css"
 
 type OnboardingStep =
   "welcome" | "sessions" | "limits" | "hud" | "checks" | "cloud" | "cloudUnavailable"
-/** Host-owned local progress and visibility. Only desktop build info can expose Cloud steps. */
+/** Host-owned local progress, visibility, and access to Cloud setup. */
 export interface OnboardingViewProps {
   step: OnboardingStep
   onStepChange: (step: OnboardingStep) => void
@@ -16,7 +16,7 @@ export interface OnboardingViewProps {
   hudSupported?: boolean
   hudVariant?: "notch" | "floating" | "unsupported"
   visible?: boolean
-  /** Desktop AppInfo.cloudEnabled only. Service availability must not hide this flow. */
+  /** Desktop build capability for Cloud setup. The waitlist needs no Cloud feature. */
   cloudEnabled?: boolean
 }
 
@@ -312,7 +312,7 @@ function Demo({
 
 /** Render existing teaching/setup steps without completing or enabling Cloud on its own. */
 export function OnboardingView({
-  step: requestedStep,
+  step,
   onStepChange,
   onComplete,
   busy = false,
@@ -322,10 +322,16 @@ export function OnboardingView({
   visible = true,
   cloudEnabled = false,
 }: OnboardingViewProps) {
-  const step =
-    !cloudEnabled && (requestedStep === "cloud" || requestedStep === "cloudUnavailable")
-      ? "checks"
-      : requestedStep
+  if (!cloudEnabled && (step === "cloud" || step === "cloudUnavailable"))
+    return (
+      <CloudWaitlist
+        screen={step}
+        onBack={() => onStepChange("checks")}
+        onComplete={onComplete}
+        busy={busy}
+        error={error}
+      />
+    )
   if (step === "cloudUnavailable")
     return (
       <CloudOnboarding
@@ -426,18 +432,15 @@ export function OnboardingView({
             <button
               className="onboarding-primary"
               disabled={busy}
-              onClick={() => {
-                if (step === "checks" && !cloudEnabled) onComplete()
-                else onStepChange(step === "cloud" ? "cloudUnavailable" : order[index + 1]!)
-              }}
+              onClick={() =>
+                onStepChange(step === "cloud" ? "cloudUnavailable" : order[index + 1]!)
+              }
             >
               {step === "welcome"
                 ? "Get started"
                 : step === "cloud"
                   ? "Set up Cloud"
-                  : step === "checks" && !cloudEnabled
-                    ? "Done"
-                    : "Continue"}
+                  : "Continue"}
             </button>
           }
         </div>

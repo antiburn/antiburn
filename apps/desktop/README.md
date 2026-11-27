@@ -83,13 +83,16 @@ and integration startup remain independent of this introduction. Supported HUDs
 appear after completion unless an existing preference disables them.
 
 The introduction uses isolated example data to demonstrate Sessions, provider
-limits, the HUD, notifications, and Checks. Ordinary builds finish after Checks.
+limits, the HUD, notifications, and Checks. After Checks, standard builds show
+the Cloud information screen. Select **Learn more** to open the public Cloud page
+or **Done** to open Sessions.
 Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/?utm_source=github&utm_medium=readme&utm_campaign=github_readme&utm_content=desktop_waitlist).
 Standard public builds keep Cloud disabled. Development requires the explicit,
 non-default Rust feature `cloud`.
 The desktop `dev` and `dev:bundle` launchers select it for debug development.
-Environment values cannot enable the feature. Builds without `cloud` register no
-Cloud commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
+Environment values cannot enable the feature. Builds without `cloud` omit Cloud
+account commands, account permissions, account controls, the callback scheme, and
+the Cloud Dev menu.
 When both build-time origins are absent, debug Cloud builds use
 `http://localhost:3000` for both issuer and resource. Standard release Cloud builds
 require explicit HTTPS origins. The desktop build capability enables the existing Cloud

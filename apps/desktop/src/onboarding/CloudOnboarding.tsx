@@ -1,9 +1,16 @@
-import { useId, useState, useSyncExternalStore, type CSSProperties } from "react"
+import {
+  useId,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type ReactNode,
+} from "react"
+import { invoke } from "@tauri-apps/api/core"
 import { ArrowUp, ArrowUpRight, Check, Cloud, Info, Plus, UserRound } from "lucide-react"
 import appIcon from "../assets/app-icon.png"
 import { DeviceAccessUpdate } from "./DeviceAccessUpdate"
 import type { CloudPort } from "../lib/cloud"
-import { noteCloudAction } from "../lib/onboardingAnalytics"
+import { noteCloudAction, noteOnboardingAction } from "../lib/onboardingAnalytics"
 import {
   CloudSession,
   cloudGithubSignInLabel,
@@ -32,6 +39,125 @@ export interface CloudOnboardingProps {
   holdIdentity?: boolean
 }
 const focusHeading = (node: HTMLHeadingElement | null) => node?.focus()
+
+function CloudBadge() {
+  return (
+    <>
+      <div className="onboarding-drag-region" data-tauri-drag-region />
+      <span className="cloud-badge type-caption">
+        <Cloud size={14} aria-hidden />
+        antiburn cloud
+      </span>
+    </>
+  )
+}
+
+function CloudHandoff({
+  authEnabled,
+  children,
+}: {
+  authEnabled: boolean
+  children: ReactNode
+}) {
+  return (
+    <section className="cloud-setup" aria-label="Cloud connection">
+      <div className="cloud-connection">
+        <img className="cloud-app-icon" src={appIcon} alt="" />
+        <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
+          {authEnabled ? "Sign in to Antiburn Cloud" : "Antiburn Cloud is coming soon"}
+        </h1>
+        <p className="type-onboarding-body text-onboarding-muted">
+          {authEnabled
+            ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
+            : "Learn about bringing your session insights together across devices."}
+        </p>
+        {children}
+      </div>
+    </section>
+  )
+}
+
+/** Show the public waitlist without creating a Cloud account session. */
+export function CloudWaitlist({
+  screen,
+  onBack,
+  onComplete,
+  busy = false,
+  error,
+}: Pick<CloudOnboardingProps, "onBack" | "onComplete" | "busy" | "error"> & {
+  screen: "cloud" | "cloudUnavailable"
+}) {
+  const [opening, setOpening] = useState(false)
+  const [action, setAction] = useState<"navigate" | "open" | "openFailed">("navigate")
+  const actionError =
+    action === "openFailed" ? "Could not open the Cloud page. Try again." : error
+
+  const navigate = (direction: "back" | "done") => {
+    setAction("navigate")
+    if (screen === "cloudUnavailable") noteOnboardingAction(screen, direction)
+    if (direction === "back") onBack()
+    else onComplete()
+  }
+
+  const openWaitlist = async () => {
+    noteOnboardingAction(screen, "learn_more")
+    setOpening(true)
+    setAction("open")
+    try {
+      await invoke("plugin:opener|open_url", { url: "https://antiburn.com/cloud" })
+    } catch {
+      setAction((current) => (current === "open" ? "openFailed" : current))
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  return (
+    <main
+      className="onboarding-shell cloud-shell cloud-screen-handoff"
+      data-auth-enabled={false}
+      aria-label="Antiburn Cloud setup"
+    >
+      <CloudBadge />
+      <CloudHandoff authEnabled={false}>
+        <button
+          className="onboarding-secondary"
+          disabled={busy || opening}
+          onClick={() => void openWaitlist()}
+        >
+          Learn more
+          <ArrowUpRight size={16} aria-hidden />
+        </button>
+        <p className="cloud-status type-footnote" role="status" />
+      </CloudHandoff>
+      <footer className="onboarding-footer cloud-footer">
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <button
+            className="onboarding-secondary"
+            disabled={busy}
+            onClick={() => navigate("back")}
+          >
+            Back
+          </button>
+          <div className="onboarding-actions flex-wrap">
+            {actionError && (
+              <span className="type-footnote" role="alert">
+                {actionError}
+              </span>
+            )}
+            <button
+              className="onboarding-primary"
+              disabled={busy}
+              onClick={() => navigate("done")}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </footer>
+    </main>
+  )
+}
 /** Observe one CloudSession. Completion can stay local without content consent;
  * leaving browser approval cancels only that attempt, not upload consent.
  */
@@ -237,83 +363,66 @@ export function CloudOnboarding({
       className={`onboarding-shell cloud-shell cloud-screen-${value.screen}${value.screen === "folders" ? " flex! flex-col!" : ""}`}
       aria-label="Antiburn Cloud setup"
     >
-      <div className="onboarding-drag-region" data-tauri-drag-region />
-      <span className="cloud-badge type-caption">
-        <Cloud size={14} aria-hidden />
-        antiburn cloud
-      </span>
+      <CloudBadge />
       {value.screen === "handoff" ? (
-        <section className="cloud-setup" aria-label="Cloud connection">
-          <div className="cloud-connection">
-            <img className="cloud-app-icon" src={appIcon} alt="" />
-            <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
-              {value.cloud.authEnabled
-                ? "Sign in to Antiburn Cloud"
-                : "Antiburn Cloud is coming soon"}
-            </h1>
-            <p className="type-onboarding-body text-onboarding-muted">
-              {value.cloud.authEnabled
-                ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
-                : "Learn about bringing your session insights together across devices."}
-            </p>
-            {waiting ? (
+        <CloudHandoff authEnabled={value.cloud.authEnabled}>
+          {waiting ? (
+            <button
+              className="onboarding-secondary"
+              disabled={disabled}
+              onClick={() => void session.cancel()}
+            >
+              Cancel sign-in
+            </button>
+          ) : cleanupPending ? (
+            !value.cloud.localResetAvailable && (
               <button
                 className="onboarding-secondary"
-                disabled={disabled}
-                onClick={() => void session.cancel()}
-              >
-                Cancel sign-in
-              </button>
-            ) : cleanupPending ? (
-              !value.cloud.localResetAvailable && (
-                <button
-                  className="onboarding-secondary"
-                  disabled={disabled || !value.loaded}
-                  onClick={() => void session.signOut()}
-                >
-                  {value.cloud.localCleanupPending ? "Finish signing out" : "Sign out"}
-                </button>
-              )
-            ) : !accessUpdateWaiting && !checkingSignIn ? (
-              <button
-                className={
-                  value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
-                }
                 disabled={disabled || !value.loaded}
-                onClick={() =>
-                  void (!value.cloud.authEnabled ||
-                  value.cloud.status === "idle" ||
-                  value.cloud.status === "signed_out"
-                    ? session.begin()
-                    : session.retry())
-                }
+                onClick={() => void session.signOut()}
               >
-                {value.cloud.authEnabled ? cloudGithubSignInLabel : "Learn more"}
-                <ArrowUpRight size={16} aria-hidden />
+                {value.cloud.localCleanupPending ? "Finish signing out" : "Sign out"}
               </button>
-            ) : null}
-            {accessUpdateWaiting && (
-              <DeviceAccessUpdate
-                value={value.cloud}
-                busy={disabled}
-                update={session.begin}
-                cancel={session.cancel}
-                onboarding
-              />
-            )}
-            <p className="cloud-status type-footnote" role="status">
-              {value.loaded
-                ? cleanupPending
-                  ? value.cloud.localResetAvailable
-                    ? "Open Cloud in Settings to reset sign-in on this device."
-                    : cloudSignOutBeforeSignIn
-                  : value.cloud.authEnabled || value.cloud.status === "browser_failed"
-                    ? cloudStatusMessage(value.cloud.status)
-                    : ""
-                : "Checking Cloud availability…"}
-            </p>
-          </div>
-        </section>
+            )
+          ) : !accessUpdateWaiting && !checkingSignIn ? (
+            <button
+              className={
+                value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
+              }
+              disabled={disabled || !value.loaded}
+              onClick={() =>
+                void (!value.cloud.authEnabled ||
+                value.cloud.status === "idle" ||
+                value.cloud.status === "signed_out"
+                  ? session.begin()
+                  : session.retry())
+              }
+            >
+              {value.cloud.authEnabled ? cloudGithubSignInLabel : "Learn more"}
+              <ArrowUpRight size={16} aria-hidden />
+            </button>
+          ) : null}
+          {accessUpdateWaiting && (
+            <DeviceAccessUpdate
+              value={value.cloud}
+              busy={disabled}
+              update={session.begin}
+              cancel={session.cancel}
+              onboarding
+            />
+          )}
+          <p className="cloud-status type-footnote" role="status">
+            {value.loaded
+              ? cleanupPending
+                ? value.cloud.localResetAvailable
+                  ? "Open Cloud in Settings to reset sign-in on this device."
+                  : cloudSignOutBeforeSignIn
+                : value.cloud.authEnabled || value.cloud.status === "browser_failed"
+                  ? cloudStatusMessage(value.cloud.status)
+                  : ""
+              : "Checking Cloud availability…"}
+          </p>
+        </CloudHandoff>
       ) : value.screen === "identity" ? (
         <section className="cloud-setup">
           <div className="cloud-connection cloud-identity">
