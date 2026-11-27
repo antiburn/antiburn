@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use super::claude_transcript_index::{TranscriptIndex, is_cli_session_id};
 #[cfg(test)]
 use crate::discovery::scanner;
 use crate::discovery::scanner::AgentKind;
@@ -276,7 +277,7 @@ fn desktop_session_trees_in(home: &Path) -> Vec<PathBuf> {
 /// Whether `path` is a Claude Desktop audit log (`audit.jsonl`,
 /// `audit1.jsonl`, ...). An audit log repeats the `message.usage` objects of
 /// the transcript, so discovery must never read it as a session.
-fn is_audit_log(path: &Path) -> bool {
+pub(super) fn is_audit_log(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(str::to_ascii_lowercase)
@@ -634,17 +635,20 @@ async fn discover_recent_including_subagent_parents(
     update_discovered_with_subagent_mtimes(&mut discovered).await;
     merge_recent_subagent_parent_logs(&mut discovered, &project_dirs, now - since_secs).await;
 
+    // One index serves every manifest and fork job in this scan, so each
+    // project directory is listed one time, not one time per id.
+    let transcripts = TranscriptIndex::new(&project_dirs);
     let manifest_dirs = desktop_manifest_dirs_in(home).await;
     for manifest in recent_files_with_exts(&manifest_dirs, now, since_secs, &["json"]).await {
         if let Some(log) =
-            desktop_manifest_session_log(home, &project_dirs, manifest.path, manifest.mtime_epoch)
+            desktop_manifest_session_log(home, &transcripts, manifest.path, manifest.mtime_epoch)
                 .await
         {
             merge_session_log(&mut discovered, log);
         }
     }
 
-    for log in interactive_fork_job_logs(home, &project_dirs, now - since_secs).await {
+    for log in interactive_fork_job_logs(home, &transcripts, now - since_secs).await {
         // The job adapter enriches a title-only transcript with the explicit
         // parent and CWD, so it must replace the plain file candidate even when
         // both files have the same one-second mtime.
@@ -678,7 +682,7 @@ fn valid_claude_job_cwd(value: &str) -> bool {
 
 async fn interactive_fork_job_logs(
     home: &Path,
-    project_dirs: &[PathBuf],
+    transcripts: &TranscriptIndex,
     cutoff: i64,
 ) -> Vec<SessionLog> {
     let jobs_root = home.join(".claude").join("jobs");
@@ -720,7 +724,7 @@ async fn interactive_fork_job_logs(
             continue;
         }
 
-        let transcript_path = resolve_cli_transcript_path(project_dirs, child_id).await;
+        let transcript_path = transcripts.resolve(child_id).await;
         let transcript_mtime = transcript_path
             .as_deref()
             .and_then(file_mtime_epoch_blocking)
@@ -782,7 +786,7 @@ async fn interactive_fork_job_logs(
 /// assess, so this function returns `None` for them.
 async fn desktop_manifest_session_log(
     home: &Path,
-    project_dirs: &[PathBuf],
+    transcripts: &TranscriptIndex,
     manifest_path: PathBuf,
     manifest_mtime_epoch: i64,
 ) -> Option<SessionLog> {
@@ -796,8 +800,7 @@ async fn desktop_manifest_session_log(
         .filter(|value| !value.is_empty())?
         .to_owned();
 
-    if let Some(transcript_path) = resolve_cli_transcript_path(project_dirs, &cli_session_id).await
-    {
+    if let Some(transcript_path) = transcripts.resolve(&cli_session_id).await {
         return Some(SessionLog {
             environment: Default::default(),
             agent_type: AgentKind::Claude,
@@ -833,20 +836,19 @@ async fn desktop_manifest_session_log(
     })
 }
 
-/// Resolve the on-disk path for a Claude CLI transcript by `(project_dirs,
+/// Resolve the on-disk path for one Claude CLI transcript by `(project_dirs,
 /// session_id)`. Validates `session_id` against a positive allowlist
 /// (alphanumeric + hyphen) to prevent path traversal from a crafted JSONL
 /// `sessionId` field — Claude session IDs are UUIDs in practice, so this is
 /// strictly safer than the broader file-name space.
+///
+/// This probe costs one path check per project directory. Use it for a point
+/// query of one id. To resolve many ids in one scan, use [`TranscriptIndex`].
 async fn resolve_cli_transcript_path(
     project_dirs: &[PathBuf],
     cli_session_id: &str,
 ) -> Option<PathBuf> {
-    if cli_session_id.is_empty()
-        || !cli_session_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !is_cli_session_id(cli_session_id) {
         return None;
     }
     let candidates: Vec<PathBuf> = project_dirs
@@ -912,7 +914,12 @@ mod tests {
         set_file_mtime(&transcript, 1_700_000_000);
         set_file_mtime(&state, 1_700_000_000);
 
-        let logs = interactive_fork_job_logs(home.path(), &[project], 1_699_999_999).await;
+        let logs = interactive_fork_job_logs(
+            home.path(),
+            &TranscriptIndex::new(&[project]),
+            1_699_999_999,
+        )
+        .await;
 
         assert_eq!(logs.len(), 1);
         let SessionSource::Inline { content, .. } = &logs[0].source else {
@@ -950,7 +957,8 @@ mod tests {
         .unwrap();
         set_file_mtime(&state, 1_700_000_000);
 
-        let logs = interactive_fork_job_logs(home.path(), &[], 1_699_999_999).await;
+        let logs =
+            interactive_fork_job_logs(home.path(), &TranscriptIndex::new(&[]), 1_699_999_999).await;
 
         assert!(logs.is_empty());
     }
@@ -1665,5 +1673,54 @@ mod tests {
         for bad in ["../etc/passwd", "..\\..\\windows", "abc/../def", ""] {
             assert!(resolve_cli_transcript_path(&dirs, bad).await.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn one_scan_lists_each_project_dir_once_for_many_manifests() {
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let project = home.path().join(".claude/projects/-repo");
+        let transcript = project.join("cli-present.jsonl");
+        // Only the manifests are recent, so only a manifest can find the
+        // transcript.
+        write_recent(&transcript, "{}\n", now - 200_000).await;
+        let manifests = app_config_dir_in("Claude", home.path())
+            .join("claude-code-sessions/org-0001/account-0001");
+        for (name, cli_session_id) in [
+            ("local_a.json", "cli-present"),
+            ("local_b.json", "cli-gone-1"),
+            ("local_c.json", "cli-gone-2"),
+            ("local_d.json", "cli-gone-3"),
+        ] {
+            write_recent(
+                &manifests.join(name),
+                &serde_json::json!({ "cliSessionId": cli_session_id }).to_string(),
+                now - 5,
+            )
+            .await;
+        }
+        super::super::claude_transcript_index::track_listings(&project);
+
+        let logs = discover_recent_in(home.path(), now, 86_400).await;
+
+        assert_eq!(
+            super::super::claude_transcript_index::take_tracked_listings(&project),
+            1
+        );
+        let labels: Vec<String> = logs.iter().map(SessionLog::source_label).collect();
+        assert_eq!(logs.len(), 4, "{labels:?}");
+        // Compare paths, not strings: on Windows the scan path and the test
+        // path use different separators.
+        assert!(
+            labels.iter().any(|label| Path::new(label) == transcript),
+            "{labels:?}"
+        );
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| label.starts_with("claude-desktop:"))
+                .count(),
+            3
+        );
     }
 }
