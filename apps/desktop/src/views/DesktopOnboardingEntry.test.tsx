@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { StrictMode } from "react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { appInfoStore } from "../lib/appInfoStore"
 import { emptyCloudSnapshot } from "../lib/cloud"
 import type { AppInfo, OnboardingState } from "../lib/ipc"
 import { DesktopOnboardingEntry } from "./DesktopOnboardingEntry"
@@ -61,7 +61,6 @@ function commands(
 
 beforeEach(() => {
   vi.clearAllMocks()
-  appInfoStore.set(null)
   vi.stubGlobal("matchMedia", () => ({
     matches: true,
     addEventListener: vi.fn(),
@@ -166,21 +165,6 @@ it("shows an opener failure after a save failure and keeps both actions availabl
   expect(await screen.findByRole("button", { name: "Open Sessions" })).toBeVisible()
 })
 
-it("offers the public Cloud screen when app info fails", async () => {
-  commands(false)
-  const native = invoke.getMockImplementation()!
-  invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-    if (command === "app_info") throw new Error("App info unavailable")
-    return native(command, args)
-  })
-  render(<DesktopOnboardingEntry />)
-  fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
-  expect(await screen.findByRole("button", { name: "Learn more" })).toBeEnabled()
-  fireEvent.click(screen.getByRole("button", { name: "Done" }))
-  expect(await screen.findByRole("button", { name: "Open Sessions" })).toBeVisible()
-  expect(invoke.mock.calls.some(([command]) => command.startsWith("cloud_"))).toBe(false)
-})
-
 it.each([true, false])(
   "keeps the feature-enabled Cloud flow reachable with service configuration: %s",
   async (configured) => {
@@ -218,24 +202,55 @@ it.each([true, false])(
   },
 )
 
-it("enables Cloud setup only after native build information confirms the feature", async () => {
-  commands(true)
-  let resolve!: (value: AppInfo) => void
-  const native = invoke.getMockImplementation()!
-  invoke.mockImplementation((command: string, args?: Record<string, unknown>) =>
-    command === "app_info"
-      ? new Promise<AppInfo>((done) => {
-          resolve = done
-        })
-      : native(command, args),
-  )
-  render(<DesktopOnboardingEntry />)
-  fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
-  expect(await screen.findByRole("button", { name: "Learn more" })).toBeEnabled()
-  expect(invoke.mock.calls.some(([command]) => command.startsWith("cloud_"))).toBe(false)
-  await act(async () => resolve({ ...info, cloudEnabled: true }))
-  expect(screen.getByRole("button", { name: "Set up Cloud" })).toBeEnabled()
-  expect(invoke.mock.calls.filter(([command]) => command === "set_onboarding_state")).toEqual([
-    ["set_onboarding_state", { state: "cloud" }],
-  ])
-})
+it.each(["enabled", "disabled", "failed"] as const)(
+  "waits to show the Cloud screen when the delayed build lookup is %s",
+  async (outcome) => {
+    commands(false)
+    let resolveInfo!: (value: AppInfo) => void
+    let rejectInfo!: (reason: Error) => void
+    const pendingInfo = new Promise<AppInfo>((resolve, reject) => {
+      resolveInfo = resolve
+      rejectInfo = reject
+    })
+    const native = invoke.getMockImplementation()!
+    invoke.mockImplementation((command: string, args?: Record<string, unknown>) =>
+      command === "app_info" ? pendingInfo : native(command, args),
+    )
+    render(
+      <StrictMode>
+        <DesktopOnboardingEntry />
+      </StrictMode>,
+    )
+
+    const next = await screen.findByRole("button", { name: "Continue" })
+    expect(next).toBeEnabled()
+    fireEvent.click(next)
+    expect(await screen.findByRole("status")).toHaveTextContent("Checking Cloud availability")
+    expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Set up Cloud" })).not.toBeInTheDocument()
+    expect(invoke.mock.calls.filter(([command]) => command === "set_onboarding_state")).toEqual(
+      [["set_onboarding_state", { state: "cloud" }]],
+    )
+
+    await act(async () => {
+      if (outcome === "failed") rejectInfo(new Error("App info unavailable"))
+      else resolveInfo({ ...info, cloudEnabled: outcome === "enabled" })
+    })
+    expect(screen.queryByText("Checking Cloud availability…")).not.toBeInTheDocument()
+    if (outcome === "enabled") {
+      expect(screen.getByRole("button", { name: "Set up Cloud" })).toBeEnabled()
+      expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
+    } else {
+      expect(screen.queryByRole("button", { name: "Set up Cloud" })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Learn more" }))
+      expect(invoke).toHaveBeenCalledWith("plugin:opener|open_url", {
+        url: "https://antiburn.com/cloud",
+      })
+      fireEvent.click(screen.getByRole("button", { name: "Done" }))
+      expect(await screen.findByRole("button", { name: "Open Sessions" })).toBeVisible()
+    }
+    expect(invoke.mock.calls.filter(([command]) => command === "app_info")).toHaveLength(1)
+    expect(invoke.mock.calls.some(([command]) => command.startsWith("cloud_"))).toBe(false)
+  },
+)

@@ -1,14 +1,27 @@
 import { useState, useSyncExternalStore } from "react"
 import { DesktopOnboardingSession } from "../lib/DesktopOnboardingSession"
+import { createExternalStore } from "../lib/externalStore"
+import { appInfo } from "../lib/ipc"
 import { isMacOS } from "../lib/platform"
-import { appInfoStore } from "../lib/appInfoStore"
 import { OnboardingView } from "../onboarding/OnboardingView"
 
-/** Use the native build capability to expose the existing optional Cloud steps.
- * Offline Cloud does not disable the steps or block ordinary local onboarding.
- */
+/** Read the desktop Cloud build capability once for this introduction. */
 export function DesktopOnboardingEntry() {
-  const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
+  const [cloudCapability] = useState(() => {
+    let lookup: Promise<boolean> | undefined
+    return createExternalStore<boolean | null>({
+      initial: null,
+      load: () =>
+        (lookup ??= appInfo().then(
+          (info) => info?.cloudEnabled === true,
+          () => false,
+        )),
+    })
+  })
+  const cloudEnabled = useSyncExternalStore(
+    cloudCapability.subscribe,
+    cloudCapability.getSnapshot,
+  )
   const [session] = useState(() => new DesktopOnboardingSession())
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -31,15 +44,19 @@ export function DesktopOnboardingEntry() {
         </button>
       </main>
     )
+  const checkingCloud =
+    cloudEnabled === null &&
+    (snapshot.state === "cloud" || snapshot.state === "cloudUnavailable")
   return (
     <div className="h-full">
-      {snapshot.state === null ? (
+      {snapshot.state === null || checkingCloud ? (
         <main
           className="flex h-full flex-col items-center justify-center gap-4 bg-surface-window p-6 text-label"
           aria-label="Introduction"
         >
           <p className="type-body" role={snapshot.error ? "alert" : "status"}>
-            {snapshot.error ?? "Loading your introduction…"}
+            {snapshot.error ??
+              (checkingCloud ? "Checking Cloud availability…" : "Loading your introduction…")}
           </p>
           {snapshot.error && (
             <button
@@ -53,7 +70,7 @@ export function DesktopOnboardingEntry() {
         </main>
       ) : (
         <OnboardingView
-          cloudEnabled={info?.cloudEnabled === true}
+          cloudEnabled={cloudEnabled === true}
           step={snapshot.state}
           onStepChange={(step) => void session.change(step)}
           onComplete={() => void session.change("completed")}
