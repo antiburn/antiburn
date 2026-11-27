@@ -52,13 +52,11 @@ impl TranscriptIndex {
 
     /// Find the CLI transcript for `session_id`.
     ///
-    /// The match ignores ASCII letter case in the id and in the `.jsonl`
-    /// extension, as a probe does on the default macOS and Windows file
-    /// systems. A file whose name is exactly `<session_id>.jsonl` wins over a
-    /// file that matches only when case is ignored, so a case-sensitive file
-    /// system gives the same result as an exact-name probe. Returns `None`
-    /// for an unsafe id, an audit log name, or an id with no transcript. Each
-    /// returned path passed the source safety check.
+    /// The match follows a probe of `<session_id>.jsonl` on the default file
+    /// system of the platform (see [`index_key`]), and the first project
+    /// directory wins. Returns `None` for an unsafe id, an audit log name, or
+    /// an id with no transcript. Each returned path passed the source safety
+    /// check.
     pub(super) async fn resolve(&self, session_id: &str) -> Option<PathBuf> {
         if !is_cli_session_id(session_id) {
             return None;
@@ -74,12 +72,7 @@ impl TranscriptIndex {
                 }
             })
             .await;
-        let mut candidates = by_id.get(&session_id.to_ascii_lowercase())?.clone();
-        let exact_name = format!("{session_id}.jsonl");
-        // A stable sort keeps the project directory order inside each group.
-        candidates.sort_by_key(|candidate| {
-            candidate.file_name().and_then(|name| name.to_str()) != Some(exact_name.as_str())
-        });
+        let candidates = by_id.get(&index_key(session_id))?.clone();
         tokio::task::spawn_blocking(move || {
             candidates.into_iter().find(|candidate| {
                 crate::discovery::source_fs::try_exists(candidate).unwrap_or(false)
@@ -91,8 +84,24 @@ impl TranscriptIndex {
     }
 }
 
+/// Index key for a file name or a session id.
+///
+/// The default file systems of macOS and Windows ignore ASCII letter case, so
+/// a probe there finds `abc.jsonl` for the id `ABC`. On these platforms the
+/// key ignores case too. On other platforms the key keeps the exact name, as
+/// a probe on a case-sensitive file system does.
+fn index_key(name: &str) -> String {
+    if cfg!(any(target_os = "macos", windows)) {
+        name.to_ascii_lowercase()
+    } else {
+        name.to_owned()
+    }
+}
+
 /// List each project directory one time and group `<id>.jsonl` entries by
-/// ASCII-lowercase id. Each path keeps the file name from the directory.
+/// [`index_key`]. Each path keeps the file name from the directory. Paths keep
+/// the project directory order. Inside one directory, paths are in file name
+/// order, so the result does not change with the `read_dir` order.
 /// Run this only in a blocking context.
 fn index_blocking(project_dirs: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
     let mut by_id: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -102,15 +111,17 @@ fn index_blocking(project_dirs: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
         let Ok(entries) = crate::discovery::source_fs::read_dir(project_dir) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let Some(name) = file_name.to_str().map(str::to_ascii_lowercase) else {
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        names.sort_unstable();
+        for name in names {
+            let key = index_key(&name);
+            let Some(session_id) = key.strip_suffix(".jsonl") else {
                 continue;
             };
-            let Some(session_id) = name.strip_suffix(".jsonl") else {
-                continue;
-            };
-            let path = project_dir.join(&file_name);
+            let path = project_dir.join(&name);
             if !is_cli_session_id(session_id) || super::claude::is_audit_log(&path) {
                 continue;
             }

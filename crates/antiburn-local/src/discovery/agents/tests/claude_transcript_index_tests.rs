@@ -30,6 +30,8 @@ async fn ids_resolve_in_plain_and_nested_desktop_roots() {
     assert_eq!(index.resolve("sess-missing").await, None);
 }
 
+/// macOS and Windows probes ignore letter case, so the index does too.
+#[cfg(any(target_os = "macos", windows))]
 #[tokio::test]
 async fn ids_and_extensions_match_without_letter_case() {
     let home = TempDir::new().unwrap();
@@ -48,8 +50,28 @@ async fn ids_and_extensions_match_without_letter_case() {
     );
 }
 
+/// On a case-sensitive platform only the exact name matches, like a probe.
+#[cfg(not(any(target_os = "macos", windows)))]
 #[tokio::test]
-async fn an_exact_file_name_wins_over_a_case_only_match() {
+async fn only_the_exact_name_matches() {
+    let home = TempDir::new().unwrap();
+    let dir = home.path().join("projects/-repo");
+    write(&dir.join("abc-def.jsonl")).await;
+    write(&dir.join("UPPER-ID.JSONL")).await;
+    let index = TranscriptIndex::new(std::slice::from_ref(&dir));
+
+    assert_eq!(
+        index.resolve("abc-def").await,
+        Some(dir.join("abc-def.jsonl"))
+    );
+    assert_eq!(index.resolve("ABC-DEF").await, None);
+    assert_eq!(index.resolve("UPPER-ID").await, None);
+}
+
+/// Two directories hold names that differ only in letter case. The result is
+/// the same as a probe on the default file system of the platform.
+#[tokio::test]
+async fn case_only_names_resolve_like_the_platform_probe() {
     let home = TempDir::new().unwrap();
     let first = home.path().join("projects/-a");
     let second = home.path().join("projects/-b");
@@ -57,10 +79,12 @@ async fn an_exact_file_name_wins_over_a_case_only_match() {
     write(&second.join("child-1.jsonl")).await;
     let index = TranscriptIndex::new(&[first.clone(), second.clone()]);
 
-    assert_eq!(
-        index.resolve("child-1").await,
-        Some(second.join("child-1.jsonl"))
-    );
+    let expected = if cfg!(any(target_os = "macos", windows)) {
+        first.join("CHILD-1.jsonl")
+    } else {
+        second.join("child-1.jsonl")
+    };
+    assert_eq!(index.resolve("child-1").await, Some(expected));
     assert_eq!(
         index.resolve("CHILD-1").await,
         Some(first.join("CHILD-1.jsonl"))
