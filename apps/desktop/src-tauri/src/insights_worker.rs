@@ -330,6 +330,8 @@ fn run_record_pass_with(
                 path: (record.source_kind == "file").then(|| record.source_label.clone().into()),
                 fingerprint: record.source_fingerprint.clone(),
                 generation: 0,
+                inline_claude_desktop: record.source_kind == "inline"
+                    && record.source_label.starts_with("claude-desktop:"),
             },
             signal,
             Some(writer),

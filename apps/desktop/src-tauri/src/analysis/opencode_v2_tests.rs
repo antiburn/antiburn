@@ -170,6 +170,7 @@ async fn publish_fixture_with_prompts(
             path: None,
             fingerprint: Some(fingerprint),
             generation: claim.source_generation,
+            inline_claude_desktop: false,
         },
         PassSignal::new(),
         Some(row_store),

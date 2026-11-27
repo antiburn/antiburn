@@ -34,6 +34,7 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
             path: None,
             fingerprint: Some("sv1:stale-discovery-claim".to_owned()),
             generation: 1,
+            inline_claude_desktop: false,
         },
         PassSignal::new(),
         None,
@@ -285,6 +286,7 @@ async fn stale_kiro_bundle_claim_fails_before_the_adapter_runs() {
             path: Some(metadata),
             fingerprint: Some(old),
             generation: 1,
+            inline_claude_desktop: false,
         },
         PassSignal::new(),
         None,
@@ -1893,11 +1895,13 @@ fn an_inline_source_records_matching_and_mismatching_generations() {
         path: None,
         fingerprint: Some(fingerprint),
         generation: 9,
+        inline_claude_desktop: false,
     };
     let mismatching = ClaimedSource {
         path: None,
         fingerprint: Some("sv1:different".to_string()),
         generation: 9,
+        inline_claude_desktop: false,
     };
     let actual = inline_fingerprint(&content);
     let StreamOutcome::Published { session, .. } = stream_vendor(
@@ -2516,6 +2520,7 @@ async fn duplicate_rollouts_use_the_claimed_file_and_keep_change_detection() {
                 path: Some(path.clone()),
                 fingerprint: Some(fingerprint.clone()),
                 generation: 0,
+                inline_claude_desktop: false,
             },
             PassSignal::new(),
             None,
@@ -2534,6 +2539,7 @@ async fn duplicate_rollouts_use_the_claimed_file_and_keep_change_detection() {
                 path: Some(path.clone()),
                 fingerprint: Some(fingerprint),
                 generation: 0,
+                inline_claude_desktop: false,
             },
             PassSignal::new(),
             None,
@@ -2552,6 +2558,7 @@ async fn duplicate_rollouts_use_the_claimed_file_and_keep_change_detection() {
             path: Some(first.clone()),
             fingerprint: None,
             generation: 0,
+            inline_claude_desktop: false,
         },
         PassSignal::new(),
         None,
@@ -2638,6 +2645,7 @@ async fn other_vendor_files_publish_from_the_selected_duplicate() {
                     path: Some(path.clone()),
                     fingerprint: None,
                     generation: 0,
+                    inline_claude_desktop: false,
                 },
                 PassSignal::new(),
                 None,
@@ -2652,4 +2660,24 @@ async fn other_vendor_files_publish_from_the_selected_duplicate() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn missing_claude_desktop_inline_session_uses_only_the_point_query() {
+    let pass = analyze_for_evidence(
+        AgentKind::Claude,
+        "00000000-0000-4000-8000-00000000d351",
+        None,
+        ClaimedSource {
+            path: None,
+            fingerprint: None,
+            generation: 0,
+            inline_claude_desktop: true,
+        },
+        PassSignal::new(),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(pass.outcome, PassOutcome::SourceMissing);
 }

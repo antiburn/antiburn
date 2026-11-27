@@ -66,6 +66,11 @@ pub struct ClaimedSource {
     pub path: Option<std::path::PathBuf>,
     pub fingerprint: Option<String>,
     pub generation: i64,
+    /// Discovery found this Claude session only as a Claude Desktop metadata
+    /// file. The worker then checks only for the transcript file. A full
+    /// discovery cannot find a better source, and it reads every Claude
+    /// transcript for each claim.
+    pub inline_claude_desktop: bool,
 }
 
 // `CancelFlag` has no production caller left: `analyze_for_evidence` takes a
@@ -2217,7 +2222,14 @@ pub async fn analyze_for_evidence(
     let source = match &claimed.path {
         Some(path) => SessionSource::File(path.clone()),
         None => {
-            let Some(source) = locate(agent, session_id, wsl_distro).await else {
+            let located = if claimed.inline_claude_desktop && wsl_distro.is_none_or(str::is_empty) {
+                Explorers::DISK
+                    .locate_session_source_directly(&agent, session_id)
+                    .await
+            } else {
+                locate(agent, session_id, wsl_distro).await
+            };
+            let Some(source) = located else {
                 return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
             };
             source

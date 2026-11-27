@@ -2197,6 +2197,25 @@ impl Explorers {
             .map(|log| log.source.clone())
     }
 
+    /// Resolve one session with the agent's point query only.
+    ///
+    /// This function never runs a full discovery. It returns `None` when the
+    /// agent has no point query or the point query finds no source. Use it when
+    /// a full discovery cannot give a better source than the caller has.
+    pub async fn locate_session_source_directly(
+        &self,
+        agent: &AgentKind,
+        session_id: &str,
+    ) -> Option<SessionSource> {
+        if session_id.is_empty() {
+            return None;
+        }
+        match self.get(agent).direct_session_source(session_id).await {
+            DirectSessionSource::Found(source) => Some(source),
+            DirectSessionSource::Missing | DirectSessionSource::Unsupported => None,
+        }
+    }
+
     /// Resolves one session within an explicit caller-supplied environment
     /// identity.
     ///

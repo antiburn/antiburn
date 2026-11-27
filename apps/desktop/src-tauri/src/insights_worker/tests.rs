@@ -2109,6 +2109,7 @@ async fn file_source_identity_survives_real_publication_and_revision_reconciliat
                     path: None,
                     fingerprint,
                     generation: source_generation,
+                    inline_claude_desktop: false,
                 },
                 signal,
                 Some(writer),
