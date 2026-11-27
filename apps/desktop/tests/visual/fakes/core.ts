@@ -398,9 +398,15 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
     case "hud_island_available":
       return new URLSearchParams(window.location.search).get("hud") !== "floating"
     case "cloud_status":
-      return emptyCloudSnapshot
+      return {
+        ...emptyCloudSnapshot,
+        authEnabled:
+          new URLSearchParams(window.location.search).get("onboardingCloud") === "enabled",
+      }
     case "cloud_begin":
       return emptyCloudSnapshot
+    case "plugin:opener|open_url":
+      return null
     case "cloud_cancel":
       return { ...emptyCloudSnapshot, status: "cancelled" }
     case "get_promotion_readiness": {
@@ -444,6 +450,8 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
     case "app_info":
       return {
         appVersion: "0.5.2",
+        cloudEnabled:
+          new URLSearchParams(window.location.search).get("onboardingCloud") === "enabled",
         debugBuild: true,
         arch: "arm64",
         pricingCatalogVersion: "fixture",

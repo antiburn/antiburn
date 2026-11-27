@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "onboarding",
-  "description": "Allow the onboarding window to read its presentation settings and save local progress.",
+  "description": "Allow onboarding to read presentation settings, save local progress, and open the Cloud waitlist.",
   "windows": ["onboarding"],
   "permissions": [
     "core:event:allow-listen",
@@ -18,6 +18,10 @@
     "allow-window-ready",
     "allow-hud-island-available",
     "dialog:allow-open",
-    "allow-get-agent-integrations"
+    "allow-get-agent-integrations",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://antiburn.com/cloud" }]
+    }
   ]
 }

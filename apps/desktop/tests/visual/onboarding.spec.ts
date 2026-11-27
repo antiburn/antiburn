@@ -7,16 +7,15 @@ const headings = [
   "See your limits—and when they reset",
   "Stay informed without losing focus",
   "See what you could improve",
-  "Upload all your sessions, across devices",
 ] as const
-const steps = ["welcome", "sessions", "limits", "hud", "checks", "cloud"]
+const steps = ["welcome", "sessions", "limits", "hud", "checks"]
 for (const theme of ["light", "dark"] as const) {
-  test(`onboarding local journey, resume and Cloud gate in ${theme}`, async ({ page }) => {
+  test(`onboarding local journey, resume and Cloud waitlist in ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 860, height: 620 })
     await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" })
     const errors: string[] = []
     page.on("pageerror", (error) => errors.push(error.message))
-    await page.goto(`/tests/visual/?surface=onboarding&theme=${theme}`)
+    await page.goto(`/tests/visual/?surface=onboarding&theme=${theme}&onboardingCloud=disabled`)
     for (const [i, heading] of headings.entries()) {
       await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible()
       if (i > 0)
@@ -35,12 +34,10 @@ for (const theme of ["light", "dark"] as const) {
         await page.reload()
         await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible()
       }
-      if (i < headings.length - 1)
-        await page
-          .getByRole("button", { name: i === 0 ? "Get started" : "Continue", exact: true })
-          .click()
+      await page
+        .getByRole("button", { name: i === 0 ? "Get started" : "Continue", exact: true })
+        .click()
     }
-    await page.getByRole("button", { name: "Set up Cloud", exact: true }).click()
     await expect(
       page.getByRole("heading", { name: "Antiburn Cloud is coming soon" }),
     ).toBeVisible()
@@ -56,6 +53,13 @@ for (const theme of ["light", "dark"] as const) {
         ),
       ),
     })
+    await page.getByRole("button", { name: "Learn more" }).click()
+    await expect(
+      page.getByRole("heading", { name: "Antiburn Cloud is coming soon" }),
+    ).toBeVisible()
+    expect(await page.evaluate(() => window.__ANTIBURN_ONBOARDING_CALLS__)).toContain(
+      "plugin:opener|open_url",
+    )
     await page.getByRole("button", { name: "Done", exact: true }).click()
     await expect(page.getByRole("status")).toContainText("Opening Sessions")
     expect(await page.evaluate(() => sessionStorage.getItem("onboarding-review-state"))).toBe(
@@ -66,17 +70,33 @@ for (const theme of ["light", "dark"] as const) {
       commands?.filter(
         (name) =>
           ![
+            "app_info",
             "get_onboarding_state",
             "set_onboarding_state",
             "get_onboarding_window_visible",
             "hud_island_available",
             "note_interaction",
-            "cloud_status",
             "get_agent_integrations",
+            "plugin:opener|open_url",
           ].includes(name),
       ),
     ).toEqual([])
     expect(errors).toEqual([])
+  })
+
+  test(`onboarding Cloud teaching and sign-in in ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 860, height: 620 })
+    await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" })
+    await page.goto(
+      `/tests/visual/?surface=onboarding&theme=${theme}&step=checks&onboardingCloud=enabled`,
+    )
+    await page.getByRole("button", { name: "Continue", exact: true }).click()
+    await expect(page.getByRole("heading", { name: "Set up Antiburn Cloud" })).toBeVisible()
+    await expect(page.getByRole("button", { name: "Use locally for now" })).toBeEnabled()
+    await page.getByRole("button", { name: "Set up Cloud", exact: true }).click()
+    await expect(page.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
+    await page.getByRole("button", { name: "Continue locally" }).click()
+    await expect(page.getByRole("status")).toContainText("Opening Sessions")
   })
 }
 
