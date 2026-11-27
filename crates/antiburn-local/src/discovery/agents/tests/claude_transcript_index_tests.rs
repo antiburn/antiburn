@@ -30,30 +30,9 @@ async fn ids_resolve_in_plain_and_nested_desktop_roots() {
     assert_eq!(index.resolve("sess-missing").await, None);
 }
 
-/// macOS and Windows probes ignore letter case, so the index does too.
-#[cfg(any(target_os = "macos", windows))]
+/// A probe ignores letter case only where the platform file system does.
 #[tokio::test]
-async fn ids_and_extensions_match_without_letter_case() {
-    let home = TempDir::new().unwrap();
-    let dir = home.path().join("projects/-repo");
-    write(&dir.join("abc-def.jsonl")).await;
-    write(&dir.join("UPPER-ID.JSONL")).await;
-    let index = TranscriptIndex::new(std::slice::from_ref(&dir));
-
-    assert_eq!(
-        index.resolve("ABC-DEF").await,
-        Some(dir.join("abc-def.jsonl"))
-    );
-    assert_eq!(
-        index.resolve("upper-id").await,
-        Some(dir.join("UPPER-ID.JSONL"))
-    );
-}
-
-/// On a case-sensitive platform only the exact name matches, like a probe.
-#[cfg(not(any(target_os = "macos", windows)))]
-#[tokio::test]
-async fn only_the_exact_name_matches() {
+async fn letter_case_matches_like_the_platform_probe() {
     let home = TempDir::new().unwrap();
     let dir = home.path().join("projects/-repo");
     write(&dir.join("abc-def.jsonl")).await;
@@ -64,8 +43,16 @@ async fn only_the_exact_name_matches() {
         index.resolve("abc-def").await,
         Some(dir.join("abc-def.jsonl"))
     );
-    assert_eq!(index.resolve("ABC-DEF").await, None);
-    assert_eq!(index.resolve("UPPER-ID").await, None);
+    let (lower, upper) = if CASE_INSENSITIVE_NAMES {
+        (
+            Some(dir.join("abc-def.jsonl")),
+            Some(dir.join("UPPER-ID.JSONL")),
+        )
+    } else {
+        (None, None)
+    };
+    assert_eq!(index.resolve("ABC-DEF").await, lower);
+    assert_eq!(index.resolve("upper-id").await, upper);
 }
 
 /// Two directories hold names that differ only in letter case. The result is
@@ -79,7 +66,7 @@ async fn case_only_names_resolve_like_the_platform_probe() {
     write(&second.join("child-1.jsonl")).await;
     let index = TranscriptIndex::new(&[first.clone(), second.clone()]);
 
-    let expected = if cfg!(any(target_os = "macos", windows)) {
+    let expected = if CASE_INSENSITIVE_NAMES {
         first.join("CHILD-1.jsonl")
     } else {
         second.join("child-1.jsonl")
@@ -88,6 +75,35 @@ async fn case_only_names_resolve_like_the_platform_probe() {
     assert_eq!(
         index.resolve("CHILD-1").await,
         Some(first.join("CHILD-1.jsonl"))
+    );
+}
+
+/// Only a case-sensitive volume holds two names that differ only in case in
+/// one directory. A probe there finds the exact name.
+#[tokio::test]
+async fn the_exact_name_wins_inside_one_directory() {
+    let home = TempDir::new().unwrap();
+    let dir = home.path().join("projects/-repo");
+    write(&dir.join("CHILD-1.jsonl")).await;
+    write(&dir.join("child-1.jsonl")).await;
+    let mut names = Vec::new();
+    let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        names.push(entry.file_name());
+    }
+    if names.len() < 2 {
+        // This volume ignores case, so the second write replaced the first.
+        return;
+    }
+    let index = TranscriptIndex::new(std::slice::from_ref(&dir));
+
+    assert_eq!(
+        index.resolve("child-1").await,
+        Some(dir.join("child-1.jsonl"))
+    );
+    assert_eq!(
+        index.resolve("CHILD-1").await,
+        Some(dir.join("CHILD-1.jsonl"))
     );
 }
 

@@ -13,6 +13,7 @@
 //! probe.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use tokio::sync::OnceCell;
@@ -54,7 +55,8 @@ impl TranscriptIndex {
     ///
     /// The match follows a probe of `<session_id>.jsonl` on the default file
     /// system of the platform (see [`index_key`]), and the first project
-    /// directory wins. Returns `None` for an unsafe id, an audit log name, or
+    /// directory wins. Inside one directory, the exact name wins over a name
+    /// that differs only in case. Returns `None` for an unsafe id, an audit log name, or
     /// an id with no transcript. Each returned path passed the source safety
     /// check.
     pub(super) async fn resolve(&self, session_id: &str) -> Option<PathBuf> {
@@ -72,7 +74,15 @@ impl TranscriptIndex {
                 }
             })
             .await;
-        let candidates = by_id.get(&index_key(session_id))?.clone();
+        let mut candidates = by_id.get(&index_key(session_id))?.clone();
+        // One directory holds two names that differ only in case only on a
+        // case-sensitive volume. A probe there finds the exact name, so the
+        // exact name goes first inside its directory. The stable sort keeps
+        // the directory order.
+        let exact_name = format!("{session_id}.jsonl");
+        for group in candidates.chunk_by_mut(|a, b| a.parent() == b.parent()) {
+            group.sort_by_key(|candidate| candidate.file_name() != Some(OsStr::new(&exact_name)));
+        }
         tokio::task::spawn_blocking(move || {
             candidates.into_iter().find(|candidate| {
                 crate::discovery::source_fs::try_exists(candidate).unwrap_or(false)
@@ -84,14 +94,17 @@ impl TranscriptIndex {
     }
 }
 
+/// Whether the default file system of this platform ignores ASCII letter
+/// case in file names. This is true for macOS and Windows.
+pub(super) const CASE_INSENSITIVE_NAMES: bool = cfg!(any(target_os = "macos", windows));
+
 /// Index key for a file name or a session id.
 ///
-/// The default file systems of macOS and Windows ignore ASCII letter case, so
-/// a probe there finds `abc.jsonl` for the id `ABC`. On these platforms the
-/// key ignores case too. On other platforms the key keeps the exact name, as
-/// a probe on a case-sensitive file system does.
+/// When [`CASE_INSENSITIVE_NAMES`] is true, a probe finds `abc.jsonl` for the
+/// id `ABC`, so the key ignores case too. Otherwise the key keeps the exact
+/// name, as a probe on a case-sensitive file system does.
 fn index_key(name: &str) -> String {
-    if cfg!(any(target_os = "macos", windows)) {
+    if CASE_INSENSITIVE_NAMES {
         name.to_ascii_lowercase()
     } else {
         name.to_owned()
@@ -111,21 +124,21 @@ fn index_blocking(project_dirs: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
         let Ok(entries) = crate::discovery::source_fs::read_dir(project_dir) else {
             continue;
         };
-        let mut names: Vec<String> = entries
+        let mut transcripts: Vec<(String, String)> = entries
             .flatten()
             .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter_map(|name| {
+                let session_id = index_key(&name).strip_suffix(".jsonl")?.to_owned();
+                is_cli_session_id(&session_id).then_some((name, session_id))
+            })
             .collect();
-        names.sort_unstable();
-        for name in names {
-            let key = index_key(&name);
-            let Some(session_id) = key.strip_suffix(".jsonl") else {
-                continue;
-            };
+        transcripts.sort_unstable();
+        for (name, session_id) in transcripts {
             let path = project_dir.join(&name);
-            if !is_cli_session_id(session_id) || super::claude::is_audit_log(&path) {
+            if super::claude::is_audit_log(&path) {
                 continue;
             }
-            by_id.entry(session_id.to_owned()).or_default().push(path);
+            by_id.entry(session_id).or_default().push(path);
         }
     }
     by_id

@@ -1709,7 +1709,12 @@ mod tests {
         );
         let labels: Vec<String> = logs.iter().map(SessionLog::source_label).collect();
         assert_eq!(logs.len(), 4, "{labels:?}");
-        assert!(labels.contains(&transcript.to_string_lossy().into_owned()));
+        // Compare paths, not strings: on Windows the scan path and the test
+        // path use different separators.
+        assert!(
+            labels.iter().any(|label| Path::new(label) == transcript),
+            "{labels:?}"
+        );
         assert_eq!(
             labels
                 .iter()
