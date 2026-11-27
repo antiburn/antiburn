@@ -2222,12 +2222,13 @@ pub async fn analyze_for_evidence(
     let source = match &claimed.path {
         Some(path) => SessionSource::File(path.clone()),
         None => {
-            let located = if claimed.inline_claude_desktop && wsl_distro.is_none_or(str::is_empty) {
-                Explorers::DISK
-                    .locate_session_source_directly(&agent, session_id)
-                    .await
-            } else {
-                locate(agent, session_id, wsl_distro).await
+            let located = match evidence_lookup(&claimed, wsl_distro) {
+                EvidenceLookup::PointQuery => {
+                    Explorers::DISK
+                        .locate_session_source_directly(&agent, session_id)
+                        .await
+                }
+                EvidenceLookup::FullDiscovery => locate(agent, session_id, wsl_distro).await,
             };
             let Some(source) = located else {
                 return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
@@ -2265,6 +2266,27 @@ pub async fn analyze_for_evidence(
         LocatedTranscripts { source, children },
     )
     .await
+}
+
+/// The lookup that finds the source for a claim that has no file path.
+#[derive(Debug, PartialEq, Eq)]
+enum EvidenceLookup {
+    /// Check only the agent's point query.
+    PointQuery,
+    /// Run a full discovery for the agent.
+    FullDiscovery,
+}
+
+/// Select the lookup for a claim that has no file path. A Claude Desktop
+/// metadata-only session on this computer uses the point query, because a
+/// full discovery reads every Claude transcript and cannot find a better
+/// source.
+fn evidence_lookup(claimed: &ClaimedSource, wsl_distro: Option<&str>) -> EvidenceLookup {
+    if claimed.inline_claude_desktop && wsl_distro.is_none_or(str::is_empty) {
+        EvidenceLookup::PointQuery
+    } else {
+        EvidenceLookup::FullDiscovery
+    }
 }
 
 /// Evidence paths already admitted by an origin-specific adapter.

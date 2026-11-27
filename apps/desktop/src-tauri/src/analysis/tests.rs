@@ -2681,3 +2681,29 @@ async fn missing_claude_desktop_inline_session_uses_only_the_point_query() {
     .await;
     assert_eq!(pass.outcome, PassOutcome::SourceMissing);
 }
+
+#[test]
+fn only_local_claude_desktop_metadata_claims_skip_full_discovery() {
+    let claim = |inline_claude_desktop| ClaimedSource {
+        path: None,
+        fingerprint: None,
+        generation: 0,
+        inline_claude_desktop,
+    };
+    assert_eq!(
+        evidence_lookup(&claim(true), None),
+        EvidenceLookup::PointQuery
+    );
+    assert_eq!(
+        evidence_lookup(&claim(true), Some("")),
+        EvidenceLookup::PointQuery
+    );
+    assert_eq!(
+        evidence_lookup(&claim(true), Some("Ubuntu")),
+        EvidenceLookup::FullDiscovery
+    );
+    assert_eq!(
+        evidence_lookup(&claim(false), None),
+        EvidenceLookup::FullDiscovery
+    );
+}
