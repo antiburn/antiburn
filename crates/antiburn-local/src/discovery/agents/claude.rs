@@ -111,7 +111,7 @@ impl AgentExplorer for ClaudeExplorer {
         );
         let desktop_label = matches!(
             &log.source,
-            SessionSource::Inline { label, .. } if label.starts_with("claude-desktop:")
+            SessionSource::Inline { label, .. } if is_claude_desktop_manifest_label(label)
         );
         if by_path == Some("ide_desktop") || desktop_label {
             return "ide_desktop";
@@ -772,6 +772,19 @@ async fn interactive_fork_job_logs(
     logs
 }
 
+/// The label prefix of an inline source that holds only a Claude Desktop
+/// session manifest. [`desktop_manifest_session_log`] makes these labels.
+const CLAUDE_DESKTOP_LABEL_PREFIX: &str = "claude-desktop:";
+
+/// Tell if a source label names a Claude Desktop manifest-only session.
+///
+/// Such a session has no transcript on disk. Its inline content is the
+/// manifest, which has no token records. Callers use this to avoid work
+/// that cannot find a transcript, such as a full discovery.
+pub fn is_claude_desktop_manifest_label(label: &str) -> bool {
+    label.starts_with(CLAUDE_DESKTOP_LABEL_PREFIX)
+}
+
 /// Build a session from one Claude desktop session manifest.
 ///
 /// The manifest must be a JSON object that names a CLI transcript in
@@ -807,7 +820,7 @@ async fn desktop_manifest_session_log(
     }
 
     let label = format!(
-        "claude-desktop:{}",
+        "{CLAUDE_DESKTOP_LABEL_PREFIX}{}",
         manifest_path
             .strip_prefix(home)
             .unwrap_or(&manifest_path)

@@ -177,6 +177,15 @@ async fn missing_inline_source_stays_failed_across_scans() {
         )
         .unwrap();
     assert!(!source_is_available(&inline, &record).await);
+    let other_inline = SessionSource::Inline {
+        label: "cursor:synthetic".into(),
+        content: String::new(),
+        source_format: None,
+    };
+    assert!(
+        source_is_available(&other_inline, &record).await,
+        "other inline sources must retry after a temporary failure"
+    );
 
     let mut admission = writer(&store);
     for now in [101, 102] {

@@ -2222,7 +2222,7 @@ pub async fn analyze_for_evidence(
     let source = match &claimed.path {
         Some(path) => SessionSource::File(path.clone()),
         None => {
-            let located = match evidence_lookup(&claimed, wsl_distro) {
+            let located = match evidence_lookup(&claimed) {
                 EvidenceLookup::PointQuery => {
                     Explorers::DISK
                         .locate_session_source_directly(&agent, session_id)
@@ -2278,11 +2278,12 @@ enum EvidenceLookup {
 }
 
 /// Select the lookup for a claim that has no file path. A Claude Desktop
-/// metadata-only session on this computer uses the point query, because a
-/// full discovery reads every Claude transcript and cannot find a better
-/// source.
-fn evidence_lookup(claimed: &ClaimedSource, wsl_distro: Option<&str>) -> EvidenceLookup {
-    if claimed.inline_claude_desktop && wsl_distro.is_none_or(str::is_empty) {
+/// manifest-only session uses the point query. Discovery stores the session
+/// under the CLI session id, and the manifest label does not contain that id,
+/// so a full discovery cannot match the manifest. It also reads every Claude
+/// transcript. Discovery makes these sessions only on this computer.
+fn evidence_lookup(claimed: &ClaimedSource) -> EvidenceLookup {
+    if claimed.inline_claude_desktop {
         EvidenceLookup::PointQuery
     } else {
         EvidenceLookup::FullDiscovery
