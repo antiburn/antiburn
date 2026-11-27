@@ -20,6 +20,44 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-27
+
+### Added
+
+- Search locally indexed sessions from the command line with `antiburn search`.
+- Read supported local session transcripts with `antiburn get`. Use `--json`
+  for structured output.
+- On macOS, Antiburn installs its Claude Code skill alongside the bundled CLI.
+- Right-click the HUD to reveal the **Hide HUD** button.
+
+### Changed
+
+- Browse older sessions by scrolling. The Sessions view loads more entries
+  as you reach the end of the list.
+- Onboarding now shows a Cloud step after Checks. In the standard desktop app,
+  **Learn more** opens the Cloud waitlist and **Done** opens Sessions.
+
+### Fixed
+
+- Reduce CPU spikes during the first session scan and keep Sessions responsive
+  while background work updates the local database.
+- Retry interrupted Insights evidence work so session details can recover
+  when evidence becomes available.
+- Linux AppImages preserve the integrity of the bundled CLI so Antiburn can
+  install it on first launch.
+- On macOS and Linux, CLI Repair restores Antiburn-managed links and preserves
+  unrelated entries.
+
+### Removed
+
+- Removed SSH remote host syncing, host settings, and Source filters. Upgrade
+  cleanup removes previously synced SSH sessions and their local cached copies.
+  Local and WSL sessions, preferences, and remote originals are unchanged.
+
+### Security
+
+- Update the URL dependency to address an unbounded recursion vulnerability.
+
 ## [0.12.0] - 2026-11-27
 
 ### Added
