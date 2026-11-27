@@ -177,14 +177,20 @@ async fn missing_inline_source_stays_failed_across_scans() {
         )
         .unwrap();
     assert!(!source_is_available(&inline, &record).await);
-    let other_inline = SessionSource::Inline {
-        label: "cursor:synthetic".into(),
+    let cursor_label =
+        "cursor-store:/synthetic/chats/ws/22222222-2222-4222-8222-222222222222/store.db";
+    assert!(
+        !antiburn_local::discovery::agents::claude::is_claude_desktop_manifest_label(cursor_label),
+        "the worker must not send a Cursor store claim to the Claude point query"
+    );
+    let cursor_inline = SessionSource::Inline {
+        label: cursor_label.into(),
         content: String::new(),
         source_format: None,
     };
     assert!(
-        source_is_available(&other_inline, &record).await,
-        "other inline sources must retry after a temporary failure"
+        source_is_available(&cursor_inline, &record).await,
+        "a Cursor store source must retry after a source-missing failure"
     );
 
     let mut admission = writer(&store);

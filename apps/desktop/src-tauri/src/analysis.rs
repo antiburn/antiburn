@@ -2222,7 +2222,7 @@ pub async fn analyze_for_evidence(
     let source = match &claimed.path {
         Some(path) => SessionSource::File(path.clone()),
         None => {
-            let located = match evidence_lookup(&claimed) {
+            let located = match evidence_lookup(&claimed, wsl_distro) {
                 EvidenceLookup::PointQuery => {
                     Explorers::DISK
                         .locate_session_source_directly(&agent, session_id)
@@ -2281,9 +2281,11 @@ enum EvidenceLookup {
 /// manifest-only session uses the point query. Discovery stores the session
 /// under the CLI session id, and the manifest label does not contain that id,
 /// so a full discovery cannot match the manifest. It also reads every Claude
-/// transcript. Discovery makes these sessions only on this computer.
-fn evidence_lookup(claimed: &ClaimedSource) -> EvidenceLookup {
-    if claimed.inline_claude_desktop {
+/// transcript. The point query reads only this computer's home, so a WSL
+/// claim always uses the full discovery in its distribution.
+fn evidence_lookup(claimed: &ClaimedSource, wsl_distro: Option<&str>) -> EvidenceLookup {
+    let in_wsl = wsl_distro.is_some_and(|distro| !distro.is_empty());
+    if claimed.inline_claude_desktop && !in_wsl {
         EvidenceLookup::PointQuery
     } else {
         EvidenceLookup::FullDiscovery

@@ -2690,9 +2690,21 @@ fn only_claude_desktop_manifest_claims_skip_full_discovery() {
         generation: 0,
         inline_claude_desktop,
     };
-    assert_eq!(evidence_lookup(&claim(true)), EvidenceLookup::PointQuery);
     assert_eq!(
-        evidence_lookup(&claim(false)),
+        evidence_lookup(&claim(true), None),
+        EvidenceLookup::PointQuery
+    );
+    assert_eq!(
+        evidence_lookup(&claim(true), Some("")),
+        EvidenceLookup::PointQuery
+    );
+    assert_eq!(
+        evidence_lookup(&claim(false), None),
         EvidenceLookup::FullDiscovery
+    );
+    assert_eq!(
+        evidence_lookup(&claim(true), Some("Ubuntu")),
+        EvidenceLookup::FullDiscovery,
+        "a WSL claim must search its distribution, not this computer's home"
     );
 }
