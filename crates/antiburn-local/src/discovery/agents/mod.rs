@@ -13,6 +13,7 @@ pub mod antigravity;
 pub mod antigravity_subagents;
 pub mod claude;
 pub mod claude_subagents;
+mod claude_transcript_index;
 pub mod cline;
 pub mod codex;
 pub mod codex_subagents;
