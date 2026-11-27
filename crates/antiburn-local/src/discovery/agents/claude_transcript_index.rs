@@ -54,8 +54,11 @@ impl TranscriptIndex {
     ///
     /// The match ignores ASCII letter case in the id and in the `.jsonl`
     /// extension, as a probe does on the default macOS and Windows file
-    /// systems. Returns `None` for an unsafe id, an audit log name, or an id
-    /// with no transcript. Each returned path passed the source safety check.
+    /// systems. A file whose name is exactly `<session_id>.jsonl` wins over a
+    /// file that matches only when case is ignored, so a case-sensitive file
+    /// system gives the same result as an exact-name probe. Returns `None`
+    /// for an unsafe id, an audit log name, or an id with no transcript. Each
+    /// returned path passed the source safety check.
     pub(super) async fn resolve(&self, session_id: &str) -> Option<PathBuf> {
         if !is_cli_session_id(session_id) {
             return None;
@@ -71,7 +74,12 @@ impl TranscriptIndex {
                 }
             })
             .await;
-        let candidates = by_id.get(&session_id.to_ascii_lowercase())?.clone();
+        let mut candidates = by_id.get(&session_id.to_ascii_lowercase())?.clone();
+        let exact_name = format!("{session_id}.jsonl");
+        // A stable sort keeps the project directory order inside each group.
+        candidates.sort_by_key(|candidate| {
+            candidate.file_name().and_then(|name| name.to_str()) != Some(exact_name.as_str())
+        });
         tokio::task::spawn_blocking(move || {
             candidates.into_iter().find(|candidate| {
                 crate::discovery::source_fs::try_exists(candidate).unwrap_or(false)

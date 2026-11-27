@@ -49,6 +49,25 @@ async fn ids_and_extensions_match_without_letter_case() {
 }
 
 #[tokio::test]
+async fn an_exact_file_name_wins_over_a_case_only_match() {
+    let home = TempDir::new().unwrap();
+    let first = home.path().join("projects/-a");
+    let second = home.path().join("projects/-b");
+    write(&first.join("CHILD-1.jsonl")).await;
+    write(&second.join("child-1.jsonl")).await;
+    let index = TranscriptIndex::new(&[first.clone(), second.clone()]);
+
+    assert_eq!(
+        index.resolve("child-1").await,
+        Some(second.join("child-1.jsonl"))
+    );
+    assert_eq!(
+        index.resolve("CHILD-1").await,
+        Some(first.join("CHILD-1.jsonl"))
+    );
+}
+
+#[tokio::test]
 async fn the_first_project_dir_wins_like_the_probe() {
     let home = TempDir::new().unwrap();
     let first = home.path().join("projects/-a");
