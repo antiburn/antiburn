@@ -144,6 +144,77 @@ async fn missing_file_is_requeued_only_after_verified_return() {
 }
 
 #[tokio::test]
+async fn missing_inline_source_stays_failed_across_scans() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(temp.path()).unwrap();
+    let log = fixture_log(temp.path(), "22222222-2222-4222-8222-222222222222");
+    let SessionSource::File(path) = &log.source else {
+        unreachable!()
+    };
+    let inline = SessionSource::Inline {
+        label: "claude-desktop:synthetic.json".into(),
+        content: std::fs::read_to_string(path).unwrap(),
+        source_format: None,
+    };
+    let DescribeOutcome::Session(record) = describe_one(log.clone(), temp.path(), None).await
+    else {
+        panic!("fixture file was not admitted")
+    };
+    store
+        .upsert_sessions(std::slice::from_ref(&record), &["claude-code"])
+        .unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 100, 60)
+        .unwrap()
+        .unwrap();
+    store
+        .fail_evidence(
+            &claim,
+            crate::store::EvidenceFailure::Failed {
+                revisions: crate::analysis::projection_revisions(),
+            },
+            crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING,
+        )
+        .unwrap();
+    assert!(!source_is_available(&inline, &record).await);
+    let cursor_label =
+        "cursor-store:/synthetic/chats/ws/22222222-2222-4222-8222-222222222222/store.db";
+    assert!(
+        !antiburn_local::discovery::agents::claude::is_claude_desktop_manifest_label(cursor_label),
+        "the worker must not send a Cursor store claim to the Claude point query"
+    );
+    let cursor_inline = SessionSource::Inline {
+        label: cursor_label.into(),
+        content: String::new(),
+        source_format: None,
+    };
+    assert!(
+        source_is_available(&cursor_inline, &record).await,
+        "a Cursor store source must retry after a source-missing failure"
+    );
+
+    let mut admission = writer(&store);
+    for now in [101, 102] {
+        let guard = store
+            .begin_session_write(&record.key, &record.source_label)
+            .unwrap();
+        assert!(
+            admission
+                .commit_with_incarnation(&guard, &record, false, Some(&inline))
+                .await
+                .is_some()
+        );
+        assert!(
+            store
+                .claim_next_evidence(&["claude-code"], now, 60)
+                .unwrap()
+                .is_none(),
+            "an unchanged inline source must not requeue missing evidence"
+        );
+    }
+}
+
+#[tokio::test]
 async fn bundle_recovery_requires_each_required_component() {
     let temp = tempfile::tempdir().unwrap();
     let log = fixture_log(temp.path(), "11111111-1111-4111-8111-111111111111");

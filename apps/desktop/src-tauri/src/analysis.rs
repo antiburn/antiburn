@@ -66,6 +66,11 @@ pub struct ClaimedSource {
     pub path: Option<std::path::PathBuf>,
     pub fingerprint: Option<String>,
     pub generation: i64,
+    /// Discovery found this Claude session only as a Claude Desktop metadata
+    /// file. The worker then checks only for the transcript file. A full
+    /// discovery cannot find a better source, and it reads every Claude
+    /// transcript for each claim.
+    pub inline_claude_desktop: bool,
 }
 
 // `CancelFlag` has no production caller left: `analyze_for_evidence` takes a
@@ -2217,7 +2222,15 @@ pub async fn analyze_for_evidence(
     let source = match &claimed.path {
         Some(path) => SessionSource::File(path.clone()),
         None => {
-            let Some(source) = locate(agent, session_id, wsl_distro).await else {
+            let located = match evidence_lookup(&claimed, wsl_distro) {
+                EvidenceLookup::PointQuery => {
+                    Explorers::DISK
+                        .locate_session_source_directly(&agent, session_id)
+                        .await
+                }
+                EvidenceLookup::FullDiscovery => locate(agent, session_id, wsl_distro).await,
+            };
+            let Some(source) = located else {
                 return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
             };
             source
@@ -2253,6 +2266,30 @@ pub async fn analyze_for_evidence(
         LocatedTranscripts { source, children },
     )
     .await
+}
+
+/// The lookup that finds the source for a claim that has no file path.
+#[derive(Debug, PartialEq, Eq)]
+enum EvidenceLookup {
+    /// Check only the agent's point query.
+    PointQuery,
+    /// Run a full discovery for the agent.
+    FullDiscovery,
+}
+
+/// Select the lookup for a claim that has no file path. A Claude Desktop
+/// manifest-only session uses the point query. Discovery stores the session
+/// under the CLI session id, and the manifest label does not contain that id,
+/// so a full discovery cannot match the manifest. It also reads every Claude
+/// transcript. The point query reads only this computer's home, so a WSL
+/// claim always uses the full discovery in its distribution.
+fn evidence_lookup(claimed: &ClaimedSource, wsl_distro: Option<&str>) -> EvidenceLookup {
+    let in_wsl = wsl_distro.is_some_and(|distro| !distro.is_empty());
+    if claimed.inline_claude_desktop && !in_wsl {
+        EvidenceLookup::PointQuery
+    } else {
+        EvidenceLookup::FullDiscovery
+    }
 }
 
 /// Evidence paths already admitted by an origin-specific adapter.

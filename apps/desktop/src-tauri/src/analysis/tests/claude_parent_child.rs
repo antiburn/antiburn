@@ -310,6 +310,7 @@ async fn duplicate_claude_parents_keep_the_selected_parents_children() {
             path: Some(path.clone()),
             fingerprint: None,
             generation: 0,
+            inline_claude_desktop: false,
         },
         PassSignal::new(),
         Some(MemoryTurnRowStore::new("claude", "parent")),

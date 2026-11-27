@@ -1,5 +1,6 @@
 //! Drains the durable transcript evidence queue outside the scan pass.
 
+use antiburn_local::discovery::agents::claude::is_claude_desktop_manifest_label;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -330,6 +331,8 @@ fn run_record_pass_with(
                 path: (record.source_kind == "file").then(|| record.source_label.clone().into()),
                 fingerprint: record.source_fingerprint.clone(),
                 generation: 0,
+                inline_claude_desktop: record.source_kind == "inline"
+                    && is_claude_desktop_manifest_label(&record.source_label),
             },
             signal,
             Some(writer),

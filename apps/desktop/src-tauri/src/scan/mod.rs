@@ -94,6 +94,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS;
+use antiburn_local::discovery::agents::claude::is_claude_desktop_manifest_label;
 use antiburn_local::discovery::scanner::{self, TitleSource};
 use antiburn_local::discovery::{
     Explorers, ResolvedTitle, SessionLog, SessionSource, SourceDescriptor, TitleLookupKind,
@@ -1873,6 +1874,14 @@ impl AdmissionIo {
     }
 }
 
+/// Tell if a session source that the evidence worker reported as missing is
+/// available again. A `true` result puts failed evidence back in the queue
+/// immediately, so return `true` only when the worker can read the source.
+///
+/// A Claude Desktop manifest-only source returns `false`. It has no transcript
+/// on disk, so a retry fails again. When the manifest changes, the source
+/// generation changes, and that change enrolls the evidence again. Other inline
+/// sources return `true`, because a retry can recover from a temporary failure.
 async fn source_is_available(source: &SessionSource, record: &SessionRecord) -> bool {
     if let SessionSource::ProviderDb {
         agent,
@@ -1887,8 +1896,8 @@ async fn source_is_available(source: &SessionSource, record: &SessionRecord) -> 
                 if current == *db_path && current_id == *session_id
         );
     }
-    if matches!(source, SessionSource::Inline { .. }) {
-        return true;
+    if let SessionSource::Inline { label, .. } = source {
+        return !is_claude_desktop_manifest_label(label);
     }
     let Some(agent) = agents::kind_from_slug(&record.key.agent) else {
         return false;

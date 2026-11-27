@@ -2167,11 +2167,7 @@ impl Explorers {
         agent: &AgentKind,
         session_id: &str,
     ) -> Option<SessionSource> {
-        if session_id.is_empty() {
-            return None;
-        }
-
-        match self.get(agent).direct_session_source(session_id).await {
+        match self.point_query(agent, session_id).await {
             DirectSessionSource::Found(source) => return Some(source),
             DirectSessionSource::Missing => return None,
             DirectSessionSource::Unsupported => {}
@@ -2195,6 +2191,30 @@ impl Explorers {
                     .find(|log| log.source_label().contains(session_id))
             })
             .map(|log| log.source.clone())
+    }
+
+    /// Resolve one session with the agent's point query only.
+    ///
+    /// This function never runs a full discovery. It returns `None` when the
+    /// agent has no point query or the point query finds no source. Use it when
+    /// a full discovery cannot give a better source than the caller has.
+    pub async fn locate_session_source_directly(
+        &self,
+        agent: &AgentKind,
+        session_id: &str,
+    ) -> Option<SessionSource> {
+        match self.point_query(agent, session_id).await {
+            DirectSessionSource::Found(source) => Some(source),
+            DirectSessionSource::Missing | DirectSessionSource::Unsupported => None,
+        }
+    }
+
+    /// Run the agent's point query. An empty id is always missing.
+    async fn point_query(&self, agent: &AgentKind, session_id: &str) -> DirectSessionSource {
+        if session_id.is_empty() {
+            return DirectSessionSource::Missing;
+        }
+        self.get(agent).direct_session_source(session_id).await
     }
 
     /// Resolves one session within an explicit caller-supplied environment
