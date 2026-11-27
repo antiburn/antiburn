@@ -46,13 +46,14 @@ Settings, folder consent, auth state, and retry files remain
 separate from the release app. Source selections can be reused within one profile;
 this does not move credentials between service origins.
 
-Desktop opens a Cloud screen after Checks. When `AppInfo.cloudEnabled` is true,
-Desktop shows the Cloud teaching and setup screens. Builds without Cloud show
-the informational screen, including when resuming an introduction saved on a
-Cloud screen. **Learn more** opens the public Cloud page in the system browser.
-**Done** opens Sessions. Service configuration, offline errors, and unsupported
-capture platforms do not turn the build feature off. Cloud setup always permits
-local completion without source or content consent.
+Desktop reads `AppInfo.cloudEnabled` once per onboarding window. Earlier steps
+remain available during the lookup. After Checks or when resuming a saved Cloud
+step, Desktop shows a loading status until the lookup finishes. A true result
+makes the Cloud teaching and setup screens available. A false result or a failed
+lookup shows the informational screen. **Learn more** opens the public Cloud
+page in the system browser. **Done** opens Sessions. Service configuration,
+offline errors, and unsupported capture platforms do not turn the build feature
+off. Cloud setup always permits local completion without source or content consent.
 
 When Rust debug assertions are enabled (`cfg(debug_assertions)`), the issuer
 and resource both default to `http://localhost:3000` when neither

@@ -90,11 +90,7 @@ export function CloudWaitlist({
   const [opening, setOpening] = useState(false)
   const [action, setAction] = useState<"navigate" | "open" | "openFailed">("navigate")
   const actionError =
-    action === "openFailed"
-      ? "Could not open the Cloud page. Try again."
-      : action === "navigate"
-        ? error
-        : null
+    action === "openFailed" ? "Could not open the Cloud page. Try again." : error
 
   const navigate = (direction: "back" | "done") => {
     setAction("navigate")

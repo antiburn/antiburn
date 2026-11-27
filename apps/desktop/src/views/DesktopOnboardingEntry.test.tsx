@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StrictMode } from "react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import onboardingCapability from "../../src-tauri/capabilities/onboarding.json"
 import { emptyCloudSnapshot } from "../lib/cloud"
 import type { AppInfo, OnboardingState } from "../lib/ipc"
 import { DesktopOnboardingEntry } from "./DesktopOnboardingEntry"
@@ -118,6 +119,13 @@ it("opens the public page from Checks and lets the user return or finish", async
   expect(invoke).toHaveBeenCalledWith("plugin:opener|open_url", {
     url: "https://antiburn.com/cloud",
   })
+  const [, openerArgs] = invoke.mock.calls.find(
+    ([command]) => command === "plugin:opener|open_url",
+  )!
+  expect(onboardingCapability.permissions).toContainEqual({
+    identifier: "opener:allow-open-url",
+    allow: [{ url: openerArgs.url }],
+  })
   expect(
     invoke.mock.calls.filter(
       ([command, args]) =>
@@ -138,32 +146,41 @@ it("opens the public page from Checks and lets the user return or finish", async
   expect(invoke.mock.calls.some(([command]) => command.startsWith("cloud_"))).toBe(false)
 })
 
-it("shows an opener failure after a save failure and keeps both actions available", async () => {
-  commands(false, "cloud")
-  const native = invoke.getMockImplementation()!
-  let failSave = true
-  invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-    if (command === "plugin:opener|open_url") throw new Error("No system browser")
-    if (command === "set_onboarding_state" && failSave) {
-      failSave = false
-      throw new Error("Failed to save onboarding")
-    }
-    return native(command, args)
-  })
-  render(<DesktopOnboardingEntry />)
-  fireEvent.click(await screen.findByRole("button", { name: "Done" }))
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Could not finish the introduction",
-  )
-  const learnMore = await screen.findByRole("button", { name: "Learn more" })
-  fireEvent.click(learnMore)
-  await expect
-    .poll(() => screen.queryByRole("alert")?.textContent)
-    .toContain("Could not open the Cloud page")
-  expect(learnMore).toBeEnabled()
-  fireEvent.click(screen.getByRole("button", { name: "Done" }))
-  expect(await screen.findByRole("button", { name: "Open Sessions" })).toBeVisible()
-})
+it.each([
+  ["succeeds", "Could not finish the introduction"],
+  ["fails", "Could not open the Cloud page"],
+])(
+  "keeps both actions available after a save failure when opening the page %s",
+  async (outcome, message) => {
+    commands(false, "cloud")
+    const native = invoke.getMockImplementation()!
+    let failSave = true
+    invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "plugin:opener|open_url" && outcome === "fails") {
+        throw new Error("No system browser")
+      }
+      if (command === "set_onboarding_state" && failSave) {
+        failSave = false
+        throw new Error("Failed to save onboarding")
+      }
+      return native(command, args)
+    })
+    render(<DesktopOnboardingEntry />)
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not finish the introduction",
+    )
+    const learnMore = await screen.findByRole("button", { name: "Learn more" })
+    fireEvent.click(learnMore)
+    expect(invoke).toHaveBeenCalledWith("plugin:opener|open_url", {
+      url: "https://antiburn.com/cloud",
+    })
+    await waitFor(() => expect(learnMore).toBeEnabled())
+    expect(screen.getByRole("alert")).toHaveTextContent(message)
+    fireEvent.click(screen.getByRole("button", { name: "Done" }))
+    expect(await screen.findByRole("button", { name: "Open Sessions" })).toBeVisible()
+  },
+)
 
 it.each([true, false])(
   "keeps the feature-enabled Cloud flow reachable with service configuration: %s",
