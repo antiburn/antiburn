@@ -1873,6 +1873,13 @@ impl AdmissionIo {
     }
 }
 
+/// Tell if a session source that the evidence worker reported as missing is
+/// available again. A `true` result puts failed evidence back in the queue
+/// immediately, so return `true` only when the worker can read the source.
+///
+/// An inline source always returns `false`. Its content comes from discovery,
+/// but the worker locates the transcript again on disk. When content changes,
+/// the source generation changes, and that change enrolls the evidence again.
 async fn source_is_available(source: &SessionSource, record: &SessionRecord) -> bool {
     if let SessionSource::ProviderDb {
         agent,
@@ -1888,7 +1895,7 @@ async fn source_is_available(source: &SessionSource, record: &SessionRecord) -> 
         );
     }
     if matches!(source, SessionSource::Inline { .. }) {
-        return true;
+        return false;
     }
     let Some(agent) = agents::kind_from_slug(&record.key.agent) else {
         return false;
